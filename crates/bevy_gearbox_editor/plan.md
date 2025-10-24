@@ -1,8 +1,8 @@
 ### Editor architecture and critiques (bin-only; pluginized UI)
 
 Progress:
-- Completed: UI pluginization, JSON-RPC client unification + basic error propagation, bounded per-frame event processing, and UI clone reductions.
-- Next up: move concurrency into Bevy tasks/events, centralize URL config, normalize IDs, wasm networking gating, constants for type names, structured errors + logging, tests.
+- Completed: UI pluginization, JSON-RPC client unification + basic error propagation, Bevy tasks + messages for networking, bounded per-frame event processing, and UI clone reductions.
+- Next up: centralize URL config, normalize IDs, wasm networking gating, constants for type names, structured errors + logging, tests.
 
 - **Make UI a Plugin (bin-only)**
   - Create a `plugin` module exposing `EditorPlugin` that registers resources, events, and systems (setup, networking, UI). Keep `main.rs` minimal: build `App` and `.add_plugins(EditorPlugin)`.
@@ -54,7 +54,7 @@ Progress:
 - **Immediate steps (checklist)**
   - [x] Add `plugin` module with `EditorPlugin`; move UI systems/resources there. Keep `main.rs` minimal.
   - [x] Unify JSON-RPC client and `extract_components_map`; add JSON-RPC error handling.
-  - [ ] Replace manual thread with Bevy tasks + `Events` (or upgrade channels and drop unnecessary locks).
+  - [x] Replace manual thread with Bevy tasks + `Messages` (or upgrade channels and drop unnecessary locks).
   - [ ] Centralize URL in a config `Resource`; stop passing it in commands.
   - [ ] Normalize IDs to `u64` across UI state, commands, and RPCs.
   - [x] Bound per-frame event processing and reduce UI clones/lock scope.

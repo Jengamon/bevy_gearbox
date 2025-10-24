@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use std::collections::HashMap;
 
-use crate::connection::{Command, Event, PendingTasks, handle_commands, collect_task_results};
+use crate::connection::{Command, Event, PendingTasks, NetworkConfig, handle_commands, collect_task_results};
 
 pub struct EditorPlugin;
 
@@ -11,8 +11,9 @@ impl Plugin for EditorPlugin {
         app.add_message::<Command>()
             .add_message::<Event>()
             .insert_resource(PendingTasks::default())
+            .insert_resource(NetworkConfig { url: std::env::var("BRP_URL").unwrap_or_else(|_| "http://127.0.0.1:15703".to_string()) })
             .insert_resource(UiState {
-                url: std::env::var("BRP_URL").unwrap_or_else(|_| "http://127.0.0.1:15703".to_string()),
+                url_edit: String::new(),
                 connecting: false,
                 error: None,
                 machines: vec![],
@@ -37,7 +38,7 @@ impl Plugin for EditorPlugin {
 
 #[derive(Resource, Clone)]
 struct UiState {
-    url: String,
+    url_edit: String,
     connecting: bool,
     error: Option<String>,
     machines: Vec<(u32, Option<String>)>,
@@ -63,7 +64,7 @@ fn poll_network(
                 ui.connecting = false;
                 ui.error = None;
                 for (id, _) in ui.machines.iter() {
-                    cmd_writer.write(Command::FetchGraph { url: ui.url.clone(), id: *id });
+                    cmd_writer.write(Command::FetchGraph { id: *id });
                 }
                 processed += 1;
             }
@@ -91,20 +92,27 @@ fn poll_network(
     }
 }
 
-fn ui_system(mut egui_ctx: EguiContexts, mut ui: ResMut<UiState>, mut cmd_writer: MessageWriter<Command>) {
+fn ui_system(
+    mut egui_ctx: EguiContexts,
+    mut ui: ResMut<UiState>,
+    mut cmd_writer: MessageWriter<Command>,
+    mut cfg: ResMut<NetworkConfig>,
+) {
     if let Ok(ctx) = egui_ctx.ctx_mut() {
         egui::CentralPanel::default().show(ctx, |ui_egui| {
             ui_egui.vertical(|col| {
                 col.heading("Bevy Gearbox Remote (minimal)");
                 col.add_space(8.0);
                 col.horizontal(|row| {
-                    let text = egui::TextEdit::singleline(&mut ui.url).desired_width(380.0);
+                    if ui.url_edit.is_empty() { ui.url_edit = cfg.url.clone(); }
+                    let text = egui::TextEdit::singleline(&mut ui.url_edit).desired_width(380.0);
                     row.add(text);
                     let btn = row.add_enabled(!ui.connecting, egui::Button::new("Connect / Refresh"));
                     if btn.clicked() {
                         ui.connecting = true;
                         ui.error = None;
-                        cmd_writer.write(Command::Refresh(ui.url.clone()));
+                        cfg.url = ui.url_edit.clone();
+                        cmd_writer.write(Command::Refresh);
                     }
                     if let Some(err) = &ui.error {
                         row.colored_label(egui::Color32::from_rgb(176, 0, 0), err);
@@ -119,10 +127,10 @@ fn ui_system(mut egui_ctx: EguiContexts, mut ui: ResMut<UiState>, mut cmd_writer
                         row.add_sized([260.0, 20.0], egui::Label::new(display));
                         row.label(format!("{}", id));
                         if row.button("Select").clicked() {
-                            cmd_writer.write(Command::Select { url: ui.url.clone(), id: *id });
+                            cmd_writer.write(Command::Select { id: *id });
                         }
                         if row.button("Save").clicked() {
-                            cmd_writer.write(Command::Save { url: ui.url.clone(), id: *id });
+                            cmd_writer.write(Command::Save { id: *id });
                         }
                     });
                     if let Some(text) = ui.graphs.get(id) {

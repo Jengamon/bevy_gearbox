@@ -4,12 +4,17 @@ use crate::rpcs::fetch_machine_graph_text;
 use crate::client::{jsonrpc_call, jsonrpc_ping, jsonrpc_save_machine, jsonrpc_select};
 use serde_json::{json, Value};
 
+#[derive(Resource, Clone)]
+pub struct NetworkConfig {
+    pub url: String,
+}
+
 #[derive(Message, Clone)]
 pub enum Command {
-    Refresh(String),
-    Select { url: String, id: u32 },
-    Save { url: String, id: u32 },
-    FetchGraph { url: String, id: u32 },
+    Refresh,
+    Select { id: u32 },
+    Save { id: u32 },
+    FetchGraph { id: u32 },
 }
 
 #[derive(Message)]
@@ -58,12 +63,14 @@ pub struct PendingTasks {
 pub fn handle_commands(
     mut commands_reader: MessageReader<Command>,
     mut pending: ResMut<PendingTasks>,
+    cfg: Res<NetworkConfig>,
 ) {
     let pool = IoTaskPool::get();
     for cmd in commands_reader.read().cloned() {
+        let url = cfg.url.clone();
         let task = pool.spawn(async move {
             match cmd {
-                Command::Refresh(url) => {
+                Command::Refresh => {
                     let r = (|| -> Result<Vec<(u32, Option<String>)>, String> {
                         jsonrpc_ping(&url)?;
                         let list = jsonrpc_call(
@@ -98,15 +105,15 @@ pub fn handle_commands(
                     })();
                     Event::RefreshResult(r)
                 }
-                Command::Select { url, id } => {
+                Command::Select { id } => {
                     let r = (|| -> Result<(), String> { jsonrpc_select(&url, Some(id)) })();
                     Event::SelectResult(r)
                 }
-                Command::Save { url, id } => {
+                Command::Save { id } => {
                     let r = (|| -> Result<(), String> { jsonrpc_save_machine(&url, id) })();
                     Event::SaveResult(r)
                 }
-                Command::FetchGraph { url, id } => {
+                Command::FetchGraph { id } => {
                     let result = fetch_machine_graph_text(&url, id as u64);
                     Event::GraphResult { id, result }
                 }
