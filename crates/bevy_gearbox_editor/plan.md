@@ -55,10 +55,10 @@ Progress:
   - [x] Add `plugin` module with `EditorPlugin`; move UI systems/resources there. Keep `main.rs` minimal.
   - [x] Unify JSON-RPC client and `extract_components_map`; add JSON-RPC error handling.
   - [x] Replace manual thread with Bevy tasks + `Messages` (or upgrade channels and drop unnecessary locks).
-  - [ ] Centralize URL in a config `Resource`; stop passing it in commands.
+  - [X] Centralize URL in a config `Resource`; stop passing it in commands.
   - [x] Normalize IDs to `u64` across UI state, commands, and RPCs (via `ServerEntity`).
   - [x] Bound per-frame event processing and reduce UI clones/lock scope.
-  - [ ] Gate wasm networking or provide a wasm client; align Egui scheduling.
+  - [ ] (stretch) Web support: provide a wasm client or gate networking; unify Egui scheduling.
   - [x] De-stringify component type names into shared constants.
   - [ ] Add structured errors and logging.
   - [ ] Add tests for ID/label parsing and graph output.

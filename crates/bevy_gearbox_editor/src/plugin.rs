@@ -22,17 +22,8 @@ impl Plugin for EditorPlugin {
             .add_systems(Startup, setup_camera)
             .add_systems(Update, (handle_commands, collect_task_results, poll_network));
 
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            use bevy_egui::EguiPrimaryContextPass;
-            app.add_systems(EguiPrimaryContextPass, ui_system);
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            use bevy_egui::EguiSet;
-            app.add_systems(Update, ui_system.in_set(EguiSet::Ui));
-        }
+        use bevy_egui::EguiPrimaryContextPass;
+        app.add_systems(EguiPrimaryContextPass, ui_system);
     }
 }
 
