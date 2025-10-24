@@ -1,11 +1,12 @@
 use bevy::prelude::*;
 use bevy_egui::EguiPlugin;
-mod connection;
+use plugin::EditorPlugin;
+
+mod net;
 mod rpcs;
 mod client;
 mod plugin;
 mod component;
-use plugin::EditorPlugin;
 
 fn main() {
     App::new()

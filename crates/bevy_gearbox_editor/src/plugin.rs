@@ -2,17 +2,13 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use std::collections::HashMap;
 
-use crate::connection::{EditorCommand, EditorEvent, PendingTasks, NetworkConfig, TokioRuntime, ServerEntity, handle_commands, collect_task_results};
+use crate::net::{NetPlugin, NetCommand, NetEvent, NetworkConfig, ServerEntity};
 
 pub(crate) struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<EditorCommand>()
-            .add_message::<EditorEvent>()
-            .insert_resource(PendingTasks::default())
-            .insert_resource(TokioRuntime(std::sync::Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime"))))
-            .insert_resource(NetworkConfig { url: std::env::var("BRP_URL").unwrap_or_else(|_| "http://127.0.0.1:15703".to_string()) })
+        app.add_plugins(NetPlugin)
             .insert_resource(UiState {
                 url_edit: String::new(),
                 connecting: false,
@@ -21,11 +17,7 @@ impl Plugin for EditorPlugin {
                 graphs: HashMap::new(),
             })
             .add_systems(Startup, setup_camera)
-            .add_systems(Update, (
-                handle_commands, 
-                collect_task_results, 
-                poll_network
-            ).chain());
+            .add_systems(Update, poll_network);
 
         use bevy_egui::EguiPrimaryContextPass;
         app.add_systems(EguiPrimaryContextPass, ui_system);
@@ -47,39 +39,39 @@ fn setup_camera(mut commands: Commands) {
 
 fn poll_network(
     mut ui: ResMut<UiState>,
-    mut events: MessageReader<EditorEvent>,
-    mut cmd_writer: MessageWriter<EditorCommand>,
+    mut events: MessageReader<NetEvent>,
+    mut cmd_writer: MessageWriter<NetCommand>,
 ) {
     let mut processed = 0usize;
     const MAX_PER_FRAME: usize = 64;
     for evt in events.read() {
         if processed >= MAX_PER_FRAME { break; }
         match evt {
-            EditorEvent::RefreshResult(Ok(machines)) => {
+            NetEvent::RefreshResult(Ok(machines)) => {
                 ui.machines = machines.clone();
                 ui.connecting = false;
                 ui.error = None;
                 for (id, _) in ui.machines.iter() {
-                    cmd_writer.write(EditorCommand::FetchGraph { id: *id });
+                    cmd_writer.write(NetCommand::FetchGraph { id: *id });
                 }
                 processed += 1;
             }
-            EditorEvent::RefreshResult(Err(e)) => {
+            NetEvent::RefreshResult(Err(e)) => {
                 ui.connecting = false;
                 ui.error = Some(e.clone());
                 processed += 1;
             }
-            EditorEvent::GraphResult { id, result } => {
+            NetEvent::GraphResult { id, result } => {
                 if let Ok(text) = result {
                     ui.graphs.insert(*id, text.clone());
                 }
                 processed += 1;
             }
-            EditorEvent::SelectResult(Err(e)) => {
+            NetEvent::SelectResult(Err(e)) => {
                 ui.error = Some(format!("Select failed: {e}"));
                 processed += 1;
             }
-            EditorEvent::SaveResult(Err(e)) => {
+            NetEvent::SaveResult(Err(e)) => {
                 ui.error = Some(format!("Save failed: {e}"));
                 processed += 1;
             }
@@ -91,8 +83,8 @@ fn poll_network(
 fn ui_system(
     mut egui_ctx: EguiContexts,
     mut ui: ResMut<UiState>,
-    mut cmd_writer: MessageWriter<EditorCommand>,
-    mut cfg: ResMut<NetworkConfig>,
+    mut cmd_writer: MessageWriter<NetCommand>,
+    cfg: Res<NetworkConfig>,
 ) {
     if let Ok(ctx) = egui_ctx.ctx_mut() {
         egui::CentralPanel::default().show(ctx, |ui_egui| {
@@ -107,8 +99,8 @@ fn ui_system(
                     if btn.clicked() {
                         ui.connecting = true;
                         ui.error = None;
-                        cfg.url = ui.url_edit.clone();
-                        cmd_writer.write(EditorCommand::Refresh);
+                        cmd_writer.write(NetCommand::SetUrl { url: ui.url_edit.clone() });
+                        cmd_writer.write(NetCommand::Refresh);
                     }
                     if let Some(err) = &ui.error {
                         row.colored_label(egui::Color32::from_rgb(176, 0, 0), err);
@@ -123,10 +115,10 @@ fn ui_system(
                         row.add_sized([260.0, 20.0], egui::Label::new(display));
                         row.label(format!("{}", id.0));
                         if row.button("Select").clicked() {
-                            cmd_writer.write(EditorCommand::Select { id: *id });
+                            cmd_writer.write(NetCommand::Select { id: *id });
                         }
                         if row.button("Save").clicked() {
-                            cmd_writer.write(EditorCommand::Save { id: *id });
+                            cmd_writer.write(NetCommand::Save { id: *id });
                         }
                     });
                     if let Some(text) = ui.graphs.get(id) {
