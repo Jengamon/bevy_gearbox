@@ -1,6 +1,6 @@
 use bevy::prelude::Resource;
+use crate::rpcs::fetch_machine_graph_text;
 use serde_json::{json, Value};
-use std::io::Read;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -69,12 +69,14 @@ pub enum Command {
     Refresh(String),
     Select { url: String, id: u32 },
     Save { url: String, id: u32 },
+    FetchGraph { url: String, id: u32 },
 }
 
 pub enum Event {
     RefreshResult(Result<Vec<(u32, Option<String>)>, String>),
     SelectResult(Result<(), String>),
     SaveResult(Result<(), String>),
+    GraphResult { id: u32, result: Result<String, String> },
 }
 
 fn extract_result_array(v: Value) -> Result<Vec<Value>, String> {
@@ -154,6 +156,10 @@ fn start_worker(rx: Receiver<Command>, tx: Sender<Event>) {
                 Command::Save { url, id } => {
                     let r = || -> Result<(), String> { RpcClient::new(url).save_machine(id) }();
                     let _ = tx.send(Event::SaveResult(r));
+                }
+                Command::FetchGraph { url, id } => {
+                    let result = fetch_machine_graph_text(&url, id as u64);
+                    let _ = tx.send(Event::GraphResult { id, result });
                 }
             }
         }
