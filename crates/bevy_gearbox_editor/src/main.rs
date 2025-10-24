@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::EguiPlugin;
 mod connection;
 mod rpcs;
+mod client;
 mod plugin;
 use plugin::EditorPlugin;
 

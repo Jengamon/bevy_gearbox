@@ -20,50 +20,7 @@ pub fn spawn() -> Connection {
     Connection { tx: Arc::new(Mutex::new(tx_cmd)), rx: Arc::new(Mutex::new(rx_evt)) }
 }
 
-#[derive(Clone)]
-struct RpcClient {
-    url: String,
-}
-
-impl RpcClient {
-    fn new(url: String) -> Self { Self { url } }
-
-    fn call(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
-        let req = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": method,
-            "params": params,
-        });
-        let mut resp = ureq::post(&self.url)
-            .header("content-type", "application/json")
-            .send_json(&req)
-            .map_err(|e| format!("HTTP: {e}"))?;
-        let body = resp
-            .body_mut()
-            .read_to_string()
-            .map_err(|e| format!("Read: {e}"))?;
-        let value: Value = serde_json::from_str(&body).map_err(|e| format!("Parse: {e}"))?;
-        if let Some(v) = value.get("result").cloned() { Ok(v) } else { Ok(value) }
-    }
-
-    fn ping(&self) -> Result<(), String> {
-        let _ = self.call("rpc.discover", None)?;
-        Ok(())
-    }
-
-    fn select(&self, entity: Option<u32>) -> Result<(), String> {
-        let params = match entity { Some(e) => json!({"entity": e}), None => json!({"entity": null}) };
-        let _ = self.call("editor.select", Some(params))?;
-        Ok(())
-    }
-
-    fn save_machine(&self, id: u32) -> Result<(), String> {
-        let params = json!({"entity": id});
-        let _ = self.call("editor.save_machine", Some(params))?;
-        Ok(())
-    }
-}
+use crate::client::{jsonrpc_call, jsonrpc_ping, jsonrpc_save_machine, jsonrpc_select};
 
 pub enum Command {
     Refresh(String),
@@ -115,10 +72,9 @@ fn start_worker(rx: Receiver<Command>, tx: Sender<Event>) {
             match cmd {
                 Command::Refresh(url) => {
                     let r = || -> Result<Vec<(u32, Option<String>)>, String> {
-                        let client = RpcClient::new(url.clone());
-                        client.ping()?;
-                        let list = client
-                            .call(
+                        jsonrpc_ping(&url)?;
+                        let list = jsonrpc_call(
+                                &url,
                                 "world.query",
                                 Some(json!({
                                     "data": {},
@@ -129,8 +85,8 @@ fn start_worker(rx: Receiver<Command>, tx: Sender<Event>) {
                         let mut machines = vec![];
                         for row in extract_result_array(list)? {
                             if let Some(id) = row.get("entity").and_then(|e| e.as_u64()) {
-                                let comps = client
-                                    .call(
+                                let comps = jsonrpc_call(
+                                        &url,
                                         "world.get_components",
                                         Some(json!({
                                             "entity": id,
@@ -150,11 +106,11 @@ fn start_worker(rx: Receiver<Command>, tx: Sender<Event>) {
                     let _ = tx.send(Event::RefreshResult(r));
                 }
                 Command::Select { url, id } => {
-                    let r = || -> Result<(), String> { RpcClient::new(url).select(Some(id)) }();
+                    let r = || -> Result<(), String> { jsonrpc_select(&url, Some(id)) }();
                     let _ = tx.send(Event::SelectResult(r));
                 }
                 Command::Save { url, id } => {
-                    let r = || -> Result<(), String> { RpcClient::new(url).save_machine(id) }();
+                    let r = || -> Result<(), String> { jsonrpc_save_machine(&url, id) }();
                     let _ = tx.send(Event::SaveResult(r));
                 }
                 Command::FetchGraph { url, id } => {

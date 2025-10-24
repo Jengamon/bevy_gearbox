@@ -48,7 +48,10 @@ fn setup_netctx(mut commands: Commands) {
 }
 
 fn poll_network(mut ui: ResMut<UiState>, net: Res<NetCtx>) {
+    let mut processed = 0usize;
+    const MAX_PER_FRAME: usize = 64;
     loop {
+        if processed >= MAX_PER_FRAME { break; }
         let evt = {
             let guard = net.rx.lock().unwrap();
             guard.try_recv()
@@ -65,21 +68,26 @@ fn poll_network(mut ui: ResMut<UiState>, net: Res<NetCtx>) {
                         .unwrap()
                         .send(Command::FetchGraph { url: ui.url.clone(), id });
                 }
+                processed += 1;
             }
             Ok(Event::RefreshResult(Err(e))) => {
                 ui.connecting = false;
                 ui.error = Some(e);
+                processed += 1;
             }
             Ok(Event::GraphResult { id, result }) => {
                 if let Ok(text) = result {
                     ui.graphs.insert(id, text);
                 }
+                processed += 1;
             }
             Ok(Event::SelectResult(Err(e))) => {
                 ui.error = Some(format!("Select failed: {e}"));
+                processed += 1;
             }
             Ok(Event::SaveResult(Err(e))) => {
                 ui.error = Some(format!("Save failed: {e}"));
+                processed += 1;
             }
             Ok(_) => {}
             Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -110,19 +118,19 @@ fn ui_system(mut egui_ctx: EguiContexts, mut ui: ResMut<UiState>, net: Res<NetCt
                 col.separator();
                 col.heading("State Machines");
                 col.add_space(4.0);
-                for (id, name) in ui.machines.clone() {
+                for (id, name) in ui.machines.iter() {
                     col.horizontal(|row| {
-                        let display = name.unwrap_or_else(|| "<unnamed>".to_string());
+                        let display = name.clone().unwrap_or_else(|| "<unnamed>".to_string());
                         row.add_sized([260.0, 20.0], egui::Label::new(display));
                         row.label(format!("{}", id));
                         if row.button("Select").clicked() {
-                            let _ = net.tx.lock().unwrap().send(Command::Select { url: ui.url.clone(), id });
+                            let _ = net.tx.lock().unwrap().send(Command::Select { url: ui.url.clone(), id: *id });
                         }
                         if row.button("Save").clicked() {
-                            let _ = net.tx.lock().unwrap().send(Command::Save { url: ui.url.clone(), id });
+                            let _ = net.tx.lock().unwrap().send(Command::Save { url: ui.url.clone(), id: *id });
                         }
                     });
-                    if let Some(text) = ui.graphs.get(&id) {
+                    if let Some(text) = ui.graphs.get(id) {
                         col.add_space(2.0);
                         col.code(text);
                         col.add_space(6.0);

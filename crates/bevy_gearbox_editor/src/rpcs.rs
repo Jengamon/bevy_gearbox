@@ -1,26 +1,8 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use crate::client::jsonrpc_call;
 
-fn http_call(url: &str, method: &str, params: Option<Value>) -> Result<Value, String> {
-    let req = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": method,
-        "params": params,
-    });
-    let mut resp = ureq::post(url)
-        .header("content-type", "application/json")
-        .send_json(&req)
-        .map_err(|e| format!("HTTP: {e}"))?;
-    let body = resp
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| format!("Read: {e}"))?;
-    let value: Value = serde_json::from_str(&body).map_err(|e| format!("Parse: {e}"))?;
-    if let Some(v) = value.get("result").cloned() { Ok(v) } else { Ok(value) }
-}
-
-fn extract_components_map(v: Value) -> Result<serde_json::Map<String, Value>, String> {
+pub(crate) fn extract_components_map(v: Value) -> Result<serde_json::Map<String, Value>, String> {
     match v {
         Value::Object(o) => {
             if let Some(Value::Object(components)) = o.get("components") { Ok(components.clone()) } else { Ok(o) }
@@ -38,12 +20,12 @@ fn extract_components_map(v: Value) -> Result<serde_json::Map<String, Value>, St
     }
 }
 
-fn get_components(url: &str, entity: u64, components: Option<&[&str]>) -> Result<HashMap<String, Value>, String> {
+pub(crate) fn get_components(url: &str, entity: u64, components: Option<&[&str]>) -> Result<HashMap<String, Value>, String> {
     let params = match components {
         Some(list) => json!({"entity": entity, "components": list}),
         None => json!({"entity": entity}),
     };
-    let v = http_call(url, "world.get_components", Some(params))?;
+    let v = jsonrpc_call(url, "world.get_components", Some(params))?;
     let map = extract_components_map(v)?;
     Ok(map.into_iter().collect())
 }
