@@ -1,9 +1,13 @@
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-pub fn jsonrpc_call(url: &str, method: &str, params: Option<Value>) -> Result<Value, String> {
+static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn jsonrpc_call(url: &str, method: &str, params: Option<Value>) -> Result<Value, String> {
+    let id = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let req = json!({
         "jsonrpc": "2.0",
-        "id": 1,
+        "id": id,
         "method": method,
         "params": params,
     });
@@ -25,18 +29,18 @@ pub fn jsonrpc_call(url: &str, method: &str, params: Option<Value>) -> Result<Va
     if let Some(v) = value.get("result").cloned() { Ok(v) } else { Ok(value) }
 }
 
-pub fn jsonrpc_ping(url: &str) -> Result<(), String> {
+pub(crate) fn jsonrpc_ping(url: &str) -> Result<(), String> {
     let _ = jsonrpc_call(url, "rpc.discover", None)?;
     Ok(())
 }
 
-pub fn jsonrpc_select(url: &str, entity: Option<u32>) -> Result<(), String> {
+pub(crate) fn jsonrpc_select(url: &str, entity: Option<u32>) -> Result<(), String> {
     let params = match entity { Some(e) => json!({"entity": e}), None => json!({"entity": null}) };
     let _ = jsonrpc_call(url, "editor.select", Some(params))?;
     Ok(())
 }
 
-pub fn jsonrpc_save_machine(url: &str, id: u32) -> Result<(), String> {
+pub(crate) fn jsonrpc_save_machine(url: &str, id: u32) -> Result<(), String> {
     let params = json!({"entity": id});
     let _ = jsonrpc_call(url, "editor.save_machine", Some(params))?;
     Ok(())

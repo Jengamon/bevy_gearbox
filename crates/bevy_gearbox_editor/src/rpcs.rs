@@ -136,7 +136,7 @@ fn choose_edge_label(components: &HashMap<String, Value>) -> String {
     "Edge".to_string()
 }
 
-pub fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<String, String> {
+pub(crate) fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<String, String> {
     let mut names: HashMap<u64, String> = HashMap::new();
     let mut states: Vec<u64> = Vec::new();
     let mut stack: Vec<u64> = Vec::new();

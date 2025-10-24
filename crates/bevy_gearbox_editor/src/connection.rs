@@ -1,20 +1,20 @@
 use bevy::prelude::*;
 use bevy::tasks::{futures_lite::future, IoTaskPool, Task};
-use crate::rpcs::fetch_machine_graph_text;
+use crate::rpcs::{extract_components_map, fetch_machine_graph_text};
 use crate::client::{jsonrpc_call, jsonrpc_ping, jsonrpc_save_machine, jsonrpc_select};
 use serde_json::{json, Value};
 use crate::component as c;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct ServerEntity(pub u64);
+pub(crate) struct ServerEntity(pub u64);
 
 #[derive(Resource, Clone)]
-pub struct NetworkConfig {
-    pub url: String,
+pub(crate) struct NetworkConfig {
+    pub(crate) url: String,
 }
 
 #[derive(Message, Clone)]
-pub enum Command {
+pub(crate) enum EditorCommand {
     Refresh,
     Select { id: ServerEntity },
     Save { id: ServerEntity },
@@ -22,7 +22,7 @@ pub enum Command {
 }
 
 #[derive(Message)]
-pub enum Event {
+pub(crate) enum EditorEvent {
     RefreshResult(Result<Vec<(ServerEntity, Option<String>)>, String>),
     SelectResult(Result<(), String>),
     SaveResult(Result<(), String>),
@@ -41,31 +41,13 @@ fn extract_result_array(v: Value) -> Result<Vec<Value>, String> {
     }
 }
 
-fn extract_components_map(v: Value) -> Result<serde_json::Map<String, Value>, String> {
-    match v {
-        Value::Object(o) => {
-            if let Some(Value::Object(components)) = o.get("components") { Ok(components.clone()) } else { Ok(o) }
-        }
-        Value::Array(_) => Err("unexpected array for components response".to_string()),
-        other => {
-            if let Some(obj) = other.get("result") {
-                if let Value::Object(o) = obj {
-                    if let Some(Value::Object(components)) = o.get("components") { return Ok(components.clone()); }
-                    return Ok(o.clone());
-                }
-            }
-            Err(format!("expected object or result object, got {}", other))
-        }
-    }
-}
-
 #[derive(Resource, Default)]
-pub struct PendingTasks {
-    pub tasks: Vec<Task<Event>>,
+pub(crate) struct PendingTasks {
+    tasks: Vec<Task<EditorEvent>>,
 }
 
-pub fn handle_commands(
-    mut commands_reader: MessageReader<Command>,
+pub(crate) fn handle_commands(
+    mut commands_reader: MessageReader<EditorCommand>,
     mut pending: ResMut<PendingTasks>,
     cfg: Res<NetworkConfig>,
 ) {
@@ -74,7 +56,7 @@ pub fn handle_commands(
         let url = cfg.url.clone();
         let task = pool.spawn(async move {
             match cmd {
-                Command::Refresh => {
+                EditorCommand::Refresh => {
                     let r = (|| -> Result<Vec<(ServerEntity, Option<String>)>, String> {
                         jsonrpc_ping(&url)?;
                         let list = jsonrpc_call(
@@ -107,19 +89,19 @@ pub fn handle_commands(
                         }
                         Ok(machines)
                     })();
-                    Event::RefreshResult(r)
+                    EditorEvent::RefreshResult(r)
                 }
-                Command::Select { id } => {
+                EditorCommand::Select { id } => {
                     let r = (|| -> Result<(), String> { jsonrpc_select(&url, Some(id.0 as u32)) })();
-                    Event::SelectResult(r)
+                    EditorEvent::SelectResult(r)
                 }
-                Command::Save { id } => {
+                EditorCommand::Save { id } => {
                     let r = (|| -> Result<(), String> { jsonrpc_save_machine(&url, id.0 as u32) })();
-                    Event::SaveResult(r)
+                    EditorEvent::SaveResult(r)
                 }
-                Command::FetchGraph { id } => {
+                EditorCommand::FetchGraph { id } => {
                     let result = fetch_machine_graph_text(&url, id.0);
-                    Event::GraphResult { id, result }
+                    EditorEvent::GraphResult { id, result }
                 }
             }
         });
@@ -127,9 +109,9 @@ pub fn handle_commands(
     }
 }
 
-pub fn collect_task_results(
+pub(crate) fn collect_task_results(
     mut pending: ResMut<PendingTasks>,
-    mut events_writer: MessageWriter<Event>,
+    mut events_writer: MessageWriter<EditorEvent>,
 ) {
     let mut i = 0;
     while i < pending.tasks.len() {

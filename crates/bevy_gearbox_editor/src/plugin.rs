@@ -2,14 +2,14 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use std::collections::HashMap;
 
-use crate::connection::{Command, Event, PendingTasks, NetworkConfig, ServerEntity, handle_commands, collect_task_results};
+use crate::connection::{EditorCommand, EditorEvent, PendingTasks, NetworkConfig, ServerEntity, handle_commands, collect_task_results};
 
-pub struct EditorPlugin;
+pub(crate) struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<Command>()
-            .add_message::<Event>()
+        app.add_message::<EditorCommand>()
+            .add_message::<EditorEvent>()
             .insert_resource(PendingTasks::default())
             .insert_resource(NetworkConfig { url: std::env::var("BRP_URL").unwrap_or_else(|_| "http://127.0.0.1:15703".to_string()) })
             .insert_resource(UiState {
@@ -20,7 +20,11 @@ impl Plugin for EditorPlugin {
                 graphs: HashMap::new(),
             })
             .add_systems(Startup, setup_camera)
-            .add_systems(Update, (handle_commands, collect_task_results, poll_network));
+            .add_systems(Update, (
+                handle_commands, 
+                collect_task_results, 
+                poll_network
+            ).chain());
 
         use bevy_egui::EguiPrimaryContextPass;
         app.add_systems(EguiPrimaryContextPass, ui_system);
@@ -42,39 +46,39 @@ fn setup_camera(mut commands: Commands) {
 
 fn poll_network(
     mut ui: ResMut<UiState>,
-    mut events: MessageReader<Event>,
-    mut cmd_writer: MessageWriter<Command>,
+    mut events: MessageReader<EditorEvent>,
+    mut cmd_writer: MessageWriter<EditorCommand>,
 ) {
     let mut processed = 0usize;
     const MAX_PER_FRAME: usize = 64;
     for evt in events.read() {
         if processed >= MAX_PER_FRAME { break; }
         match evt {
-            Event::RefreshResult(Ok(machines)) => {
+            EditorEvent::RefreshResult(Ok(machines)) => {
                 ui.machines = machines.clone();
                 ui.connecting = false;
                 ui.error = None;
                 for (id, _) in ui.machines.iter() {
-                    cmd_writer.write(Command::FetchGraph { id: *id });
+                    cmd_writer.write(EditorCommand::FetchGraph { id: *id });
                 }
                 processed += 1;
             }
-            Event::RefreshResult(Err(e)) => {
+            EditorEvent::RefreshResult(Err(e)) => {
                 ui.connecting = false;
                 ui.error = Some(e.clone());
                 processed += 1;
             }
-            Event::GraphResult { id, result } => {
+            EditorEvent::GraphResult { id, result } => {
                 if let Ok(text) = result {
                     ui.graphs.insert(*id, text.clone());
                 }
                 processed += 1;
             }
-            Event::SelectResult(Err(e)) => {
+            EditorEvent::SelectResult(Err(e)) => {
                 ui.error = Some(format!("Select failed: {e}"));
                 processed += 1;
             }
-            Event::SaveResult(Err(e)) => {
+            EditorEvent::SaveResult(Err(e)) => {
                 ui.error = Some(format!("Save failed: {e}"));
                 processed += 1;
             }
@@ -86,7 +90,7 @@ fn poll_network(
 fn ui_system(
     mut egui_ctx: EguiContexts,
     mut ui: ResMut<UiState>,
-    mut cmd_writer: MessageWriter<Command>,
+    mut cmd_writer: MessageWriter<EditorCommand>,
     mut cfg: ResMut<NetworkConfig>,
 ) {
     if let Ok(ctx) = egui_ctx.ctx_mut() {
@@ -103,7 +107,7 @@ fn ui_system(
                         ui.connecting = true;
                         ui.error = None;
                         cfg.url = ui.url_edit.clone();
-                        cmd_writer.write(Command::Refresh);
+                        cmd_writer.write(EditorCommand::Refresh);
                     }
                     if let Some(err) = &ui.error {
                         row.colored_label(egui::Color32::from_rgb(176, 0, 0), err);
@@ -118,10 +122,10 @@ fn ui_system(
                         row.add_sized([260.0, 20.0], egui::Label::new(display));
                         row.label(format!("{}", id.0));
                         if row.button("Select").clicked() {
-                            cmd_writer.write(Command::Select { id: *id });
+                            cmd_writer.write(EditorCommand::Select { id: *id });
                         }
                         if row.button("Save").clicked() {
-                            cmd_writer.write(Command::Save { id: *id });
+                            cmd_writer.write(EditorCommand::Save { id: *id });
                         }
                     });
                     if let Some(text) = ui.graphs.get(id) {
