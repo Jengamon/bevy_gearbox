@@ -1,0 +1,25 @@
+[package]
+name = "bevy_gearbox_core"
+version = "0.1.0"
+edition = "2021"
+description = "State machine system for the bevy game engine"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/DEMIURGE-studio/bevy_gearbox"
+homepage = "https://github.com/DEMIURGE-studio/bevy_gearbox"
+readme = "README.md"
+keywords = ["bevy", "state-machine", "gamedev", "ecs"]
+categories = ["game-development", "game-engines"]
+
+[features]
+default = []
+# Enable the Bevy Remote server support (BRP) from the core crate.
+# This pulls in Bevy's remote feature and reflection which are required by the server plugin.
+remote_server = ["bevy/bevy_remote"]
+
+[dependencies]
+bevy = { version = "0.17", default-features = false, features = ["bevy_state"] }
+bevy_gearbox_macros = { path = "../bevy_gearbox_macros" }
+inventory = "0.3.21"
+
+[dev-dependencies]
+bevy = "0.17"

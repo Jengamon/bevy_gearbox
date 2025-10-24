@@ -10,10 +10,28 @@ readme = "README.md"
 keywords = ["bevy", "state-machine", "gamedev", "ecs"]
 categories = ["game-development", "game-engines"]
 
+[workspace]
+members = [
+  "crates/bevy_gearbox_core",
+  "crates/bevy_gearbox_editor",
+  "crates/bevy_gearbox_macros",
+]
+resolver = "2"
+
 [dependencies]
-bevy = { version = "0.17", default-features = false, features = ["bevy_state"] }
-bevy_gearbox_macros = { git = "https://github.com/DEMIURGE-studio/bevy_gearbox_macros" }
-inventory = "0.3.21"
+bevy_gearbox_core = { path = "crates/bevy_gearbox_core" }
 
 [dev-dependencies]
 bevy = "0.17"
+bevy-inspector-egui = "0.35.0"
+bevy_gearbox_editor = { path = "crates/bevy_gearbox_editor" }
+
+[[example]]
+name = "repeater"
+path = "examples/repeater.rs"
+required-features = ["remote_server"]
+
+[features]
+default = ["remote_server"]
+remote_server = ["bevy_gearbox_core/remote_server"]
+

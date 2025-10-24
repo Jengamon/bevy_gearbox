@@ -2,17 +2,18 @@ use bevy::prelude::*;
 use bevy_gearbox::prelude::*;
 use bevy_gearbox::transitions::Source;
 use bevy_gearbox::GearboxPlugin;
-//use bevy_inspector_egui::bevy_egui::EguiPlugin;
-//use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use std::time::Duration;
 use bevy_gearbox::StateChildOf;
+use bevy_inspector_egui::bevy_egui::EguiPlugin;
+use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(GearboxPlugin)
-        //.add_plugins(EguiPlugin::default())
-        //.add_plugins(WorldInspectorPlugin::new())
+        .add_plugins(EguiPlugin::default())
+        .add_plugins(WorldInspectorPlugin::new())
+        .add_plugins(bevy_gearbox::RemoteServerPlugin::new())
         .add_systems(Startup, setup)
         .add_systems(Update, (input_system, repeater_system))
         .add_observer(print_enter_state_messages)
