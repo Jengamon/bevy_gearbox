@@ -1,5 +1,9 @@
 ### Editor architecture and critiques (bin-only; pluginized UI)
 
+Progress:
+- Completed: UI pluginization, JSON-RPC client unification + basic error propagation, bounded per-frame event processing, and UI clone reductions.
+- Next up: move concurrency into Bevy tasks/events, centralize URL config, normalize IDs, wasm networking gating, constants for type names, structured errors + logging, tests.
+
 - **Make UI a Plugin (bin-only)**
   - Create a `plugin` module exposing `EditorPlugin` that registers resources, events, and systems (setup, networking, UI). Keep `main.rs` minimal: build `App` and `.add_plugins(EditorPlugin)`.
   - Group systems into named `SystemSet`s and define ordering/run conditions (e.g., Connecting/Connected/Errored states).
@@ -48,12 +52,12 @@
   - Unit-test entity ID parsing and edge label selection. Add an integration test for graph text generation against captured fixtures.
 
 - **Immediate steps (checklist)**
-  - [ ] Add `plugin` module with `EditorPlugin`; move UI systems/resources there. Keep `main.rs` minimal.
-  - [ ] Unify JSON-RPC client and `extract_components_map`; add JSON-RPC error handling.
+  - [x] Add `plugin` module with `EditorPlugin`; move UI systems/resources there. Keep `main.rs` minimal.
+  - [x] Unify JSON-RPC client and `extract_components_map`; add JSON-RPC error handling.
   - [ ] Replace manual thread with Bevy tasks + `Events` (or upgrade channels and drop unnecessary locks).
   - [ ] Centralize URL in a config `Resource`; stop passing it in commands.
   - [ ] Normalize IDs to `u64` across UI state, commands, and RPCs.
-  - [ ] Bound per-frame event processing and reduce UI clones/lock scope.
+  - [x] Bound per-frame event processing and reduce UI clones/lock scope.
   - [ ] Gate wasm networking or provide a wasm client; align Egui scheduling.
   - [ ] De-stringify component type names into shared constants.
   - [ ] Add structured errors and logging.

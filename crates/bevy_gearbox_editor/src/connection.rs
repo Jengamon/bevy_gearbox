@@ -1,27 +1,10 @@
-use bevy::prelude::Resource;
+use bevy::prelude::*;
+use bevy::tasks::{futures_lite::future, IoTaskPool, Task};
 use crate::rpcs::fetch_machine_graph_text;
-use serde_json::{json, Value};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::thread;
-
-#[derive(Resource)]
-pub struct Connection {
-    pub tx: Arc<Mutex<Sender<Command>>>,
-    pub rx: Arc<Mutex<Receiver<Event>>>,
-}
-
-pub type NetCtx = Connection;
-
-pub fn spawn() -> Connection {
-    let (tx_cmd, rx_cmd) = mpsc::channel();
-    let (tx_evt, rx_evt) = mpsc::channel();
-    start_worker(rx_cmd, tx_evt);
-    Connection { tx: Arc::new(Mutex::new(tx_cmd)), rx: Arc::new(Mutex::new(rx_evt)) }
-}
-
 use crate::client::{jsonrpc_call, jsonrpc_ping, jsonrpc_save_machine, jsonrpc_select};
+use serde_json::{json, Value};
 
+#[derive(Message, Clone)]
 pub enum Command {
     Refresh(String),
     Select { url: String, id: u32 },
@@ -29,6 +12,7 @@ pub enum Command {
     FetchGraph { url: String, id: u32 },
 }
 
+#[derive(Message)]
 pub enum Event {
     RefreshResult(Result<Vec<(u32, Option<String>)>, String>),
     SelectResult(Result<(), String>),
@@ -66,35 +50,44 @@ fn extract_components_map(v: Value) -> Result<serde_json::Map<String, Value>, St
     }
 }
 
-fn start_worker(rx: Receiver<Command>, tx: Sender<Event>) {
-    thread::spawn(move || {
-        while let Ok(cmd) = rx.recv() {
+#[derive(Resource, Default)]
+pub struct PendingTasks {
+    pub tasks: Vec<Task<Event>>,
+}
+
+pub fn handle_commands(
+    mut commands_reader: MessageReader<Command>,
+    mut pending: ResMut<PendingTasks>,
+) {
+    let pool = IoTaskPool::get();
+    for cmd in commands_reader.read().cloned() {
+        let task = pool.spawn(async move {
             match cmd {
                 Command::Refresh(url) => {
-                    let r = || -> Result<Vec<(u32, Option<String>)>, String> {
+                    let r = (|| -> Result<Vec<(u32, Option<String>)>, String> {
                         jsonrpc_ping(&url)?;
                         let list = jsonrpc_call(
-                                &url,
-                                "world.query",
-                                Some(json!({
-                                    "data": {},
-                                    "filter": {"with": ["bevy_gearbox_core::StateMachine"]},
-                                    "strict": false
-                                })),
-                            )?;
+                            &url,
+                            "world.query",
+                            Some(json!({
+                                "data": {},
+                                "filter": {"with": ["bevy_gearbox_core::StateMachine"]},
+                                "strict": false
+                            })),
+                        )?;
                         let mut machines = vec![];
                         for row in extract_result_array(list)? {
                             if let Some(id) = row.get("entity").and_then(|e| e.as_u64()) {
                                 let comps = jsonrpc_call(
-                                        &url,
-                                        "world.get_components",
-                                        Some(json!({
-                                            "entity": id,
-                                            "components": ["bevy_ecs::name::Name"]
-                                        })),
-                                    )
-                                    .ok()
-                                    .and_then(|v| extract_components_map(v).ok());
+                                    &url,
+                                    "world.get_components",
+                                    Some(json!({
+                                        "entity": id,
+                                        "components": ["bevy_ecs::name::Name"]
+                                    })),
+                                )
+                                .ok()
+                                .and_then(|v| extract_components_map(v).ok());
                                 let name = comps
                                     .and_then(|m| m.get("bevy_ecs::name::Name").cloned())
                                     .and_then(|v| v.as_str().map(|s| s.to_string()));
@@ -102,24 +95,46 @@ fn start_worker(rx: Receiver<Command>, tx: Sender<Event>) {
                             }
                         }
                         Ok(machines)
-                    }();
-                    let _ = tx.send(Event::RefreshResult(r));
+                    })();
+                    Event::RefreshResult(r)
                 }
                 Command::Select { url, id } => {
-                    let r = || -> Result<(), String> { jsonrpc_select(&url, Some(id)) }();
-                    let _ = tx.send(Event::SelectResult(r));
+                    let r = (|| -> Result<(), String> { jsonrpc_select(&url, Some(id)) })();
+                    Event::SelectResult(r)
                 }
                 Command::Save { url, id } => {
-                    let r = || -> Result<(), String> { jsonrpc_save_machine(&url, id) }();
-                    let _ = tx.send(Event::SaveResult(r));
+                    let r = (|| -> Result<(), String> { jsonrpc_save_machine(&url, id) })();
+                    Event::SaveResult(r)
                 }
                 Command::FetchGraph { url, id } => {
                     let result = fetch_machine_graph_text(&url, id as u64);
-                    let _ = tx.send(Event::GraphResult { id, result });
+                    Event::GraphResult { id, result }
                 }
             }
+        });
+        pending.tasks.push(task);
+    }
+}
+
+pub fn collect_task_results(
+    mut pending: ResMut<PendingTasks>,
+    mut events_writer: MessageWriter<Event>,
+) {
+    let mut i = 0;
+    while i < pending.tasks.len() {
+        let is_ready = if let Some(evt) = future::block_on(bevy::tasks::futures_lite::future::poll_once(&mut pending.tasks[i])) {
+            events_writer.write(evt);
+            true
+        } else {
+            false
+        };
+        if is_ready {
+            let task = pending.tasks.swap_remove(i);
+            task.detach();
+        } else {
+            i += 1;
         }
-    });
+    }
 }
 
 
