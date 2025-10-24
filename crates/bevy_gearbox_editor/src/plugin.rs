@@ -3,7 +3,7 @@ use bevy_egui::{egui, EguiContexts};
 use std::collections::HashMap;
 
 use crate::net::{NetPlugin, NetCommand, NetEvent, NetworkConfig};
-use crate::types::{ServerEntity, MachineSummary, GraphText, NetError};
+use crate::types::{ServerEntity, GraphText};
 
 pub(crate) struct EditorPlugin;
 
@@ -59,7 +59,7 @@ fn poll_network(
             }
             NetEvent::RefreshResult(Err(e)) => {
                 ui.connecting = false;
-                ui.error = Some(e.clone());
+                ui.error = Some(e.to_string());
                 processed += 1;
             }
             NetEvent::GraphResult { id, result } => {
@@ -69,11 +69,11 @@ fn poll_network(
                 processed += 1;
             }
             NetEvent::SelectResult(Err(e)) => {
-                ui.error = Some(format!("Select failed: {e}"));
+                ui.error = Some(format!("Select failed: {}", e));
                 processed += 1;
             }
             NetEvent::SaveResult(Err(e)) => {
-                ui.error = Some(format!("Save failed: {e}"));
+                ui.error = Some(format!("Save failed: {}", e));
                 processed += 1;
             }
             _ => {}

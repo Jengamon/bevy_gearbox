@@ -23,9 +23,6 @@ impl Plugin for NetPlugin {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-// moved to types.rs
-
 #[derive(Resource, Clone)]
 pub(crate) struct NetworkConfig {
     pub(crate) url: String,
