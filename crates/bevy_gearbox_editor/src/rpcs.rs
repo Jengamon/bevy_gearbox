@@ -21,12 +21,12 @@ pub(crate) fn extract_components_map(v: Value) -> Result<serde_json::Map<String,
     }
 }
 
-pub(crate) fn get_components(url: &str, entity: u64, components: Option<&[&str]>) -> Result<HashMap<String, Value>, String> {
+pub(crate) async fn get_components(url: &str, entity: u64, components: Option<&[&str]>) -> Result<HashMap<String, Value>, String> {
     let params = match components {
         Some(list) => json!({"entity": entity, "components": list}),
         None => json!({"entity": entity}),
     };
-    let v = jsonrpc_call(url, "world.get_components", Some(params))?;
+    let v = jsonrpc_call(url, "world.get_components", Some(params)).await?;
     let map = extract_components_map(v)?;
     Ok(map.into_iter().collect())
 }
@@ -79,9 +79,9 @@ fn parse_single_entity(value: &Value) -> Option<u64> {
     }
 }
 
-fn get_name(url: &str, cache: &mut HashMap<u64, String>, entity: u64) -> Result<String, String> {
+async fn get_name(url: &str, cache: &mut HashMap<u64, String>, entity: u64) -> Result<String, String> {
     if let Some(n) = cache.get(&entity) { return Ok(n.clone()); }
-    let comps = get_components(url, entity, Some(&[c::NAME]))?;
+    let comps = get_components(url, entity, Some(&[c::NAME])).await?;
     let name = comps
         .get(c::NAME)
         .and_then(|v| v.as_str())
@@ -136,13 +136,13 @@ fn choose_edge_label(components: &HashMap<String, Value>) -> String {
     "Edge".to_string()
 }
 
-pub(crate) fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<String, String> {
+pub(crate) async fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<String, String> {
     let mut names: HashMap<u64, String> = HashMap::new();
     let mut states: Vec<u64> = Vec::new();
     let mut stack: Vec<u64> = Vec::new();
     let mut visited: HashSet<u64> = HashSet::new();
 
-    let root_comps = get_components(url, machine, Some(&[c::STATE_CHILDREN, c::NAME]))?;
+    let root_comps = get_components(url, machine, Some(&[c::STATE_CHILDREN, c::NAME])).await?;
     if let Some(value) = root_comps.get(c::STATE_CHILDREN) {
         for child in parse_entity_list(value) { stack.push(child); }
     }
@@ -153,7 +153,7 @@ pub(crate) fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<String
     while let Some(entity) = stack.pop() {
         if !visited.insert(entity) { continue; }
         states.push(entity);
-        let comps = get_components(url, entity, Some(&[c::STATE_CHILDREN, c::NAME]))?;
+        let comps = get_components(url, entity, Some(&[c::STATE_CHILDREN, c::NAME])).await?;
         if let Some(n) = comps.get(c::NAME).and_then(|v| v.as_str()) {
             names.insert(entity, n.to_string());
         }
@@ -164,7 +164,7 @@ pub(crate) fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<String
 
     let mut edges_formatted: Vec<String> = Vec::new();
     for state in &states {
-        let comps = get_components(url, *state, Some(&[c::TRANSITIONS]))?;
+        let comps = get_components(url, *state, Some(&[c::TRANSITIONS])).await?;
         let Some(transitions_val) = comps.get(c::TRANSITIONS) else { continue; };
         let edge_entities = parse_entity_list(transitions_val);
         for edge in edge_entities {
@@ -177,13 +177,13 @@ pub(crate) fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<String
                     c::AFTER,
                     c::NAME,
                 ]),
-            )?;
+            ).await?;
             let target_id = all
                 .get(c::TARGET)
                 .and_then(parse_single_entity)
                 .unwrap_or(0);
-            let source_name = get_name(url, &mut names, *state)?;
-            let mut target_name = if target_id != 0 { get_name(url, &mut names, target_id)? } else { String::new() };
+            let source_name = get_name(url, &mut names, *state).await?;
+            let mut target_name = if target_id != 0 { get_name(url, &mut names, target_id).await? } else { String::new() };
             if target_name.is_empty() {
                 if let Some(Value::String(edge_name)) = all.get(c::NAME) {
                     if let Some(arrow) = edge_name.find("->") {

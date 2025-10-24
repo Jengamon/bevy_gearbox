@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use std::collections::HashMap;
 
-use crate::connection::{EditorCommand, EditorEvent, PendingTasks, NetworkConfig, ServerEntity, handle_commands, collect_task_results};
+use crate::connection::{EditorCommand, EditorEvent, PendingTasks, NetworkConfig, TokioRuntime, ServerEntity, handle_commands, collect_task_results};
 
 pub(crate) struct EditorPlugin;
 
@@ -11,6 +11,7 @@ impl Plugin for EditorPlugin {
         app.add_message::<EditorCommand>()
             .add_message::<EditorEvent>()
             .insert_resource(PendingTasks::default())
+            .insert_resource(TokioRuntime(std::sync::Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime"))))
             .insert_resource(NetworkConfig { url: std::env::var("BRP_URL").unwrap_or_else(|_| "http://127.0.0.1:15703".to_string()) })
             .insert_resource(UiState {
                 url_edit: String::new(),

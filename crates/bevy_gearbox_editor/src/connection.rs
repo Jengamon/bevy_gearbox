@@ -4,6 +4,7 @@ use crate::rpcs::{extract_components_map, fetch_machine_graph_text};
 use crate::client::{jsonrpc_call, jsonrpc_ping, jsonrpc_save_machine, jsonrpc_select};
 use serde_json::{json, Value};
 use crate::component as c;
+use std::sync::Arc;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct ServerEntity(pub u64);
@@ -12,6 +13,9 @@ pub(crate) struct ServerEntity(pub u64);
 pub(crate) struct NetworkConfig {
     pub(crate) url: String,
 }
+
+#[derive(Resource, Clone)]
+pub(crate) struct TokioRuntime(pub Arc<tokio::runtime::Runtime>);
 
 #[derive(Message, Clone)]
 pub(crate) enum EditorCommand {
@@ -50,15 +54,18 @@ pub(crate) fn handle_commands(
     mut commands_reader: MessageReader<EditorCommand>,
     mut pending: ResMut<PendingTasks>,
     cfg: Res<NetworkConfig>,
+    rt: Res<TokioRuntime>,
 ) {
     let pool = IoTaskPool::get();
     for cmd in commands_reader.read().cloned() {
         let url = cfg.url.clone();
+        let rt_handle = rt.0.clone();
         let task = pool.spawn(async move {
-            match cmd {
+            rt_handle.block_on(async move {
+                match cmd {
                 EditorCommand::Refresh => {
-                    let r = (|| -> Result<Vec<(ServerEntity, Option<String>)>, String> {
-                        jsonrpc_ping(&url)?;
+                    let r: Result<Vec<(ServerEntity, Option<String>)>, String> = (async move {
+                        jsonrpc_ping(&url).await?;
                         let list = jsonrpc_call(
                             &url,
                             "world.query",
@@ -67,7 +74,7 @@ pub(crate) fn handle_commands(
                                 "filter": {"with": [c::STATE_MACHINE]},
                                 "strict": false
                             })),
-                        )?;
+                        ).await?;
                         let mut machines = vec![];
                         for row in extract_result_array(list)? {
                             if let Some(id) = row.get("entity").and_then(|e| e.as_u64()) {
@@ -78,7 +85,7 @@ pub(crate) fn handle_commands(
                                         "entity": id,
                                         "components": [c::NAME]
                                     })),
-                                )
+                                ).await
                                 .ok()
                                 .and_then(|v| extract_components_map(v).ok());
                                 let name = comps
@@ -88,22 +95,23 @@ pub(crate) fn handle_commands(
                             }
                         }
                         Ok(machines)
-                    })();
+                    }).await;
                     EditorEvent::RefreshResult(r)
                 }
                 EditorCommand::Select { id } => {
-                    let r = (|| -> Result<(), String> { jsonrpc_select(&url, Some(id.0 as u32)) })();
+                    let r = jsonrpc_select(&url, Some(id.0 as u32)).await;
                     EditorEvent::SelectResult(r)
                 }
                 EditorCommand::Save { id } => {
-                    let r = (|| -> Result<(), String> { jsonrpc_save_machine(&url, id.0 as u32) })();
+                    let r = jsonrpc_save_machine(&url, id.0 as u32).await;
                     EditorEvent::SaveResult(r)
                 }
                 EditorCommand::FetchGraph { id } => {
-                    let result = fetch_machine_graph_text(&url, id.0);
+                    let result = fetch_machine_graph_text(&url, id.0).await;
                     EditorEvent::GraphResult { id, result }
                 }
-            }
+                }
+            })
         });
         pending.tasks.push(task);
     }
