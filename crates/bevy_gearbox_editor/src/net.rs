@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy::tasks::{futures_lite::future, IoTaskPool, Task};
 use crate::rpcs::{list_state_machines, fetch_machine_graph_text};
 use crate::client::{jsonrpc_save_machine, jsonrpc_select};
+use crate::types::{ServerEntity, MachineSummary, GraphText, NetError};
 use std::sync::Arc;
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
@@ -23,7 +24,7 @@ impl Plugin for NetPlugin {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub(crate) struct ServerEntity(pub u64);
+// moved to types.rs
 
 #[derive(Resource, Clone)]
 pub(crate) struct NetworkConfig {
@@ -44,13 +45,11 @@ pub(crate) enum NetCommand {
 
 #[derive(Message)]
 pub(crate) enum NetEvent {
-    RefreshResult(Result<Vec<(ServerEntity, Option<String>)>, String>),
-    SelectResult(Result<(), String>),
-    SaveResult(Result<(), String>),
-    GraphResult { id: ServerEntity, result: Result<String, String> },
+    RefreshResult(Result<Vec<MachineSummary>, NetError>),
+    SelectResult(Result<(), NetError>),
+    SaveResult(Result<(), NetError>),
+    GraphResult { id: ServerEntity, result: Result<GraphText, NetError> },
 }
-
-// no JSON helpers in net layer
 
 #[derive(Resource, Default)]
 pub(crate) struct PendingTasks {
@@ -76,23 +75,23 @@ pub(crate) fn handle_commands(
                     rt_handle.block_on(async move {
                         match other {
                             NetCommand::Refresh => {
-                                let r: Result<Vec<(ServerEntity, Option<String>)>, String> = (async move {
-                                    let list = list_state_machines(&url).await?;
-                                    let machines = list.into_iter().map(|(id, name)| (ServerEntity(id), name)).collect();
+                                let r: Result<Vec<MachineSummary>, NetError> = (async move {
+                                    let list = list_state_machines(&url).await.map_err(NetError::from)?;
+                                    let machines = list.into_iter().map(|(id, name)| MachineSummary { id: ServerEntity(id), name }).collect();
                                     Ok(machines)
                                 }).await;
                                 NetEvent::RefreshResult(r)
                             }
                             NetCommand::Select { id } => {
-                                let r = jsonrpc_select(&url, Some(id.0 as u32)).await;
+                                let r = jsonrpc_select(&url, Some(id.0 as u32)).await.map_err(NetError::from);
                                 NetEvent::SelectResult(r)
                             }
                             NetCommand::Save { id } => {
-                                let r = jsonrpc_save_machine(&url, id.0 as u32).await;
+                                let r = jsonrpc_save_machine(&url, id.0 as u32).await.map_err(NetError::from);
                                 NetEvent::SaveResult(r)
                             }
                             NetCommand::FetchGraph { id } => {
-                                let result = fetch_machine_graph_text(&url, id.0).await;
+                                let result = fetch_machine_graph_text(&url, id.0).await.map(|text| GraphText { id, text }).map_err(NetError::from);
                                 NetEvent::GraphResult { id, result }
                             }
                             NetCommand::SetUrl { .. } => unreachable!(),

@@ -7,6 +7,7 @@ mod rpcs;
 mod client;
 mod plugin;
 mod component;
+mod types;
 
 fn main() {
     App::new()

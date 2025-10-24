@@ -2,7 +2,8 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use std::collections::HashMap;
 
-use crate::net::{NetPlugin, NetCommand, NetEvent, NetworkConfig, ServerEntity};
+use crate::net::{NetPlugin, NetCommand, NetEvent, NetworkConfig};
+use crate::types::{ServerEntity, MachineSummary, GraphText, NetError};
 
 pub(crate) struct EditorPlugin;
 
@@ -48,7 +49,7 @@ fn poll_network(
         if processed >= MAX_PER_FRAME { break; }
         match evt {
             NetEvent::RefreshResult(Ok(machines)) => {
-                ui.machines = machines.clone();
+                ui.machines = machines.iter().map(|m| (m.id, m.name.clone())).collect();
                 ui.connecting = false;
                 ui.error = None;
                 for (id, _) in ui.machines.iter() {
@@ -62,7 +63,7 @@ fn poll_network(
                 processed += 1;
             }
             NetEvent::GraphResult { id, result } => {
-                if let Ok(text) = result {
+                if let Ok(GraphText { text, .. }) = result {
                     ui.graphs.insert(*id, text.clone());
                 }
                 processed += 1;
