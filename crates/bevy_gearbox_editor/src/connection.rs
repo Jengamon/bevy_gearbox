@@ -4,6 +4,9 @@ use crate::rpcs::fetch_machine_graph_text;
 use crate::client::{jsonrpc_call, jsonrpc_ping, jsonrpc_save_machine, jsonrpc_select};
 use serde_json::{json, Value};
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ServerEntity(pub u64);
+
 #[derive(Resource, Clone)]
 pub struct NetworkConfig {
     pub url: String,
@@ -12,17 +15,17 @@ pub struct NetworkConfig {
 #[derive(Message, Clone)]
 pub enum Command {
     Refresh,
-    Select { id: u32 },
-    Save { id: u32 },
-    FetchGraph { id: u32 },
+    Select { id: ServerEntity },
+    Save { id: ServerEntity },
+    FetchGraph { id: ServerEntity },
 }
 
 #[derive(Message)]
 pub enum Event {
-    RefreshResult(Result<Vec<(u32, Option<String>)>, String>),
+    RefreshResult(Result<Vec<(ServerEntity, Option<String>)>, String>),
     SelectResult(Result<(), String>),
     SaveResult(Result<(), String>),
-    GraphResult { id: u32, result: Result<String, String> },
+    GraphResult { id: ServerEntity, result: Result<String, String> },
 }
 
 fn extract_result_array(v: Value) -> Result<Vec<Value>, String> {
@@ -71,7 +74,7 @@ pub fn handle_commands(
         let task = pool.spawn(async move {
             match cmd {
                 Command::Refresh => {
-                    let r = (|| -> Result<Vec<(u32, Option<String>)>, String> {
+                    let r = (|| -> Result<Vec<(ServerEntity, Option<String>)>, String> {
                         jsonrpc_ping(&url)?;
                         let list = jsonrpc_call(
                             &url,
@@ -98,7 +101,7 @@ pub fn handle_commands(
                                 let name = comps
                                     .and_then(|m| m.get("bevy_ecs::name::Name").cloned())
                                     .and_then(|v| v.as_str().map(|s| s.to_string()));
-                                machines.push((id as u32, name));
+                                machines.push((ServerEntity(id as u64), name));
                             }
                         }
                         Ok(machines)
@@ -106,15 +109,15 @@ pub fn handle_commands(
                     Event::RefreshResult(r)
                 }
                 Command::Select { id } => {
-                    let r = (|| -> Result<(), String> { jsonrpc_select(&url, Some(id)) })();
+                    let r = (|| -> Result<(), String> { jsonrpc_select(&url, Some(id.0 as u32)) })();
                     Event::SelectResult(r)
                 }
                 Command::Save { id } => {
-                    let r = (|| -> Result<(), String> { jsonrpc_save_machine(&url, id) })();
+                    let r = (|| -> Result<(), String> { jsonrpc_save_machine(&url, id.0 as u32) })();
                     Event::SaveResult(r)
                 }
                 Command::FetchGraph { id } => {
-                    let result = fetch_machine_graph_text(&url, id as u64);
+                    let result = fetch_machine_graph_text(&url, id.0);
                     Event::GraphResult { id, result }
                 }
             }

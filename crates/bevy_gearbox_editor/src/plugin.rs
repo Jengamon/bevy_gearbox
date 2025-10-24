@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use std::collections::HashMap;
 
-use crate::connection::{Command, Event, PendingTasks, NetworkConfig, handle_commands, collect_task_results};
+use crate::connection::{Command, Event, PendingTasks, NetworkConfig, ServerEntity, handle_commands, collect_task_results};
 
 pub struct EditorPlugin;
 
@@ -41,8 +41,8 @@ struct UiState {
     url_edit: String,
     connecting: bool,
     error: Option<String>,
-    machines: Vec<(u32, Option<String>)>,
-    graphs: HashMap<u32, String>,
+    machines: Vec<(ServerEntity, Option<String>)>,
+    graphs: HashMap<ServerEntity, String>,
 }
 
 fn setup_camera(mut commands: Commands) {
@@ -125,7 +125,7 @@ fn ui_system(
                     col.horizontal(|row| {
                         let display = name.clone().unwrap_or_else(|| "<unnamed>".to_string());
                         row.add_sized([260.0, 20.0], egui::Label::new(display));
-                        row.label(format!("{}", id));
+                        row.label(format!("{}", id.0));
                         if row.button("Select").clicked() {
                             cmd_writer.write(Command::Select { id: *id });
                         }

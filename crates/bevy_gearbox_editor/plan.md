@@ -56,7 +56,7 @@ Progress:
   - [x] Unify JSON-RPC client and `extract_components_map`; add JSON-RPC error handling.
   - [x] Replace manual thread with Bevy tasks + `Messages` (or upgrade channels and drop unnecessary locks).
   - [ ] Centralize URL in a config `Resource`; stop passing it in commands.
-  - [ ] Normalize IDs to `u64` across UI state, commands, and RPCs.
+  - [x] Normalize IDs to `u64` across UI state, commands, and RPCs (via `ServerEntity`).
   - [x] Bound per-frame event processing and reduce UI clones/lock scope.
   - [ ] Gate wasm networking or provide a wasm client; align Egui scheduling.
   - [ ] De-stringify component type names into shared constants.
