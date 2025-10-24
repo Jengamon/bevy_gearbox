@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use crate::client::jsonrpc_call;
+use crate::client::{jsonrpc_call, jsonrpc_ping};
 use crate::component as c;
 
 pub(crate) fn extract_components_map(v: Value) -> Result<serde_json::Map<String, Value>, String> {
@@ -19,6 +19,51 @@ pub(crate) fn extract_components_map(v: Value) -> Result<serde_json::Map<String,
             Err(format!("expected object or result object, got {}", other))
         }
     }
+}
+
+pub(crate) fn extract_result_array(v: Value) -> Result<Vec<Value>, String> {
+    match v {
+        Value::Array(a) => Ok(a),
+        Value::Object(o) => match o.get("result") {
+            Some(Value::Array(a)) => Ok(a.clone()),
+            Some(other) => Err(format!("expected result array, got {}", other)),
+            None => Err("missing result in object".to_string()),
+        },
+        other => Err(format!("expected array or result object, got {}", other)),
+    }
+}
+
+pub(crate) async fn list_state_machines(url: &str) -> Result<Vec<(u64, Option<String>)>, String> {
+    jsonrpc_ping(url).await?;
+    let list = jsonrpc_call(
+        url,
+        "world.query",
+        Some(json!({
+            "data": {},
+            "filter": {"with": [c::STATE_MACHINE]},
+            "strict": false
+        })),
+    ).await?;
+    let mut machines = vec![];
+    for row in extract_result_array(list)? {
+        if let Some(id) = row.get("entity").and_then(|e| e.as_u64()) {
+            let comps = jsonrpc_call(
+                url,
+                "world.get_components",
+                Some(json!({
+                    "entity": id,
+                    "components": [c::NAME]
+                })),
+            ).await
+            .ok()
+            .and_then(|v| extract_components_map(v).ok());
+            let name = comps
+                .and_then(|m| m.get(c::NAME).cloned())
+                .and_then(|v| v.as_str().map(|s| s.to_string()));
+            machines.push((id as u64, name));
+        }
+    }
+    Ok(machines)
 }
 
 pub(crate) async fn get_components(url: &str, entity: u64, components: Option<&[&str]>) -> Result<HashMap<String, Value>, String> {

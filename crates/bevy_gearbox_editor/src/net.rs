@@ -1,10 +1,11 @@
 use bevy::prelude::*;
 use bevy::tasks::{futures_lite::future, IoTaskPool, Task};
-use crate::rpcs::{extract_components_map, fetch_machine_graph_text};
-use crate::client::{jsonrpc_call, jsonrpc_ping, jsonrpc_save_machine, jsonrpc_select};
-use serde_json::{json, Value};
-use crate::component as c;
+use crate::rpcs::{list_state_machines, fetch_machine_graph_text};
+use crate::client::{jsonrpc_save_machine, jsonrpc_select};
 use std::sync::Arc;
+
+#[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
+pub(crate) enum NetSet { Send, Drain }
 
 pub(crate) struct NetPlugin;
 
@@ -15,7 +16,9 @@ impl Plugin for NetPlugin {
             .insert_resource(PendingTasks::default())
             .insert_resource(TokioRuntime(Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime"))))
             .insert_resource(NetworkConfig { url: std::env::var("BRP_URL").unwrap_or_else(|_| "http://127.0.0.1:15703".to_string()) })
-            .add_systems(Update, (handle_commands, collect_task_results));
+            .configure_sets(Update, (NetSet::Send, NetSet::Drain).chain())
+            .add_systems(Update, handle_commands.in_set(NetSet::Send))
+            .add_systems(Update, collect_task_results.in_set(NetSet::Drain));
     }
 }
 
@@ -47,17 +50,7 @@ pub(crate) enum NetEvent {
     GraphResult { id: ServerEntity, result: Result<String, String> },
 }
 
-fn extract_result_array(v: Value) -> Result<Vec<Value>, String> {
-    match v {
-        Value::Array(a) => Ok(a),
-        Value::Object(o) => match o.get("result") {
-            Some(Value::Array(a)) => Ok(a.clone()),
-            Some(other) => Err(format!("expected result array, got {}", other)),
-            None => Err("missing result in object".to_string()),
-        },
-        other => Err(format!("expected array or result object, got {}", other)),
-    }
-}
+// no JSON helpers in net layer
 
 #[derive(Resource, Default)]
 pub(crate) struct PendingTasks {
@@ -84,35 +77,8 @@ pub(crate) fn handle_commands(
                         match other {
                             NetCommand::Refresh => {
                                 let r: Result<Vec<(ServerEntity, Option<String>)>, String> = (async move {
-                                    jsonrpc_ping(&url).await?;
-                                    let list = jsonrpc_call(
-                                        &url,
-                                        "world.query",
-                                        Some(json!({
-                                            "data": {},
-                                            "filter": {"with": [c::STATE_MACHINE]},
-                                            "strict": false
-                                        })),
-                                    ).await?;
-                                    let mut machines = vec![];
-                                    for row in extract_result_array(list)? {
-                                        if let Some(id) = row.get("entity").and_then(|e| e.as_u64()) {
-                                            let comps = jsonrpc_call(
-                                                &url,
-                                                "world.get_components",
-                                                Some(json!({
-                                                    "entity": id,
-                                                    "components": [c::NAME]
-                                                })),
-                                            ).await
-                                            .ok()
-                                            .and_then(|v| extract_components_map(v).ok());
-                                            let name = comps
-                                                .and_then(|m| m.get(c::NAME).cloned())
-                                                .and_then(|v| v.as_str().map(|s| s.to_string()));
-                                            machines.push((ServerEntity(id as u64), name));
-                                        }
-                                    }
+                                    let list = list_state_machines(&url).await?;
+                                    let machines = list.into_iter().map(|(id, name)| (ServerEntity(id), name)).collect();
                                     Ok(machines)
                                 }).await;
                                 NetEvent::RefreshResult(r)
