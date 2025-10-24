@@ -3,6 +3,7 @@ use bevy::tasks::{futures_lite::future, IoTaskPool, Task};
 use crate::rpcs::fetch_machine_graph_text;
 use crate::client::{jsonrpc_call, jsonrpc_ping, jsonrpc_save_machine, jsonrpc_select};
 use serde_json::{json, Value};
+use crate::component as c;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ServerEntity(pub u64);
@@ -81,7 +82,7 @@ pub fn handle_commands(
                             "world.query",
                             Some(json!({
                                 "data": {},
-                                "filter": {"with": ["bevy_gearbox_core::StateMachine"]},
+                                "filter": {"with": [c::STATE_MACHINE]},
                                 "strict": false
                             })),
                         )?;
@@ -93,13 +94,13 @@ pub fn handle_commands(
                                     "world.get_components",
                                     Some(json!({
                                         "entity": id,
-                                        "components": ["bevy_ecs::name::Name"]
+                                        "components": [c::NAME]
                                     })),
                                 )
                                 .ok()
                                 .and_then(|v| extract_components_map(v).ok());
                                 let name = comps
-                                    .and_then(|m| m.get("bevy_ecs::name::Name").cloned())
+                                    .and_then(|m| m.get(c::NAME).cloned())
                                     .and_then(|v| v.as_str().map(|s| s.to_string()));
                                 machines.push((ServerEntity(id as u64), name));
                             }

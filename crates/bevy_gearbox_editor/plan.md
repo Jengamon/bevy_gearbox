@@ -59,7 +59,7 @@ Progress:
   - [x] Normalize IDs to `u64` across UI state, commands, and RPCs (via `ServerEntity`).
   - [x] Bound per-frame event processing and reduce UI clones/lock scope.
   - [ ] Gate wasm networking or provide a wasm client; align Egui scheduling.
-  - [ ] De-stringify component type names into shared constants.
+  - [x] De-stringify component type names into shared constants.
   - [ ] Add structured errors and logging.
   - [ ] Add tests for ID/label parsing and graph output.
 

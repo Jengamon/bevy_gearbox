@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use crate::client::jsonrpc_call;
+use crate::component as c;
 
 pub(crate) fn extract_components_map(v: Value) -> Result<serde_json::Map<String, Value>, String> {
     match v {
@@ -80,9 +81,9 @@ fn parse_single_entity(value: &Value) -> Option<u64> {
 
 fn get_name(url: &str, cache: &mut HashMap<u64, String>, entity: u64) -> Result<String, String> {
     if let Some(n) = cache.get(&entity) { return Ok(n.clone()); }
-    let comps = get_components(url, entity, Some(&["bevy_ecs::name::Name"]))?;
+    let comps = get_components(url, entity, Some(&[c::NAME]))?;
     let name = comps
-        .get("bevy_ecs::name::Name")
+        .get(c::NAME)
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
@@ -92,11 +93,11 @@ fn get_name(url: &str, cache: &mut HashMap<u64, String>, entity: u64) -> Result<
 
 fn choose_edge_label(components: &HashMap<String, Value>) -> String {
     let keys: HashSet<String> = components.keys().cloned().collect();
-    if keys.contains("bevy_gearbox_core::transitions::AlwaysEdge") { return "Always".to_string(); }
-    if keys.contains("bevy_gearbox_core::transitions::After") { return "After".to_string(); }
+    if keys.contains(c::ALWAYS_EDGE) { return "Always".to_string(); }
+    if keys.contains(c::AFTER) { return "After".to_string(); }
 
     // Prefer generic EventEdge types
-    let mut event_edge_types: Vec<&String> = keys.iter().filter(|s| s.contains("EventEdge")) .collect();
+    let mut event_edge_types: Vec<&String> = keys.iter().filter(|s| s.contains(c::EVENT_EDGE_SUBSTR)) .collect();
     event_edge_types.sort();
     if let Some(ty) = event_edge_types.first() {
         let s = ty.as_str();
@@ -114,7 +115,7 @@ fn choose_edge_label(components: &HashMap<String, Value>) -> String {
     }
 
     // Fallback: try to extract a label from the edge's Name like "... (OnComplete)"
-    if let Some(name_val) = components.get("bevy_ecs::name::Name") {
+    if let Some(name_val) = components.get(c::NAME) {
         let maybe_name = name_val.as_str().map(|s| s.to_string()).or_else(|| {
             if let Value::Object(obj) = name_val {
                 for v in obj.values() {
@@ -141,50 +142,50 @@ pub fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<String, Strin
     let mut stack: Vec<u64> = Vec::new();
     let mut visited: HashSet<u64> = HashSet::new();
 
-    let root_comps = get_components(url, machine, Some(&["bevy_gearbox_core::StateChildren", "bevy_ecs::name::Name"]))?;
-    if let Some(value) = root_comps.get("bevy_gearbox_core::StateChildren") {
+    let root_comps = get_components(url, machine, Some(&[c::STATE_CHILDREN, c::NAME]))?;
+    if let Some(value) = root_comps.get(c::STATE_CHILDREN) {
         for child in parse_entity_list(value) { stack.push(child); }
     }
-    if let Some(root_name) = root_comps.get("bevy_ecs::name::Name").and_then(|v| v.as_str()) {
+    if let Some(root_name) = root_comps.get(c::NAME).and_then(|v| v.as_str()) {
         names.insert(machine, root_name.to_string());
     }
 
     while let Some(entity) = stack.pop() {
         if !visited.insert(entity) { continue; }
         states.push(entity);
-        let comps = get_components(url, entity, Some(&["bevy_gearbox_core::StateChildren", "bevy_ecs::name::Name"]))?;
-        if let Some(n) = comps.get("bevy_ecs::name::Name").and_then(|v| v.as_str()) {
+        let comps = get_components(url, entity, Some(&[c::STATE_CHILDREN, c::NAME]))?;
+        if let Some(n) = comps.get(c::NAME).and_then(|v| v.as_str()) {
             names.insert(entity, n.to_string());
         }
-        if let Some(children) = comps.get("bevy_gearbox_core::StateChildren") {
+        if let Some(children) = comps.get(c::STATE_CHILDREN) {
             for child in parse_entity_list(children) { stack.push(child); }
         }
     }
 
     let mut edges_formatted: Vec<String> = Vec::new();
     for state in &states {
-        let comps = get_components(url, *state, Some(&["bevy_gearbox_core::transitions::Transitions"]))?;
-        let Some(transitions_val) = comps.get("bevy_gearbox_core::transitions::Transitions") else { continue; };
+        let comps = get_components(url, *state, Some(&[c::TRANSITIONS]))?;
+        let Some(transitions_val) = comps.get(c::TRANSITIONS) else { continue; };
         let edge_entities = parse_entity_list(transitions_val);
         for edge in edge_entities {
             let all = get_components(
                 url,
                 edge,
                 Some(&[
-                    "bevy_gearbox_core::transitions::Target",
-                    "bevy_gearbox_core::transitions::AlwaysEdge",
-                    "bevy_gearbox_core::transitions::After",
-                    "bevy_ecs::name::Name",
+                    c::TARGET,
+                    c::ALWAYS_EDGE,
+                    c::AFTER,
+                    c::NAME,
                 ]),
             )?;
             let target_id = all
-                .get("bevy_gearbox_core::transitions::Target")
+                .get(c::TARGET)
                 .and_then(parse_single_entity)
                 .unwrap_or(0);
             let source_name = get_name(url, &mut names, *state)?;
             let mut target_name = if target_id != 0 { get_name(url, &mut names, target_id)? } else { String::new() };
             if target_name.is_empty() {
-                if let Some(Value::String(edge_name)) = all.get("bevy_ecs::name::Name") {
+                if let Some(Value::String(edge_name)) = all.get(c::NAME) {
                     if let Some(arrow) = edge_name.find("->") {
                         let rhs = edge_name[arrow+2..].trim();
                         let rhs = if let Some(paren) = rhs.find('(') { &rhs[..paren] } else { rhs };

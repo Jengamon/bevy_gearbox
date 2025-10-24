@@ -4,6 +4,7 @@ mod connection;
 mod rpcs;
 mod client;
 mod plugin;
+mod component;
 use plugin::EditorPlugin;
 
 #[cfg(not(target_arch = "wasm32"))]
