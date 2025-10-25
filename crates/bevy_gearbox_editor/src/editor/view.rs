@@ -34,7 +34,7 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
             None => None,
         }
     });
-    let mut is_in_selected_subtree = |id: &crate::model::EntityId| -> bool {
+    let is_in_selected_subtree = |id: &crate::model::EntityId| -> bool {
         let Some(root) = selected_root_node else { return false; };
         if *id == root { return true; }
         let mut cur = doc.transform_parent.get(id).and_then(|p| *p);
@@ -116,27 +116,12 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
             if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
                 let pointer_world = doc.transform.to_world(cursor);
                 // Compute rect for entity (node rect or pill rect in world space)
-                let rect_world = if let Some(view) = doc.views.get(&ent) {
-                    match view.kind {
-                        UiViewKind::Edge { .. } => {
-                            let zoom = doc.transform.zoom;
-                            let font_px = (14.0 * zoom).clamp(6.0, 64.0);
-                            let font_id = egui::FontId::proportional(font_px);
-                            let text_galley = painter.layout_no_wrap(view.label.clone(), font_id, egui::Color32::WHITE);
-                            let size_s = text_galley.size();
-                            let pad_s = egui::vec2(10.0 * zoom, 6.0 * zoom);
-                            let size_w = egui::vec2((size_s.x + 2.0 * pad_s.x) / zoom, (size_s.y + 2.0 * pad_s.y) / zoom);
-                            Some(egui::Rect::from_center_size(view.rect.center(), size_w))
-                        }
-                        _ => Some(view.rect),
-                    }
-                } else { None };
-                if let Some(rect) = rect_world {
-                    let anchor = egui::vec2(pointer_world.x - rect.min.x, pointer_world.y - rect.min.y);
-                    doc.dragging = Some(ent);
-                    doc.drag_anchor_world = Some(anchor);
-                    doc.selected = Some(ent);
-                }
+                let Some(view) = doc.views.get(&ent) else { return; };
+
+                let anchor = egui::vec2(pointer_world.x - view.rect.min.x, pointer_world.y - view.rect.min.y);
+                doc.dragging = Some(ent);
+                doc.drag_anchor_world = Some(anchor);
+                doc.selected = Some(ent);
             }
         }
     }
