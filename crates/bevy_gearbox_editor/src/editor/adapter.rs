@@ -101,7 +101,6 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
     for nid in node_order.iter() { if !is_container(nid) { unified_order.push(*nid); } }
 
     doc.graph = Some(snapshot);
-    // Unified structures for upcoming migration
     doc.views = views;
     doc.draw_order = unified_order;
     doc.transform_parent = transform_parent;

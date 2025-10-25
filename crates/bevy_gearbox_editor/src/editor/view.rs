@@ -168,7 +168,6 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                     }
                     }
                 }
-            }
         } else {
             // Dragging with no captured entity → pan background
             if delta_screen.length_sq() > 0.0 {
