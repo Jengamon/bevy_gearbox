@@ -68,6 +68,8 @@ pub struct GraphDoc {
     /// Unified drag state for either a node or a pill (by EntityId)
     pub dragging: Option<EntityId>,
     pub drag_anchor_world: Option<egui::Vec2>,
+    /// Currently selected entity (node or edge pill)
+    pub selected: Option<EntityId>,
     /// Unified view map (nodes and edges)
     pub views: HashMap<EntityId, UiView>,
     /// Unified draw order (parents, edges, leaves)

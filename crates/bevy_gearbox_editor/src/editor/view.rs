@@ -10,12 +10,68 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, egui::Color32::from_gray(20));
 
-    // Interactions: node/pill dragging vs background pan
-    // We compute hits against nodes in reverse draw order (foreground first)
+    // Compute dynamic draw order per frame
+    let effective_selected = doc.dragging.or(doc.selected);
+    let mut baseline_index: std::collections::HashMap<crate::model::EntityId, usize> = std::collections::HashMap::new();
+    for (i, id) in doc.draw_order.iter().enumerate() { baseline_index.insert(*id, i); }
+    let mut depth_cache: std::collections::HashMap<crate::model::EntityId, usize> = std::collections::HashMap::new();
+    let mut compute_depth = |id: crate::model::EntityId| -> usize {
+        if let Some(d) = depth_cache.get(&id) { return *d; }
+        let mut d = 0usize;
+        let mut cur = Some(id);
+        while let Some(cid) = cur {
+            cur = doc.transform_parent.get(&cid).and_then(|p| *p);
+            if cur.is_some() { d += 1; }
+        }
+        depth_cache.insert(id, d);
+        d
+    };
+    // If a node is selected/dragging, lift its entire subtree above sibling subtrees
+    let selected_root_node: Option<crate::model::EntityId> = effective_selected.and_then(|sid| {
+        match doc.views.get(&sid).map(|v| &v.kind) {
+            Some(UiViewKind::Edge { .. }) => None,
+            Some(_) => Some(sid),
+            None => None,
+        }
+    });
+    let mut is_in_selected_subtree = |id: &crate::model::EntityId| -> bool {
+        let Some(root) = selected_root_node else { return false; };
+        if *id == root { return true; }
+        let mut cur = doc.transform_parent.get(id).and_then(|p| *p);
+        while let Some(pid) = cur {
+            if pid == root { return true; }
+            cur = doc.transform_parent.get(&pid).and_then(|p| *p);
+        }
+        false
+    };
+    let mut order: Vec<crate::model::EntityId> = doc.views.keys().cloned().collect();
+    order.sort_by(|a, b| {
+        // 0) Entire selected subtree to the end (on top of siblings)
+        let in_sel_a = is_in_selected_subtree(a) as u8;
+        let in_sel_b = is_in_selected_subtree(b) as u8;
+        if in_sel_a != in_sel_b { return in_sel_a.cmp(&in_sel_b); }
+        let da = compute_depth(*a);
+        let db = compute_depth(*b);
+        if da != db { return da.cmp(&db); }
+        // 1) Selected single-entity tiebreaker among same-depth siblings when no subtree lift applies
+        let sa = Some(*a) == effective_selected;
+        let sb = Some(*b) == effective_selected;
+        if sa != sb { return (sa as u8).cmp(&(sb as u8)); }
+        let ta = match doc.views.get(a).map(|v| &v.kind) { Some(super::view_model::UiViewKind::Edge { .. }) => 0u8, _ => 1u8 };
+        let tb = match doc.views.get(b).map(|v| &v.kind) { Some(super::view_model::UiViewKind::Edge { .. }) => 0u8, _ => 1u8 };
+        if ta != tb { return ta.cmp(&tb); }
+        let ia = *baseline_index.get(a).unwrap_or(&0usize);
+        let ib = *baseline_index.get(b).unwrap_or(&0usize);
+        ia.cmp(&ib)
+    });
+    // Persist for next frame and for hit-testing below
+    doc.draw_order = order.clone();
+
+    // Interactions: node/pill dragging vs background pan; hit test in front-to-back order
     let pointer_pos = response.ctx.input(|i| i.pointer.hover_pos());
     let mut hovered_entity: Option<crate::model::EntityId> = None;
     if let Some(pos) = pointer_pos {
-        for eid in doc.draw_order.iter().rev() {
+        for eid in order.iter().rev() {
             if let Some(view) = doc.views.get(eid) {
                 match view.kind {
                     UiViewKind::Edge { .. } => {
@@ -54,7 +110,7 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
         }
     }
 
-    // On drag start: capture draggable if hovering; else pan background
+    // On drag start: capture draggable if hovering; also select it. Else pan background
     if response.drag_started() {
         if let Some(ent) = hovered_entity {
             if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
@@ -79,9 +135,15 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                     let anchor = egui::vec2(pointer_world.x - rect.min.x, pointer_world.y - rect.min.y);
                     doc.dragging = Some(ent);
                     doc.drag_anchor_world = Some(anchor);
+                    doc.selected = Some(ent);
                 }
             }
         }
+    }
+
+    // Click to select; clicking empty background clears selection
+    if response.clicked() {
+        doc.selected = hovered_entity;
     }
 
     // During drag: move draggable in world coords, with clamping to parent content
@@ -269,23 +331,32 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
         }
     }
 
-    // Layered draw order:
-    // 1) Parents (backgrounds, headers)
-    // 2) Edges (above parents, below children)
-    // 3) Children / non-parents (and any remaining nodes treated as foreground)
-
+    // Single-pass layered draw using computed order
     let zoom = doc.transform.zoom;
     let font_px = (14.0 * zoom).clamp(6.0, 64.0);
     let font_id = egui::FontId::proportional(font_px);
     let pad = 8.0 * zoom;
     let header_h_world = 24.0;
 
-    // 1) Parents first (backgrounds and headers)
-    if let Some(graph) = &doc.graph {
-        for id in doc.draw_order.iter() {
-            if let Some(view) = doc.views.get(id) {
-                let is_container = matches!(view.kind, UiViewKind::Parent | UiViewKind::Parallel) || graph.nodes.get(id).map(|n| !n.children.is_empty()).unwrap_or(false);
-                if !is_container { continue; }
+    // Helpers for edge geometry
+    let rect_from_inside_toward = |rect: egui::Rect, toward: egui::Pos2| -> egui::Pos2 {
+        let c = rect.center();
+        let d = toward - c;
+        let hx = rect.width() * 0.5_f32;
+        let hy = rect.height() * 0.5_f32;
+        let sx = if d.x.abs() > 0.0001 { hx / d.x.abs() } else { f32::INFINITY };
+        let sy = if d.y.abs() > 0.0001 { hy / d.y.abs() } else { f32::INFINITY };
+        let s = sx.min(sy);
+        c + d * s
+    };
+    let rect_from_outside_toward_center = |rect: egui::Rect, from: egui::Pos2| -> egui::Pos2 {
+        rect_from_inside_toward(rect, from)
+    };
+
+    for id in order.iter() {
+        let Some(view) = doc.views.get(id) else { continue };
+        match view.kind {
+            UiViewKind::Parent | UiViewKind::Parallel => {
                 let rect_world = view.rect;
                 let min = doc.transform.to_screen(rect_world.min);
                 let max = doc.transform.to_screen(rect_world.max);
@@ -298,7 +369,6 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                     egui::Stroke::new(1.0, egui::Color32::from_gray(160)),
                     egui::StrokeKind::Outside,
                 );
-                // Header
                 let header_min = rect_world.min;
                 let header_max = egui::pos2(rect_world.max.x, rect_world.min.y + header_h_world);
                 let header_rect = egui::Rect::from_min_max(doc.transform.to_screen(header_min), doc.transform.to_screen(header_max));
@@ -307,49 +377,16 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                 let label_pos = header_rect.min + egui::vec2(pad, pad * 0.5);
                 painter.text(label_pos, egui::Align2::LEFT_TOP, &view.label, font_id.clone(), egui::Color32::WHITE);
             }
-        }
-    }
+            UiViewKind::Edge { source, target } => {
+                // Endpoints
+                let Some(src_view) = doc.views.get(&source) else { continue };
+                let Some(dst_view) = doc.views.get(&target) else { continue };
+                let src_rect_w = src_view.rect;
+                let dst_rect_w = dst_view.rect;
 
-    // 2) Edges and Event Pills (above parents, under foreground nodes)
-    if let Some(graph) = &doc.graph {
-        // Helpers for shortest attachment points on rectangles
-        let rect_from_inside_toward = |rect: egui::Rect, toward: egui::Pos2| -> egui::Pos2 {
-            // Assumes start point is inside rect: use center-ray intersection
-            let c = rect.center();
-            let d = toward - c;
-            let hx = rect.width() * 0.5_f32;
-            let hy = rect.height() * 0.5_f32;
-            let sx = if d.x.abs() > 0.0001 { hx / d.x.abs() } else { f32::INFINITY };
-            let sy = if d.y.abs() > 0.0001 { hy / d.y.abs() } else { f32::INFINITY };
-            let s = sx.min(sy);
-            c + d * s
-        };
-        let rect_from_outside_toward_center = |rect: egui::Rect, from: egui::Pos2| -> egui::Pos2 {
-            // Intersection point on rect boundary along ray from rect.center() to `from`
-            rect_from_inside_toward(rect, from)
-        };
-
-        for id in doc.draw_order.iter() {
-            if let Some(view) = doc.views.get(id) {
-                let (source, target) = match view.kind { UiViewKind::Edge { source, target } => (source, target), _ => { continue; } };
-                // Fetch endpoint rects in world, adjust centers to ignore header area for containers
-                let src_rect_w = match doc.views.get(&source) { Some(v) => v.rect, None => continue };
-                let dst_rect_w = match doc.views.get(&target) { Some(v) => v.rect, None => continue };
-                let src_has_header = graph.nodes.get(&source).map(|n| !n.children.is_empty()).unwrap_or(false);
-                let dst_has_header = graph.nodes.get(&target).map(|n| !n.children.is_empty()).unwrap_or(false);
-                let _src_center_w = if src_has_header {
-                    egui::pos2(src_rect_w.center().x, (src_rect_w.min.y + header_h_world + src_rect_w.max.y) * 0.5)
-                } else { src_rect_w.center() };
-                let _dst_center_w = if dst_has_header {
-                    egui::pos2(dst_rect_w.center().x, (dst_rect_w.min.y + header_h_world + dst_rect_w.max.y) * 0.5)
-                } else { dst_rect_w.center() };
-
-                // Transform to screen for geometry math and drawing
                 let src_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(src_rect_w.min), doc.transform.to_screen(src_rect_w.max));
                 let dst_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(dst_rect_w.min), doc.transform.to_screen(dst_rect_w.max));
-                // centers not needed further; keep in world for future use if needed
 
-                // Measure pill label in screen space
                 let pill_center_s = doc.transform.to_screen(view.rect.center());
                 let text_galley = painter.layout_no_wrap(view.label.clone(), font_id.clone(), egui::Color32::WHITE);
                 let text_size_s = text_galley.size();
@@ -358,17 +395,14 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                 let pill_size_s = egui::vec2(text_size_s.x + 2.0 * pill_pad_x, text_size_s.y + 2.0 * pill_pad_y);
                 let pill_rect_s = egui::Rect::from_center_size(pill_center_s, pill_size_s);
 
-                // Segment A: source perimeter → pill perimeter (shortest)
                 let a_start = rect_from_inside_toward(src_rect_s, pill_center_s);
                 let a_end = rect_from_outside_toward_center(pill_rect_s, a_start);
                 painter.line_segment([a_start, a_end], egui::Stroke::new(2.0, egui::Color32::from_gray(120)));
 
-                // Segment B: pill perimeter → target perimeter (shortest), with arrow at target
                 let b_end = rect_from_inside_toward(dst_rect_s, pill_center_s);
                 let b_start = rect_from_outside_toward_center(pill_rect_s, b_end);
                 painter.line_segment([b_start, b_end], egui::Stroke::new(2.0, egui::Color32::from_gray(120)));
 
-                // Arrowhead at b_end
                 let dir = (b_end - b_start).normalized();
                 let arrow_len = 10.0 * zoom;
                 let arrow_w = 8.0 * zoom;
@@ -383,9 +417,7 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                     egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
                 ));
 
-                // Pill capsule draw above edges
                 let rounding = egui::CornerRadius::same((pill_size_s.y * 0.5).round() as u8);
-                // Style like nodes (grey fill and border)
                 painter.rect(
                     pill_rect_s,
                     rounding,
@@ -395,39 +427,20 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                 );
                 painter.text(pill_rect_s.center(), egui::Align2::CENTER_CENTER, &view.label, font_id.clone(), egui::Color32::WHITE);
             }
-        }
-    }
-
-    // 3) Foreground nodes (non-parents)
-    if let Some(graph) = &doc.graph {
-        for id in doc.draw_order.iter() {
-            if let Some(view) = doc.views.get(id) {
-                // Skip edges entirely in this pass (already drawn above)
-                if matches!(view.kind, UiViewKind::Edge { .. }) { continue; }
-                let is_container = graph.nodes.get(id).map(|n| !n.children.is_empty()).unwrap_or(false) || matches!(view.kind, UiViewKind::Parent | UiViewKind::Parallel);
-                if is_container { continue; }
+            UiViewKind::Leaf => {
                 let rect_world = view.rect;
-            let min = doc.transform.to_screen(rect_world.min);
-            let max = doc.transform.to_screen(rect_world.max);
-            let rect_screen = egui::Rect::from_min_max(min, max);
-            let rounding = egui::CornerRadius::same(6);
-            // Node background
-            painter.rect(
-                rect_screen,
-                rounding,
-                egui::Color32::from_rgb(30, 30, 35),
-                egui::Stroke::new(1.0, egui::Color32::from_gray(160)),
-                egui::StrokeKind::Outside,
-            );
-
-            // Scaled font and padding based on zoom
-            let zoom = doc.transform.zoom;
-            let font_px = (14.0 * zoom).clamp(6.0, 64.0);
-            let font_id = egui::FontId::proportional(font_px);
-            let _pad = 8.0 * zoom;
-
-            // Leaf label (center-top with scaled offset)
-            painter.text(rect_screen.center_top() + egui::vec2(0.0, 12.0 * zoom), egui::Align2::CENTER_TOP, &view.label, font_id, egui::Color32::WHITE);
+                let min = doc.transform.to_screen(rect_world.min);
+                let max = doc.transform.to_screen(rect_world.max);
+                let rect_screen = egui::Rect::from_min_max(min, max);
+                let rounding = egui::CornerRadius::same(6);
+                painter.rect(
+                    rect_screen,
+                    rounding,
+                    egui::Color32::from_rgb(30, 30, 35),
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(160)),
+                    egui::StrokeKind::Outside,
+                );
+                painter.text(rect_screen.center_top() + egui::vec2(0.0, 12.0 * zoom), egui::Align2::CENTER_TOP, &view.label, font_id.clone(), egui::Color32::WHITE);
             }
         }
     }
