@@ -26,40 +26,66 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
         depth_cache.insert(id, d);
         d
     };
-    // If a node is selected/dragging, lift its entire subtree above sibling subtrees
-    let selected_root_node: Option<crate::model::EntityId> = effective_selected.and_then(|sid| {
-        match doc.views.get(&sid).map(|v| &v.kind) {
-            Some(UiViewKind::Edge { .. }) => None,
-            Some(_) => Some(sid),
-            None => None,
+    // Build selected chain (selected node, its parent, ... up to but excluding the root/no-parent)
+    let mut selected_chain: Vec<crate::model::EntityId> = Vec::new();
+    if let Some(sel) = effective_selected {
+        if !matches!(doc.views.get(&sel).map(|v| &v.kind), Some(UiViewKind::Edge { .. })) {
+            let mut cur = Some(sel);
+            while let Some(cid) = cur {
+                selected_chain.push(cid);
+                let next = doc.transform_parent.get(&cid).and_then(|p| *p);
+                // Stop before adding a root (None parent) to avoid lifting the universal root and forcing it on top
+                if next.is_none() { break; }
+                cur = next;
+            }
         }
-    });
-    let is_in_selected_subtree = |id: &crate::model::EntityId| -> bool {
-        let Some(root) = selected_root_node else { return false; };
-        if *id == root { return true; }
-        let mut cur = doc.transform_parent.get(id).and_then(|p| *p);
-        while let Some(pid) = cur {
-            if pid == root { return true; }
-            cur = doc.transform_parent.get(&pid).and_then(|p| *p);
+    }
+    // Exclude the last element if it has no parent (root), to avoid drawing root above everything
+    if let Some(&last) = selected_chain.last() {
+        if doc.transform_parent.get(&last).and_then(|p| *p).is_none() {
+            selected_chain.pop();
         }
-        false
+    }
+    let chain_len = selected_chain.len();
+    let mut chain_index: std::collections::HashMap<crate::model::EntityId, usize> = std::collections::HashMap::new();
+    for (i, id) in selected_chain.iter().enumerate() { chain_index.insert(*id, i); }
+    let mut lift_cache: std::collections::HashMap<crate::model::EntityId, usize> = std::collections::HashMap::new();
+    let mut compute_lift_score = |id: crate::model::EntityId| -> usize {
+        if let Some(s) = lift_cache.get(&id) { return *s; }
+        if chain_len == 0 { lift_cache.insert(id, 0); return 0; }
+        // Walk up ancestors to find the nearest member of the selected chain
+        let mut cur = Some(id);
+        let mut nearest_idx: Option<usize> = None;
+        while let Some(cid) = cur {
+            if let Some(&idx) = chain_index.get(&cid) { nearest_idx = Some(idx); break; }
+            cur = doc.transform_parent.get(&cid).and_then(|p| *p);
+        }
+        let score = match nearest_idx {
+            Some(idx) => (chain_len - idx), // selected subtree highest score, then parent subtree, ...
+            None => 0,
+        };
+        lift_cache.insert(id, score);
+        score
     };
     let mut order: Vec<crate::model::EntityId> = doc.views.keys().cloned().collect();
     order.sort_by(|a, b| {
-        // 0) Entire selected subtree to the end (on top of siblings)
-        let in_sel_a = is_in_selected_subtree(a) as u8;
-        let in_sel_b = is_in_selected_subtree(b) as u8;
-        if in_sel_a != in_sel_b { return in_sel_a.cmp(&in_sel_b); }
+        // 0) Lift entire subtrees of selected and its ancestors above their sibling subtrees
+        let la = compute_lift_score(*a);
+        let lb = compute_lift_score(*b);
+        if la != lb { return la.cmp(&lb); }
+        // 1) Depth: children above parents (deeper drawn later). Always preserve this rule.
         let da = compute_depth(*a);
         let db = compute_depth(*b);
         if da != db { return da.cmp(&db); }
-        // 1) Selected single-entity tiebreaker among same-depth siblings when no subtree lift applies
+        // 2) Selected single-entity tiebreaker among same-depth siblings
         let sa = Some(*a) == effective_selected;
         let sb = Some(*b) == effective_selected;
         if sa != sb { return (sa as u8).cmp(&(sb as u8)); }
+        // 3) Type: edges beneath nodes
         let ta = match doc.views.get(a).map(|v| &v.kind) { Some(super::view_model::UiViewKind::Edge { .. }) => 0u8, _ => 1u8 };
         let tb = match doc.views.get(b).map(|v| &v.kind) { Some(super::view_model::UiViewKind::Edge { .. }) => 0u8, _ => 1u8 };
         if ta != tb { return ta.cmp(&tb); }
+        // 4) Stable baseline
         let ia = *baseline_index.get(a).unwrap_or(&0usize);
         let ib = *baseline_index.get(b).unwrap_or(&0usize);
         ia.cmp(&ib)
