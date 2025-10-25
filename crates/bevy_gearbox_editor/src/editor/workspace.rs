@@ -7,14 +7,8 @@ use bevy_egui::egui;
 #[derive(Debug, Default, Resource)]
 pub struct Workspace {
     pub docs: HashMap<ServerEntity, GraphDoc>,
-    pub selection: Selection,
+    pub selection: Option<EntityId>,
     pub menu: Option<ContextMenuState>,
-}
-
-#[derive(Debug, Default)]
-pub struct Selection {
-    pub node: Option<EntityId>,
-    pub edge: Option<EntityId>,
 }
 
 #[derive(Debug, Clone)]

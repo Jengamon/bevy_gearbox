@@ -2,7 +2,7 @@ use super::view_model::{GraphDoc, UiViewKind};
 use bevy_egui::egui;
 
 /// Minimal read-only view with pan/zoom and basic nodes/edges rendering.
-pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
+pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<crate::model::EntityId>) {
     let desired = ui.available_size_before_wrap();
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::drag());
 
@@ -11,7 +11,7 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
     painter.rect_filled(rect, 0.0, egui::Color32::from_gray(20));
 
     // Compute dynamic draw order per frame using DFS with per-level subtree ordering
-    let effective_selected = doc.dragging.or(doc.selected);
+    let effective_selected = doc.dragging.or(*selection);
     // Build map: for each ancestor in the selected chain, which child branch is selected
     let mut selected_by_parent: std::collections::HashMap<crate::model::EntityId, crate::model::EntityId> = std::collections::HashMap::new();
     if let Some(sel) = effective_selected {
@@ -206,14 +206,14 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                 let anchor = egui::vec2(pointer_world.x - view.rect.min.x, pointer_world.y - view.rect.min.y);
                     doc.dragging = Some(ent);
                     doc.drag_anchor_world = Some(anchor);
-                doc.selected = Some(ent);
+                *selection = Some(ent);
             }
         }
     }
 
     // Click to select; clicking empty background clears selection
     if response.clicked() {
-        doc.selected = hovered_entity;
+        *selection = hovered_entity;
     }
 
     // During drag: move draggable in world coords, with clamping to parent content

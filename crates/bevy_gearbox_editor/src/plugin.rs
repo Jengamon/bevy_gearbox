@@ -128,12 +128,16 @@ fn ui_system(
                             cmd_writer.write(NetCommand::Save { id: *id });
                         }
                     });
-                    if let Some(doc) = workspace.docs.get_mut(id) {
-                        col.add_space(4.0);
-                        egui::Frame::canvas(col.style()).show(col, |canvas| {
-                            draw_doc(canvas, doc);
-                        });
-                        col.add_space(6.0);
+                    {
+                        let mut selected_tmp = workspace.selection.take();
+                        if let Some(doc) = workspace.docs.get_mut(id) {
+                            col.add_space(4.0);
+                            egui::Frame::canvas(col.style()).show(col, |canvas| {
+                                draw_doc(canvas, doc, &mut selected_tmp);
+                            });
+                            col.add_space(6.0);
+                        }
+                        workspace.selection = selected_tmp;
                     }
                 }
             });
