@@ -60,12 +60,30 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
         }
     }
 
-    // Gather edges for a given parent id in the deterministic global edge order
+    // Collect overlay edges: if a state is selected, include its (incoming ∪ outgoing);
+    // if an edge is selected/dragging, include that edge itself
+    let mut overlay_edges: std::collections::HashSet<crate::model::EntityId> = std::collections::HashSet::new();
+    if let Some(sel) = effective_selected {
+        match doc.views.get(&sel).map(|v| &v.kind) {
+            Some(UiViewKind::Edge { .. }) => { overlay_edges.insert(sel); }
+            _ => {
+                if let Some(graph) = &doc.graph {
+                    // Outgoing
+                    if let Some(out_ids) = graph.adjacency_out.get(&sel) { for e in out_ids { overlay_edges.insert(*e); } }
+                    // Incoming
+                    if let Some(in_ids) = graph.adjacency_in.get(&sel) { for e in in_ids { overlay_edges.insert(*e); } }
+                    // Filter to known edge views only
+                    overlay_edges.retain(|eid| matches!(doc.views.get(eid).map(|v| &v.kind), Some(UiViewKind::Edge { .. })));
+                }
+            }
+        }
+    }
+
+    // Gather edges for a given parent id in the deterministic global edge order, excluding overlay edges
     let edges_for_parent = |pid: &crate::model::EntityId, out: &mut Vec<crate::model::EntityId>| {
         for eid in edge_sequence.iter() {
-            if doc.transform_parent.get(eid).and_then(|p| *p) == Some(*pid) {
-                out.push(*eid);
-            }
+            if overlay_edges.contains(eid) { continue; }
+            if doc.transform_parent.get(eid).and_then(|p| *p) == Some(*pid) { out.push(*eid); }
         }
     };
 
@@ -123,6 +141,12 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
     // Start traversal from graph root when available; else keep existing order
     if let Some(graph) = &doc.graph {
         visit(graph.root, &mut order);
+        // Append overlay edges in the global deterministic edge order
+        if !overlay_edges.is_empty() {
+            for eid in edge_sequence.iter() {
+                if overlay_edges.contains(eid) { order.push(*eid); }
+            }
+        }
         doc.draw_order = order.clone();
     } else {
         order = doc.draw_order.clone();
@@ -180,8 +204,8 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                 let Some(view) = doc.views.get(&ent) else { return; };
 
                 let anchor = egui::vec2(pointer_world.x - view.rect.min.x, pointer_world.y - view.rect.min.y);
-                doc.dragging = Some(ent);
-                doc.drag_anchor_world = Some(anchor);
+                    doc.dragging = Some(ent);
+                    doc.drag_anchor_world = Some(anchor);
                 doc.selected = Some(ent);
             }
         }
@@ -571,7 +595,7 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                         prev = p;
                     }
                 } else {
-                    painter.line_segment([a_start, a_end], egui::Stroke::new(2.0, egui::Color32::from_gray(120)));
+                painter.line_segment([a_start, a_end], egui::Stroke::new(2.0, egui::Color32::from_gray(120)));
                 }
 
                 let b_end = rect_from_inside_toward(dst_rect_s, pill_center_s);
@@ -604,10 +628,10 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
             }
             UiViewKind::Leaf => {
                 let rect_world = view.rect;
-                let min = doc.transform.to_screen(rect_world.min);
-                let max = doc.transform.to_screen(rect_world.max);
-                let rect_screen = egui::Rect::from_min_max(min, max);
-                let rounding = egui::CornerRadius::same(6);
+            let min = doc.transform.to_screen(rect_world.min);
+            let max = doc.transform.to_screen(rect_world.max);
+            let rect_screen = egui::Rect::from_min_max(min, max);
+            let rounding = egui::CornerRadius::same(6);
                 // Fill
                 painter.rect_filled(rect_screen, rounding, egui::Color32::from_rgb(30, 30, 35));
                 // Border: dashed if direct child of a Parallel
@@ -617,13 +641,13 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                     let gap = 4.0;
                     draw_dashed_rounded_rect(rect_screen, 6.0, egui::Color32::from_gray(160), 1.0, dash, gap);
                 } else {
-                    painter.rect(
-                        rect_screen,
-                        rounding,
+            painter.rect(
+                rect_screen,
+                rounding,
                         egui::Color32::TRANSPARENT,
-                        egui::Stroke::new(1.0, egui::Color32::from_gray(160)),
-                        egui::StrokeKind::Outside,
-                    );
+                egui::Stroke::new(1.0, egui::Color32::from_gray(160)),
+                egui::StrokeKind::Outside,
+            );
                 }
                 painter.text(rect_screen.center_top() + egui::vec2(0.0, 12.0 * zoom), egui::Align2::CENTER_TOP, &view.label, font_id.clone(), egui::Color32::WHITE);
             }
