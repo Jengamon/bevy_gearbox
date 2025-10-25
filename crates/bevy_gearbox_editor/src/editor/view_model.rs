@@ -7,6 +7,32 @@ use super::canvas::CanvasTransform;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiNodeKind { Leaf, Parent, Parallel }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiViewKind {
+    Leaf,
+    Parent,
+    Parallel,
+    Edge { source: EntityId, target: EntityId },
+}
+
+#[derive(Debug, Clone)]
+pub struct PillData {
+    pub center: egui::Pos2,
+    pub offset_from_midpoint: egui::Vec2,
+    pub dragging: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct UiView {
+    pub id: EntityId,
+    /// For states, this is the state rect; for edges, this is the pill rect in world space.
+    pub rect: egui::Rect,
+    pub kind: UiViewKind,
+    pub label: String,
+    /// Edge-only: pill info (None for state views)
+    pub pill: Option<PillData>,
+}
+
 #[derive(Debug, Clone)]
 pub struct UiNode {
     pub id: EntityId,
@@ -37,17 +63,37 @@ pub struct UiEdge {
 #[derive(Debug, Default)]
 pub struct GraphDoc {
     pub graph: Option<StateMachineGraph>,
-    pub node_views: HashMap<EntityId, UiNode>,
-    pub edge_views: HashMap<EntityId, UiEdge>,
     /// World↔screen mapping for this document
     pub transform: CanvasTransform,
-    /// Deterministic draw order for nodes (parents before children)
-    pub draw_order_nodes: Vec<EntityId>,
-    /// Deterministic draw order for edges
-    pub draw_order_edges: Vec<EntityId>,
     /// Unified drag state for either a node or a pill (by EntityId)
     pub dragging: Option<EntityId>,
     pub drag_anchor_world: Option<egui::Vec2>,
+    /// Unified view map (nodes and edges)
+    pub views: HashMap<EntityId, UiView>,
+    /// Unified draw order (parents, edges, leaves)
+    pub draw_order: Vec<EntityId>,
+    /// Transform children: node -> [child nodes and edge pills under this container]
+    pub transform_children: HashMap<EntityId, Vec<EntityId>>,
+    /// Transform parent for each view: node -> parent node; edge pill -> pill parent
+    pub transform_parent: HashMap<EntityId, Option<EntityId>>,
+}
+
+
+impl GraphDoc {
+    /// Returns the rect for a unified view entity (if present).
+    pub fn get_rect(&self, id: &EntityId) -> Option<egui::Rect> {
+        self.views.get(id).map(|v| v.rect)
+    }
+
+    /// Sets the rect for a unified view entity (no-ops if not present).
+    pub fn set_rect(&mut self, id: &EntityId, rect: egui::Rect) {
+        if let Some(v) = self.views.get_mut(id) { v.rect = rect; }
+    }
+
+    /// Returns the transform parent for an entity (node parent or pill parent).
+    pub fn parent_of(&self, id: &EntityId) -> Option<EntityId> {
+        self.transform_parent.get(id).and_then(|p| *p)
+    }
 }
 
 

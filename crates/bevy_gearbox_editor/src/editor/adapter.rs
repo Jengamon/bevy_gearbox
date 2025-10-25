@@ -2,20 +2,19 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 use crate::model::{StateMachineGraph, EntityId};
 use crate::component as c;
-use super::view_model::{GraphDoc, UiNode, UiNodeKind, UiEdge, EdgePill};
+use super::view_model::{GraphDoc, UiNode, UiNodeKind, UiEdge, EdgePill, UiView, UiViewKind, PillData};
 
 /// Merge a fresh snapshot into an existing GraphDoc, preserving layout where possible
 pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
-    // Preserve existing rects and pill offsets by id
-    let mut preserved_nodes = std::mem::take(&mut doc.node_views);
-    let mut preserved_edges = std::mem::take(&mut doc.edge_views);
+    // Preserve existing rects and pill offsets by id from unified views
+    let mut preserved_views = std::mem::take(&mut doc.views);
 
     // Rebuild nodes with preserved rects where available
     let mut node_views = std::collections::HashMap::new();
     for (id, node) in snapshot.nodes.iter() {
-        let rect = preserved_nodes
+        let rect = preserved_views
             .remove(id)
-            .map(|n| n.rect)
+            .map(|v| v.rect)
             .unwrap_or_else(|| egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(140.0, 60.0)));
         let label = node
             .display_name
@@ -34,27 +33,94 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
     // Rebuild edges
     let mut edge_views = std::collections::HashMap::new();
     for (eid, edge) in snapshot.edges.iter() {
-        let preserved = preserved_edges.remove(eid);
+        let preserved = preserved_views.remove(eid);
         let midpoint = {
             let s = node_views.get(&edge.source).map(|n| n.rect.center()).unwrap_or(egui::pos2(0.0, 0.0));
             let t = node_views.get(&edge.target).map(|n| n.rect.center()).unwrap_or(egui::pos2(0.0, 0.0));
             egui::pos2((s.x + t.x) * 0.5, (s.y + t.y) * 0.5)
         };
-        let pill = if let Some(prev) = preserved.as_ref() { prev.pill.clone() } else { EdgePill { pos: midpoint, offset_from_midpoint: egui::Vec2::ZERO, dragging: false } };
+        let pill = if let Some(prev) = preserved.as_ref() { prev.pill.as_ref().map(|p| EdgePill { pos: p.center, offset_from_midpoint: p.offset_from_midpoint, dragging: p.dragging }).unwrap_or(EdgePill { pos: midpoint, offset_from_midpoint: egui::Vec2::ZERO, dragging: false }) } else { EdgePill { pos: midpoint, offset_from_midpoint: egui::Vec2::ZERO, dragging: false } };
         let label = edge.display_label.clone().unwrap_or_else(|| "Edge".to_string());
-        // Pill parent: make the pill a sibling of the target → use target's parent if present
-        let pill_parent = snapshot.nodes.get(&edge.target).and_then(|n| n.parent).or(Some(edge.target));
+        // Pill parent: apply parent-child rule for edges between a parent and its child (either direction)
+        let pill_parent = compute_pill_parent_for_edge(&snapshot, edge.source, edge.target);
         edge_views.insert(*eid, UiEdge { id: *eid, source: edge.source, target: edge.target, label, pill, pill_parent });
     }
 
     // Compute deterministic draw orders
     let (node_order, edge_order) = compute_draw_orders(&snapshot);
 
+    // Build unified view structures alongside legacy maps
+    let mut views: std::collections::HashMap<crate::model::EntityId, UiView> = std::collections::HashMap::new();
+    let mut transform_parent: std::collections::HashMap<crate::model::EntityId, Option<crate::model::EntityId>> = std::collections::HashMap::new();
+    let mut transform_children: std::collections::HashMap<crate::model::EntityId, Vec<crate::model::EntityId>> = std::collections::HashMap::new();
+
+    // Insert node views
+    for (id, node) in node_views.iter() {
+        let view_kind = match node.kind {
+            UiNodeKind::Leaf => UiViewKind::Leaf,
+            UiNodeKind::Parent => UiViewKind::Parent,
+            UiNodeKind::Parallel => UiViewKind::Parallel,
+        };
+        views.insert(*id, UiView { id: *id, rect: node.rect, kind: view_kind, label: node.label.clone(), pill: None });
+        transform_parent.insert(*id, snapshot.nodes.get(id).and_then(|n| n.parent));
+    }
+
+    // Insert edge views as pill rects (single source of truth for pill position)
+    for (eid, edge) in edge_views.iter() {
+        // Estimate pill rect size in world; will be refined at draw-time but keep a stable placeholder
+        let half = egui::vec2(40.0, 12.0);
+        let rect = egui::Rect::from_center_size(edge.pill.pos, half * 2.0);
+        views.insert(*eid, UiView {
+            id: *eid,
+            rect,
+            kind: UiViewKind::Edge { source: edge.source, target: edge.target },
+            label: edge.label.clone(),
+            pill: Some(PillData { center: rect.center(), offset_from_midpoint: edge.pill.offset_from_midpoint, dragging: edge.pill.dragging }),
+        });
+        transform_parent.insert(*eid, edge.pill_parent);
+    }
+
+    // Build transform_children: for each container node, include child nodes + edge pills whose pill_parent is this node
+    for (id, node) in snapshot.nodes.iter() {
+        let mut children: Vec<crate::model::EntityId> = Vec::new();
+        for &child in node.children.iter() { children.push(child); }
+        for (eid, e) in edge_views.iter() {
+            if e.pill_parent == Some(*id) { children.push(*eid); }
+        }
+        if !children.is_empty() { transform_children.insert(*id, children); }
+    }
+
+    // Unified draw_order: parents, edges, leaves in a deterministic sequence
+    let mut unified_order: Vec<crate::model::EntityId> = Vec::new();
+    let is_container = |nid: &crate::model::EntityId| -> bool { snapshot.nodes.get(nid).map(|n| !n.children.is_empty()).unwrap_or(false) };
+    // Parents first
+    for nid in node_order.iter() { if is_container(nid) { unified_order.push(*nid); } }
+    // Then edges by edge_order
+    for eid in edge_order.iter() { unified_order.push(*eid); }
+    // Then non-parents
+    for nid in node_order.iter() { if !is_container(nid) { unified_order.push(*nid); } }
+
     doc.graph = Some(snapshot);
-    doc.node_views = node_views;
-    doc.edge_views = edge_views;
-    doc.draw_order_nodes = node_order;
-    doc.draw_order_edges = edge_order;
+    // Unified structures for upcoming migration
+    doc.views = views;
+    doc.draw_order = unified_order;
+    doc.transform_parent = transform_parent;
+    doc.transform_children = transform_children;
+}
+
+/// Choose the pill parent for an edge. For edges between a parent and its child (in either
+/// direction), the parent is always the pill parent. Otherwise, fallback to target sibling rule.
+fn compute_pill_parent_for_edge(graph: &StateMachineGraph, source: EntityId, target: EntityId) -> Option<EntityId> {
+    let src_parent = graph.nodes.get(&source).and_then(|n| n.parent);
+    let dst_parent = graph.nodes.get(&target).and_then(|n| n.parent);
+
+    // source is parent of target
+    if dst_parent == Some(source) { return Some(source); }
+    // target is parent of source
+    if src_parent == Some(target) { return Some(target); }
+
+    // Fallback: sibling of target → target's parent if present, else target itself
+    dst_parent.or(Some(target))
 }
 
 fn apply_initial_layout_for_unseen_nodes(graph: &StateMachineGraph, node_views: &mut std::collections::HashMap<EntityId, UiNode>) {
