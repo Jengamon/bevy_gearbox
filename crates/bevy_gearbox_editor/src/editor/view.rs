@@ -61,7 +61,7 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
             cur = doc.transform_parent.get(&cid).and_then(|p| *p);
         }
         let score = match nearest_idx {
-            Some(idx) => (chain_len - idx), // selected subtree highest score, then parent subtree, ...
+            Some(idx) => chain_len - idx, // selected subtree highest score, then parent subtree, ...
             None => 0,
         };
         lift_cache.insert(id, score);
@@ -500,7 +500,44 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
 
                 let a_start = rect_from_inside_toward(src_rect_s, pill_center_s);
                 let a_end = rect_from_outside_toward_center(pill_rect_s, a_start);
-                painter.line_segment([a_start, a_end], egui::Stroke::new(2.0, egui::Color32::from_gray(120)));
+                // If source is an ancestor of target, draw an outward-and-back curve to create a loop illusion
+                let mut is_ancestor_edge = false;
+                {
+                    let mut cur = Some(target);
+                    while let Some(cid) = cur {
+                        if cid == source { is_ancestor_edge = true; break; }
+                        cur = doc.transform_parent.get(&cid).and_then(|p| *p);
+                    }
+                }
+                if is_ancestor_edge {
+                    // Determine outward normal based on which side a_start lies on
+                    let eps = 0.5;
+                    let normal = if (a_start.x - src_rect_s.min.x).abs() <= eps { egui::vec2(-1.0, 0.0) }
+                    else if (a_start.x - src_rect_s.max.x).abs() <= eps { egui::vec2(1.0, 0.0) }
+                    else if (a_start.y - src_rect_s.min.y).abs() <= eps { egui::vec2(0.0, -1.0) }
+                    else if (a_start.y - src_rect_s.max.y).abs() <= eps { egui::vec2(0.0, 1.0) }
+                    else {
+                        // Fallback: pick axis-aligned direction away from rect center
+                        let d = (a_start - src_rect_s.center()).normalized();
+                        if d.x.abs() >= d.y.abs() { egui::vec2(d.x.signum(), 0.0) } else { egui::vec2(0.0, d.y.signum()) }
+                    };
+                    let loop_out = 48.0 * zoom; // loop distance in screen space
+                    let p_out = a_start + normal * loop_out;
+                    // Sample a quadratic bezier (a_start -> p_out -> a_end)
+                    let segments = 20;
+                    let mut prev = a_start;
+                    for i in 1..=segments {
+                        let t = (i as f32) / (segments as f32);
+                        let omt = 1.0 - t;
+                        let x = omt * omt * a_start.x + 2.0 * omt * t * p_out.x + t * t * a_end.x;
+                        let y = omt * omt * a_start.y + 2.0 * omt * t * p_out.y + t * t * a_end.y;
+                        let p = egui::pos2(x, y);
+                        painter.line_segment([prev, p], egui::Stroke::new(2.0, egui::Color32::from_gray(120)));
+                        prev = p;
+                    }
+                } else {
+                    painter.line_segment([a_start, a_end], egui::Stroke::new(2.0, egui::Color32::from_gray(120)));
+                }
 
                 let b_end = rect_from_inside_toward(dst_rect_s, pill_center_s);
                 let b_start = rect_from_outside_toward_center(pill_rect_s, b_end);
