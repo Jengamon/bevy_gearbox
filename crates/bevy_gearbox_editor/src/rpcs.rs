@@ -182,7 +182,7 @@ pub(crate) async fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<
     let mut stack: Vec<u64> = Vec::new();
     let mut visited: HashSet<u64> = HashSet::new();
 
-    let root_comps = get_components(url, machine, Some(&[c::STATE_CHILDREN, c::NAME])).await?;
+    let root_comps = get_components(url, machine, Some(&[c::STATE_CHILDREN, c::NAME, c::PARALLEL])).await?;
     if let Some(value) = root_comps.get(c::STATE_CHILDREN) {
         for child in parse_entity_list(value) { stack.push(child); }
     }
@@ -267,6 +267,7 @@ pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result
     let mut root_bag = ComponentBag::default();
     if let Some(v) = root_comps.get(c::NAME).cloned() { root_bag.insert(ComponentEntry::new(c::NAME.to_string(), v)); }
     if let Some(v) = root_comps.get(c::STATE_CHILDREN).cloned() { root_bag.insert(ComponentEntry::new(c::STATE_CHILDREN.to_string(), v)); }
+    if let Some(v) = root_comps.get(c::PARALLEL).cloned() { root_bag.insert(ComponentEntry::new(c::PARALLEL.to_string(), v)); }
     root_node.components = root_bag;
     if let Some(n) = root_comps.get(c::NAME).and_then(|v| v.as_str()) { root_node.display_name = Some(n.to_string()); }
 
@@ -282,13 +283,14 @@ pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result
     while let Some((parent_id, entity)) = stack.pop() {
         let id = EntityId::Server(ServerEntity(entity));
         if graph.nodes.contains_key(&id) { continue; }
-        let comps = get_components(url, entity, Some(&[c::STATE_CHILDREN, c::NAME])).await?;
+        let comps = get_components(url, entity, Some(&[c::STATE_CHILDREN, c::NAME, c::PARALLEL])).await?;
         let mut node = StateNode::new(id);
         node.parent = Some(parent_id);
         // Components bag
         let mut bag = ComponentBag::default();
         if let Some(v) = comps.get(c::NAME).cloned() { bag.insert(ComponentEntry::new(c::NAME.to_string(), v)); }
         if let Some(v) = comps.get(c::STATE_CHILDREN).cloned() { bag.insert(ComponentEntry::new(c::STATE_CHILDREN.to_string(), v)); }
+        if let Some(v) = comps.get(c::PARALLEL).cloned() { bag.insert(ComponentEntry::new(c::PARALLEL.to_string(), v)); }
         node.components = bag;
         if let Some(n) = comps.get(c::NAME).and_then(|v| v.as_str()) { node.display_name = Some(n.to_string()); }
         // Children

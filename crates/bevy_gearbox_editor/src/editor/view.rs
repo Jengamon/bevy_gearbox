@@ -338,6 +338,88 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
         rect_from_inside_toward(rect, from)
     };
 
+    // Helper to draw a dashed rounded-rectangle border in screen space
+    let draw_dashed_rounded_rect = |rect: egui::Rect, radius: f32, color: egui::Color32, thickness: f32, dash: f32, gap: f32| {
+        let draw_segmented = |a: egui::Pos2, b: egui::Pos2| {
+            let total_len = (b - a).length();
+            if total_len <= 0.0 { return; }
+            let dir = (b - a) / total_len;
+            let mut t = 0.0;
+            while t < total_len {
+                let seg_len = dash.min(total_len - t);
+                let start = a + dir * t;
+                let end = a + dir * (t + seg_len);
+                painter.line_segment([start, end], egui::Stroke { width: thickness, color });
+                t += dash + gap;
+            }
+        };
+        let draw_dashed_arc = |center: egui::Pos2, r: f32, a0: f32, a1: f32| {
+            if r <= 0.0 { return; }
+            let arc_len = r * (a1 - a0).abs();
+            if arc_len <= 0.0 { return; }
+            let dir_sign = if a1 >= a0 { 1.0 } else { -1.0 };
+            let mut s = 0.0;
+            while s < arc_len {
+                let seg_len = dash.min(arc_len - s);
+                let a_start = a0 + dir_sign * (s / r);
+                let a_end = a0 + dir_sign * ((s + seg_len) / r);
+                let p0 = egui::pos2(center.x + r * a_start.cos(), center.y + r * a_start.sin());
+                let p1 = egui::pos2(center.x + r * a_end.cos(), center.y + r * a_end.sin());
+                painter.line_segment([p0, p1], egui::Stroke { width: thickness, color });
+                s += dash + gap;
+            }
+        };
+
+        let x0 = rect.min.x;
+        let y0 = rect.min.y;
+        let x1 = rect.max.x;
+        let y1 = rect.max.y;
+        let r = radius.clamp(0.0, ((x1 - x0).abs().min((y1 - y0).abs())) * 0.5);
+
+        if r <= 0.0 {
+            // Fallback: square rectangle
+            draw_segmented(egui::pos2(x0, y0), egui::pos2(x1, y0));
+            draw_segmented(egui::pos2(x1, y0), egui::pos2(x1, y1));
+            draw_segmented(egui::pos2(x1, y1), egui::pos2(x0, y1));
+            draw_segmented(egui::pos2(x0, y1), egui::pos2(x0, y0));
+            return;
+        }
+
+        // Straight segments (shortened by radius on both ends)
+        draw_segmented(egui::pos2(x0 + r, y0), egui::pos2(x1 - r, y0)); // top
+        draw_segmented(egui::pos2(x1, y0 + r), egui::pos2(x1, y1 - r)); // right
+        draw_segmented(egui::pos2(x1 - r, y1), egui::pos2(x0 + r, y1)); // bottom
+        draw_segmented(egui::pos2(x0, y1 - r), egui::pos2(x0, y0 + r)); // left
+
+        // Corner arcs (screen space). Angles assume +x right, +y down.
+        let pi = std::f32::consts::PI;
+        // Top-left: from pi to 1.5*pi
+        draw_dashed_arc(egui::pos2(x0 + r, y0 + r), r, pi, 1.5 * pi);
+        // Top-right: from 1.5*pi to 2*pi
+        draw_dashed_arc(egui::pos2(x1 - r, y0 + r), r, 1.5 * pi, 2.0 * pi);
+        // Bottom-right: from 0 to 0.5*pi
+        draw_dashed_arc(egui::pos2(x1 - r, y1 - r), r, 0.0, 0.5 * pi);
+        // Bottom-left: from 0.5*pi to pi
+        draw_dashed_arc(egui::pos2(x0 + r, y1 - r), r, 0.5 * pi, pi);
+    };
+
+    // Helper: is this view a direct child of a Parallel state (by view kind or by graph components)?
+    let is_direct_child_of_parallel_fn = |child_id: &crate::model::EntityId| -> bool {
+        let parent_opt = doc.transform_parent.get(child_id).and_then(|p| *p);
+        let by_view = parent_opt
+            .and_then(|pid| doc.views.get(&pid))
+            .map(|pv| matches!(pv.kind, UiViewKind::Parallel))
+            .unwrap_or(false);
+        if by_view { return true; }
+        if let (Some(graph), Some(pid)) = (&doc.graph, parent_opt) {
+            if let Some(parent_node) = graph.nodes.get(&pid) {
+                let has_parallel = parent_node.components.keys().any(|k| k == crate::component::PARALLEL || k.ends_with("::Parallel") || k.ends_with("::Parallel>"));
+                return has_parallel;
+            }
+        }
+        false
+    };
+
     for id in order.iter() {
         let Some(view) = doc.views.get(id) else { continue };
         match view.kind {
@@ -347,13 +429,8 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                 let max = doc.transform.to_screen(rect_world.max);
                 let rect_screen = egui::Rect::from_min_max(min, max);
                 let rounding = egui::CornerRadius::same(6);
-                painter.rect(
-                    rect_screen,
-                    rounding,
-                    egui::Color32::from_rgb(30, 30, 35),
-                    egui::Stroke::new(1.0, egui::Color32::from_gray(160)),
-                    egui::StrokeKind::Outside,
-                );
+                // Fill
+                painter.rect_filled(rect_screen, rounding, egui::Color32::from_rgb(30, 30, 35));
                 let header_min = rect_world.min;
                 let header_max = egui::pos2(rect_world.max.x, rect_world.min.y + header_h_world);
                 let header_rect = egui::Rect::from_min_max(doc.transform.to_screen(header_min), doc.transform.to_screen(header_max));
@@ -361,6 +438,21 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                 painter.hline(header_rect.x_range(), header_rect.max.y, egui::Stroke::new(1.0, egui::Color32::from_gray(90)));
                 let label_pos = header_rect.min + egui::vec2(pad, pad * 0.5);
                 painter.text(label_pos, egui::Align2::LEFT_TOP, &view.label, font_id.clone(), egui::Color32::WHITE);
+                // Border: dashed if direct child of a Parallel (draw after header so it stays visible)
+                let is_direct_child_of_parallel = is_direct_child_of_parallel_fn(id);
+                if is_direct_child_of_parallel {
+                    let dash = 6.0;
+                    let gap = 4.0;
+                    draw_dashed_rounded_rect(rect_screen, 6.0, egui::Color32::from_gray(160), 1.0, dash, gap);
+                } else {
+                    painter.rect(
+                        rect_screen,
+                        rounding,
+                        egui::Color32::TRANSPARENT,
+                        egui::Stroke::new(1.0, egui::Color32::from_gray(160)),
+                        egui::StrokeKind::Outside,
+                    );
+                }
             }
             UiViewKind::Edge { source, target } => {
                 // Endpoints
@@ -418,13 +510,23 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                 let max = doc.transform.to_screen(rect_world.max);
                 let rect_screen = egui::Rect::from_min_max(min, max);
                 let rounding = egui::CornerRadius::same(6);
-                painter.rect(
-                    rect_screen,
-                    rounding,
-                    egui::Color32::from_rgb(30, 30, 35),
-                    egui::Stroke::new(1.0, egui::Color32::from_gray(160)),
-                    egui::StrokeKind::Outside,
-                );
+                // Fill
+                painter.rect_filled(rect_screen, rounding, egui::Color32::from_rgb(30, 30, 35));
+                // Border: dashed if direct child of a Parallel
+                let is_direct_child_of_parallel = is_direct_child_of_parallel_fn(id);
+                if is_direct_child_of_parallel {
+                    let dash = 6.0;
+                    let gap = 4.0;
+                    draw_dashed_rounded_rect(rect_screen, 6.0, egui::Color32::from_gray(160), 1.0, dash, gap);
+                } else {
+                    painter.rect(
+                        rect_screen,
+                        rounding,
+                        egui::Color32::TRANSPARENT,
+                        egui::Stroke::new(1.0, egui::Color32::from_gray(160)),
+                        egui::StrokeKind::Outside,
+                    );
+                }
                 painter.text(rect_screen.center_top() + egui::vec2(0.0, 12.0 * zoom), egui::Align2::CENTER_TOP, &view.label, font_id.clone(), egui::Color32::WHITE);
             }
         }
