@@ -53,6 +53,8 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
     let mut views: std::collections::HashMap<crate::model::EntityId, UiView> = std::collections::HashMap::new();
     let mut transform_parent: std::collections::HashMap<crate::model::EntityId, Option<crate::model::EntityId>> = std::collections::HashMap::new();
     let mut transform_children: std::collections::HashMap<crate::model::EntityId, Vec<crate::model::EntityId>> = std::collections::HashMap::new();
+    let mut initial_child_of: std::collections::HashMap<crate::model::EntityId, crate::model::EntityId> = std::collections::HashMap::new();
+    let mut is_initial_child: std::collections::HashSet<crate::model::EntityId> = std::collections::HashSet::new();
 
     // Insert node views
     for (id, node) in node_views.iter() {
@@ -61,6 +63,52 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
             UiNodeKind::Parent => UiViewKind::Parent,
             UiNodeKind::Parallel => UiViewKind::Parallel,
         };
+        // Detect initial child component on this non-Parallel parent and record mapping
+        if !matches!(node.kind, UiNodeKind::Parallel) {
+        if let Some(entry) = snapshot.nodes.get(id).and_then(|n| n.components.get(c::INITIAL_STATE)) {
+            let val = entry.value_json.clone();
+            // Helper to try build an EntityId::Server from various JSON encodings
+            let mut try_set_child = |server_id: u64| {
+                let child = crate::model::EntityId::Server(crate::types::ServerEntity(server_id));
+                if snapshot.nodes.contains_key(&child) && snapshot.nodes.get(id).map(|n| n.children.contains(&child)).unwrap_or(false) {
+                    initial_child_of.insert(*id, child);
+                    is_initial_child.insert(child);
+                    true
+                } else { false }
+            };
+
+            let mut _set = false;
+            // 1) Plain number
+            if let Some(num) = val.as_u64() {
+                _set = try_set_child(num);
+            }
+            // 2) Plain string
+            if !_set {
+                if let Some(s) = val.as_str() {
+                    if let Ok(n) = s.parse::<u64>() { _set = try_set_child(n); }
+                }
+            }
+            // 3) Array: use first numeric or numeric-string
+            if !_set {
+                if let serde_json::Value::Array(arr) = val.clone() {
+                    for item in arr {
+                        if let Some(n) = item.as_u64() { if try_set_child(n) { _set = true; break; } }
+                        if let Some(s) = item.as_str() { if let Ok(n) = s.parse::<u64>() { if try_set_child(n) { _set = true; break; } } }
+                    }
+                }
+            }
+            // 4) Object: scan values for number or numeric-string
+            if !_set {
+                if let serde_json::Value::Object(obj) = val {
+                    for v in obj.values() {
+                        if let Some(n) = v.as_u64() { if try_set_child(n) { _set = true; break; } }
+                        if let Some(s) = v.as_str() { if let Ok(n) = s.parse::<u64>() { if try_set_child(n) { _set = true; break; } } }
+                    }
+                }
+            }
+        }
+        }
+
         views.insert(*id, UiView { id: *id, rect: node.rect, kind: view_kind, label: node.label.clone(), pill: None });
         transform_parent.insert(*id, snapshot.nodes.get(id).and_then(|n| n.parent));
     }
@@ -105,6 +153,8 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
     doc.draw_order = unified_order;
     doc.transform_parent = transform_parent;
     doc.transform_children = transform_children;
+    doc.initial_child_of = initial_child_of;
+    doc.is_initial_child = is_initial_child;
 }
 
 /// Choose the pill parent for an edge. For edges between a parent and its child (in either

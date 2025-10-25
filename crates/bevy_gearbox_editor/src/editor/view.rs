@@ -488,6 +488,61 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
         draw_dashed_arc(egui::pos2(x0 + r, y1 - r), r, 0.5 * pi, pi);
     };
 
+    // Helper to draw "initial" indicator: small solid circle outside top-left with a curved arrow to the node's left edge
+    let draw_initial_indicator = |rect_screen: egui::Rect| {
+        // Solid circle, half previous size
+        let r = 4.0 * zoom;
+        let x_offset = 16.0 * zoom;
+        let y_offset = 4.0 * zoom;
+        let start = egui::pos2(rect_screen.min.x - x_offset, rect_screen.min.y - y_offset);
+
+        // Terminate on the left edge of the node, slightly below the top-left corner
+        let end = egui::pos2(rect_screen.min.x, rect_screen.min.y + 8.0 * zoom);
+
+        // Cubic Bézier controls to start downward then turn right
+        let k = 14.0 * zoom;
+        let c1 = egui::pos2(start.x, start.y + k);         // vertical tangent at start
+        let c2 = egui::pos2(end.x - k, end.y);             // horizontal tangent at end (pointing right)
+
+        // Draw solid circle
+        painter.circle_filled(start, r, egui::Color32::WHITE);
+
+        // Sample and draw the cubic Bézier
+        let segments = 20;
+        let mut prev = start;
+        for i in 1..=segments {
+            let t = (i as f32) / (segments as f32);
+            let omt = 1.0 - t;
+            // Cubic Bézier interpolation
+            let x = omt * omt * omt * start.x
+                + 3.0 * omt * omt * t * c1.x
+                + 3.0 * omt * t * t * c2.x
+                + t * t * t * end.x;
+            let y = omt * omt * omt * start.y
+                + 3.0 * omt * omt * t * c1.y
+                + 3.0 * omt * t * t * c2.y
+                + t * t * t * end.y;
+            let p = egui::pos2(x, y);
+            painter.line_segment([prev, p], egui::Stroke::new(2.0, egui::Color32::WHITE));
+            prev = p;
+        }
+
+        // Arrowhead pointing along the end tangent (cubic derivative at t=1 is proportional to end - c2)
+        let end_tangent = (end - c2).normalized();
+        let arrow_len = 10.0 * zoom;
+        let arrow_w = 8.0 * zoom;
+        let tip = end;
+        let base = tip - end_tangent * arrow_len;
+        let perp = egui::pos2(-end_tangent.y, end_tangent.x);
+        let left = base + perp.to_vec2() * (arrow_w * 0.5);
+        let right = base - perp.to_vec2() * (arrow_w * 0.5);
+        painter.add(egui::Shape::convex_polygon(
+            vec![tip, left, right],
+            egui::Color32::WHITE,
+            egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
+        ));
+    };
+
     // Helper: is this view a direct child of a Parallel state (by view kind or by graph components)?
     let is_direct_child_of_parallel_fn = |child_id: &crate::model::EntityId| -> bool {
         let parent_opt = doc.transform_parent.get(child_id).and_then(|p| *p);
@@ -537,6 +592,10 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
                         egui::Stroke::new(1.0, egui::Color32::from_gray(160)),
                         egui::StrokeKind::Outside,
                     );
+                }
+                // Initial indicator for nodes that are the parent's initial child
+                if doc.is_initial_child.contains(id) {
+                    draw_initial_indicator(rect_screen);
                 }
             }
             UiViewKind::Edge { source, target } => {
@@ -650,6 +709,10 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
             );
                 }
                 painter.text(rect_screen.center_top() + egui::vec2(0.0, 12.0 * zoom), egui::Align2::CENTER_TOP, &view.label, font_id.clone(), egui::Color32::WHITE);
+                // Initial indicator for nodes that are the parent's initial child
+                if doc.is_initial_child.contains(id) {
+                    draw_initial_indicator(rect_screen);
+                }
             }
         }
     }
