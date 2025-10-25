@@ -1,8 +1,9 @@
 use bevy::prelude::*;
 use bevy::tasks::{futures_lite::future, IoTaskPool, Task};
-use crate::rpcs::{list_state_machines, fetch_machine_graph_text};
+use crate::rpcs::{list_state_machines, fetch_machine_graph_model};
 use crate::client::{jsonrpc_save_machine, jsonrpc_select};
-use crate::types::{ServerEntity, MachineSummary, GraphText, NetError};
+use crate::types::{ServerEntity, MachineSummary, NetError};
+use crate::model::StateMachineGraph;
 use std::sync::Arc;
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
@@ -17,6 +18,7 @@ impl Plugin for NetPlugin {
             .insert_resource(PendingTasks::default())
             .insert_resource(TokioRuntime(Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime"))))
             .insert_resource(NetworkConfig { url: std::env::var("BRP_URL").unwrap_or_else(|_| "http://127.0.0.1:15703".to_string()) })
+            .insert_resource(ConnectionStatus(ConnectionState::Disconnected))
             .configure_sets(Update, (NetSet::Send, NetSet::Drain).chain())
             .add_systems(Update, handle_commands.in_set(NetSet::Send))
             .add_systems(Update, collect_task_results.in_set(NetSet::Drain));
@@ -31,9 +33,21 @@ pub(crate) struct NetworkConfig {
 #[derive(Resource, Clone)]
 pub(crate) struct TokioRuntime(pub Arc<tokio::runtime::Runtime>);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+}
+
+#[derive(Resource, Clone)]
+pub(crate) struct ConnectionStatus(pub ConnectionState);
+
 #[derive(Message, Clone)]
 pub(crate) enum NetCommand {
     SetUrl { url: String },
+    Connect,
+    Disconnect,
     Refresh,
     Select { id: ServerEntity },
     Save { id: ServerEntity },
@@ -42,10 +56,13 @@ pub(crate) enum NetCommand {
 
 #[derive(Message)]
 pub(crate) enum NetEvent {
+    Connected,
+    Disconnected { reason: Option<NetError> },
+    ConnectionError(NetError),
     RefreshResult(Result<Vec<MachineSummary>, NetError>),
     SelectResult(Result<(), NetError>),
     SaveResult(Result<(), NetError>),
-    GraphResult { id: ServerEntity, result: Result<GraphText, NetError> },
+    GraphResult { id: ServerEntity, result: Result<StateMachineGraph, NetError> },
 }
 
 #[derive(Resource, Default)]
@@ -57,6 +74,7 @@ pub(crate) fn handle_commands(
     mut commands_reader: MessageReader<NetCommand>,
     mut pending: ResMut<PendingTasks>,
     mut cfg: ResMut<NetworkConfig>,
+    mut conn: ResMut<ConnectionStatus>,
     rt: Res<TokioRuntime>,
 ) {
     let pool = IoTaskPool::get();
@@ -64,6 +82,25 @@ pub(crate) fn handle_commands(
         match cmd {
             NetCommand::SetUrl { url } => {
                 cfg.url = url;
+            }
+            NetCommand::Connect => {
+                conn.0 = ConnectionState::Connecting;
+                let url = cfg.url.clone();
+                let rt_handle = rt.0.clone();
+                let task = pool.spawn(async move {
+                    rt_handle.block_on(async move {
+                        match crate::client::jsonrpc_ping(&url).await {
+                            Ok(()) => NetEvent::Connected,
+                            Err(e) => NetEvent::ConnectionError(NetError::from(e)),
+                        }
+                    })
+                });
+                pending.tasks.push(task);
+            }
+            NetCommand::Disconnect => {
+                conn.0 = ConnectionState::Disconnected;
+                let task = pool.spawn(async move { NetEvent::Disconnected { reason: None } });
+                pending.tasks.push(task);
             }
             other => {
                 let url = cfg.url.clone();
@@ -88,9 +125,10 @@ pub(crate) fn handle_commands(
                                 NetEvent::SaveResult(r)
                             }
                             NetCommand::FetchGraph { id } => {
-                                let result = fetch_machine_graph_text(&url, id.0).await.map(|text| GraphText { id, text }).map_err(NetError::from);
+                                let result = fetch_machine_graph_model(&url, id.0).await.map_err(NetError::from);
                                 NetEvent::GraphResult { id, result }
                             }
+                            NetCommand::Connect | NetCommand::Disconnect => unreachable!(),
                             NetCommand::SetUrl { .. } => unreachable!(),
                         }
                     })
@@ -104,10 +142,16 @@ pub(crate) fn handle_commands(
 pub(crate) fn collect_task_results(
     mut pending: ResMut<PendingTasks>,
     mut events_writer: MessageWriter<NetEvent>,
+    mut conn: ResMut<ConnectionStatus>,
 ) {
     let mut i = 0;
     while i < pending.tasks.len() {
         let is_ready = if let Some(evt) = future::block_on(bevy::tasks::futures_lite::future::poll_once(&mut pending.tasks[i])) {
+            match &evt {
+                NetEvent::Connected => conn.0 = ConnectionState::Connected,
+                NetEvent::Disconnected { .. } | NetEvent::ConnectionError(_) => conn.0 = ConnectionState::Disconnected,
+                _ => {}
+            }
             events_writer.write(evt);
             true
         } else {

@@ -3,7 +3,8 @@ use bevy_egui::{egui, EguiContexts};
 use std::collections::HashMap;
 
 use crate::net::{NetPlugin, NetCommand, NetEvent, NetworkConfig};
-use crate::types::{ServerEntity, GraphText};
+use crate::types::ServerEntity;
+use crate::model::StateMachineGraph;
 
 pub(crate) struct EditorPlugin;
 
@@ -31,7 +32,7 @@ struct UiState {
     connecting: bool,
     error: Option<String>,
     machines: Vec<(ServerEntity, Option<String>)>,
-    graphs: HashMap<ServerEntity, String>,
+    graphs: HashMap<ServerEntity, StateMachineGraph>,
 }
 
 fn setup_camera(mut commands: Commands) {
@@ -63,8 +64,8 @@ fn poll_network(
                 processed += 1;
             }
             NetEvent::GraphResult { id, result } => {
-                if let Ok(GraphText { text, .. }) = result {
-                    ui.graphs.insert(*id, text.clone());
+                if let Ok(graph) = result {
+                    ui.graphs.insert(*id, graph.clone());
                 }
                 processed += 1;
             }
@@ -122,9 +123,9 @@ fn ui_system(
                             cmd_writer.write(NetCommand::Save { id: *id });
                         }
                     });
-                    if let Some(text) = ui.graphs.get(id) {
+                    if let Some(graph) = ui.graphs.get(id) {
                         col.add_space(2.0);
-                        col.code(text);
+                        col.code(format!("{}", graph));
                         col.add_space(6.0);
                     }
                 }

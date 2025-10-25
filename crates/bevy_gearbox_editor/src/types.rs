@@ -1,18 +1,14 @@
 use std::fmt;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub(crate) struct ServerEntity(pub u64);
 
 #[derive(Clone, Debug)]
 pub(crate) struct MachineSummary {
     pub(crate) id: ServerEntity,
     pub(crate) name: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct GraphText {
-    pub(crate) id: ServerEntity,
-    pub(crate) text: String,
 }
 
 #[derive(Clone, Debug)]

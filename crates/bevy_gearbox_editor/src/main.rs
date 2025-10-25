@@ -8,6 +8,7 @@ mod client;
 mod plugin;
 mod component;
 mod types;
+mod model;
 
 fn main() {
     App::new()

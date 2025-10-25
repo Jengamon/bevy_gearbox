@@ -2,6 +2,8 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use crate::client::{jsonrpc_call, jsonrpc_ping};
 use crate::component as c;
+use crate::model::{ComponentBag, ComponentEntry, Edge, EdgeId, EntityId, NodeId, StateMachineGraph, StateNode};
+use crate::types::ServerEntity;
 
 pub(crate) fn extract_components_map(v: Value) -> Result<serde_json::Map<String, Value>, String> {
     match v {
@@ -262,4 +264,79 @@ pub(crate) async fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<
     Ok(out)
 }
 
+
+pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result<StateMachineGraph, String> {
+    // Build root node
+    let root_comps = get_components(url, machine, Some(&[c::STATE_CHILDREN, c::NAME])).await?;
+    let root_id = NodeId(EntityId::Server(ServerEntity(machine)));
+    let mut root_node = StateNode::new(root_id);
+    // Fill components bag for root
+    let mut root_bag = ComponentBag::default();
+    if let Some(v) = root_comps.get(c::NAME).cloned() { root_bag.insert(ComponentEntry::new(c::NAME.to_string(), v)); }
+    if let Some(v) = root_comps.get(c::STATE_CHILDREN).cloned() { root_bag.insert(ComponentEntry::new(c::STATE_CHILDREN.to_string(), v)); }
+    root_node.components = root_bag;
+    if let Some(n) = root_comps.get(c::NAME).and_then(|v| v.as_str()) { root_node.display_name = Some(n.to_string()); }
+
+    let mut graph = StateMachineGraph::new(root_node);
+
+    // Traverse children and build nodes
+    let mut stack: Vec<(NodeId, u64)> = Vec::new();
+    if let Some(value) = root_comps.get(c::STATE_CHILDREN) {
+        for child in parse_entity_list(value) {
+            stack.push((root_id, child));
+        }
+    }
+    while let Some((parent_id, entity)) = stack.pop() {
+        let id = NodeId(EntityId::Server(ServerEntity(entity)));
+        if graph.nodes.contains_key(&id) { continue; }
+        let comps = get_components(url, entity, Some(&[c::STATE_CHILDREN, c::NAME])).await?;
+        let mut node = StateNode::new(id);
+        node.parent = Some(parent_id);
+        // Components bag
+        let mut bag = ComponentBag::default();
+        if let Some(v) = comps.get(c::NAME).cloned() { bag.insert(ComponentEntry::new(c::NAME.to_string(), v)); }
+        if let Some(v) = comps.get(c::STATE_CHILDREN).cloned() { bag.insert(ComponentEntry::new(c::STATE_CHILDREN.to_string(), v)); }
+        node.components = bag;
+        if let Some(n) = comps.get(c::NAME).and_then(|v| v.as_str()) { node.display_name = Some(n.to_string()); }
+        // Children
+        if let Some(children) = comps.get(c::STATE_CHILDREN) {
+            let child_ids = parse_entity_list(children);
+            for child in &child_ids { stack.push((id, *child)); }
+            node.children = child_ids.into_iter().map(|e| NodeId(EntityId::Server(ServerEntity(e)))).collect();
+        }
+        // Insert and update parent's child list (ensure parent exists)
+        graph.nodes.insert(id, node);
+        if let Some(parent) = graph.nodes.get_mut(&parent_id) { if !parent.children.contains(&id) { parent.children.push(id); } }
+    }
+
+    // Build edges by scanning transitions of each node
+    for node_id in graph.nodes.keys().cloned().collect::<Vec<_>>() {
+        let entity = match node_id.0 { EntityId::Server(ServerEntity(e)) => e, _ => continue };
+        let comps = get_components(url, entity, Some(&[c::TRANSITIONS])).await?;
+        let Some(transitions_val) = comps.get(c::TRANSITIONS) else { continue; };
+        let edge_entities = parse_entity_list(transitions_val);
+        for edge_e in edge_entities {
+            let all = get_components(url, edge_e, Some(&[c::TARGET, c::ALWAYS_EDGE, c::AFTER, c::NAME])).await?;
+            // Build edge bag
+            let mut bag = ComponentBag::default();
+            if let Some(v) = all.get(c::TARGET).cloned() { bag.insert(ComponentEntry::new(c::TARGET.to_string(), v)); }
+            if let Some(v) = all.get(c::ALWAYS_EDGE).cloned() { bag.insert(ComponentEntry::new(c::ALWAYS_EDGE.to_string(), v)); }
+            if let Some(v) = all.get(c::AFTER).cloned() { bag.insert(ComponentEntry::new(c::AFTER.to_string(), v)); }
+            if let Some(v) = all.get(c::NAME).cloned() { bag.insert(ComponentEntry::new(c::NAME.to_string(), v)); }
+
+            let target_id_u64 = all.get(c::TARGET).and_then(|v| parse_single_entity(v)).unwrap_or(0);
+            let target_id = NodeId(EntityId::Server(ServerEntity(target_id_u64)));
+            // Ensure target exists at least as a placeholder
+            graph.nodes.entry(target_id).or_insert_with(|| StateNode::new(target_id));
+
+            let e_id = EdgeId(EntityId::Server(ServerEntity(edge_e)));
+            let edge = Edge { id: e_id, source: node_id, target: target_id, components: bag, display_label: None, dirty: Default::default(), server_version: None };
+            graph.adjacency_out.entry(node_id).or_default().push(e_id);
+            graph.adjacency_in.entry(target_id).or_default().push(e_id);
+            graph.edges.insert(e_id, edge);
+        }
+    }
+
+    Ok(graph)
+}
 
