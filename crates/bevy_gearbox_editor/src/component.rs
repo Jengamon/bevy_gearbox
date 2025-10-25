@@ -14,4 +14,7 @@ pub(crate) const AFTER: &str = "bevy_gearbox_core::transitions::After";
 // Substring used to detect generic event edge component types like ...EventEdge<...>
 pub(crate) const EVENT_EDGE_SUBSTR: &str = "EventEdge";
 
+// Node kind markers
+pub(crate) const PARALLEL: &str = "bevy_gearbox_core::Parallel";
+
 

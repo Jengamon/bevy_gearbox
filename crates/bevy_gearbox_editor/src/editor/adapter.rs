@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 use crate::model::{StateMachineGraph, NodeId, EdgeId};
+use crate::component as c;
 use super::view_model::{GraphDoc, UiNode, UiNodeKind, UiEdge, EdgePill};
 
 /// Merge a fresh snapshot into an existing GraphDoc, preserving layout where possible
@@ -20,8 +21,10 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
             .display_name
             .clone()
             .unwrap_or_else(|| format!("{}", id.0));
+        // Derive kind from components; Parallel is a parent as well
+        let has_parallel = node.components.keys().any(|k| k == c::PARALLEL || k.ends_with("::Parallel") || k.ends_with("::Parallel>"));
         let is_container = !node.children.is_empty();
-        let kind = if is_container { UiNodeKind::Parent } else { UiNodeKind::Leaf };
+        let kind = if has_parallel { UiNodeKind::Parallel } else if is_container { UiNodeKind::Parent } else { UiNodeKind::Leaf };
         node_views.insert(*id, UiNode { id: *id, rect, kind, label, is_container });
     }
 
