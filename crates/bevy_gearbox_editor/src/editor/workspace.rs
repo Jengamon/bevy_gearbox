@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
-use crate::model::{NodeId, EdgeId};
-use crate::types::ServerEntity;
+use crate::{model::EntityId, types::ServerEntity};
 use super::view_model::GraphDoc;
 use bevy_egui::egui;
 
@@ -14,12 +13,12 @@ pub struct Workspace {
 
 #[derive(Debug, Default)]
 pub struct Selection {
-    pub node: Option<NodeId>,
-    pub edge: Option<EdgeId>,
+    pub node: Option<EntityId>,
+    pub edge: Option<EntityId>,
 }
 
 #[derive(Debug, Clone)]
-pub enum ContextTarget { Node(NodeId), Edge(EdgeId), Canvas }
+pub enum ContextTarget { Node(EntityId), Edge(EntityId), Canvas }
 
 #[derive(Debug, Clone)]
 pub struct ContextMenuState { pub target: ContextTarget, pub pos: egui::Pos2 }

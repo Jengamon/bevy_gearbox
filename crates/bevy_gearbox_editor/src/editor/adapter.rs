@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
-use crate::model::{StateMachineGraph, NodeId, EdgeId};
+use crate::model::{StateMachineGraph, EntityId};
 use crate::component as c;
 use super::view_model::{GraphDoc, UiNode, UiNodeKind, UiEdge, EdgePill};
 
@@ -20,7 +20,7 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
         let label = node
             .display_name
             .clone()
-            .unwrap_or_else(|| format!("{}", id.0));
+            .unwrap_or_else(|| format!("{}", id));
         // Derive kind from components; Parallel is a parent as well
         let has_parallel = node.components.keys().any(|k| k == c::PARALLEL || k.ends_with("::Parallel") || k.ends_with("::Parallel>"));
         let is_container = !node.children.is_empty();
@@ -42,7 +42,9 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
         };
         let pill = if let Some(prev) = preserved.as_ref() { prev.pill.clone() } else { EdgePill { pos: midpoint, offset_from_midpoint: egui::Vec2::ZERO, dragging: false } };
         let label = edge.display_label.clone().unwrap_or_else(|| "Edge".to_string());
-        edge_views.insert(*eid, UiEdge { id: *eid, source: edge.source, target: edge.target, label, pill });
+        // Pill parent: make the pill a sibling of the target → use target's parent if present
+        let pill_parent = snapshot.nodes.get(&edge.target).and_then(|n| n.parent).or(Some(edge.target));
+        edge_views.insert(*eid, UiEdge { id: *eid, source: edge.source, target: edge.target, label, pill, pill_parent });
     }
 
     // Compute deterministic draw orders
@@ -55,7 +57,7 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
     doc.draw_order_edges = edge_order;
 }
 
-fn apply_initial_layout_for_unseen_nodes(graph: &StateMachineGraph, node_views: &mut std::collections::HashMap<NodeId, UiNode>) {
+fn apply_initial_layout_for_unseen_nodes(graph: &StateMachineGraph, node_views: &mut std::collections::HashMap<EntityId, UiNode>) {
     let default_size = egui::vec2(140.0, 60.0);
     let v_spacing = 100.0;
     let content_padding = egui::vec2(24.0, 24.0);
@@ -63,9 +65,9 @@ fn apply_initial_layout_for_unseen_nodes(graph: &StateMachineGraph, node_views: 
     let origin = egui::pos2(100.0, 100.0);
 
     // DFS traversal to assign positions; maintain next row per parent
-    let mut stack: Vec<NodeId> = Vec::new();
+    let mut stack: Vec<EntityId> = Vec::new();
     if graph.nodes.contains_key(&graph.root) { stack.push(graph.root); }
-    let mut next_row_per_parent: std::collections::HashMap<NodeId, usize> = std::collections::HashMap::new();
+    let mut next_row_per_parent: std::collections::HashMap<EntityId, usize> = std::collections::HashMap::new();
 
     while let Some(id) = stack.pop() {
         // Ensure parent processed before children
@@ -99,11 +101,11 @@ fn apply_initial_layout_for_unseen_nodes(graph: &StateMachineGraph, node_views: 
     }
 }
 
-fn compute_draw_orders(graph: &StateMachineGraph) -> (Vec<NodeId>, Vec<EdgeId>) {
+fn compute_draw_orders(graph: &StateMachineGraph) -> (Vec<EntityId>, Vec<EntityId>) {
     // Node order: DFS from root following children order
-    let mut node_order: Vec<NodeId> = Vec::new();
-    let mut stack: Vec<NodeId> = Vec::new();
-    let mut seen: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
+    let mut node_order: Vec<EntityId> = Vec::new();
+    let mut stack: Vec<EntityId> = Vec::new();
+    let mut seen: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
     if graph.nodes.contains_key(&graph.root) { stack.push(graph.root); }
     while let Some(id) = stack.pop() {
         if !seen.insert(id) { continue; }
@@ -114,10 +116,10 @@ fn compute_draw_orders(graph: &StateMachineGraph) -> (Vec<NodeId>, Vec<EdgeId>) 
     }
 
     // Build a ranking for nodes to order edges by source appearance
-    let mut rank: std::collections::HashMap<NodeId, usize> = std::collections::HashMap::new();
+    let mut rank: std::collections::HashMap<EntityId, usize> = std::collections::HashMap::new();
     for (i, id) in node_order.iter().enumerate() { rank.insert(*id, i); }
 
-    let mut edge_order: Vec<EdgeId> = Vec::new();
+    let mut edge_order: Vec<EntityId> = Vec::new();
     // Prefer adjacency_out per node order for determinism
     for node_id in node_order.iter() {
         if let Some(out) = graph.adjacency_out.get(node_id) {

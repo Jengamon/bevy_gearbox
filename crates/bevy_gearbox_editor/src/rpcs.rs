@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use crate::client::{jsonrpc_call, jsonrpc_ping};
 use crate::component as c;
-use crate::model::{ComponentBag, ComponentEntry, Edge, EdgeId, EntityId, NodeId, StateMachineGraph, StateNode};
+use crate::model::{ComponentBag, ComponentEntry, Edge, EntityId, StateMachineGraph, StateNode};
 use crate::types::ServerEntity;
 
 pub(crate) fn extract_components_map(v: Value) -> Result<serde_json::Map<String, Value>, String> {
@@ -139,11 +139,21 @@ async fn get_name(url: &str, cache: &mut HashMap<u64, String>, entity: u64) -> R
 }
 
 fn choose_edge_label(components: &HashMap<String, Value>) -> String {
-    let keys: HashSet<String> = components.keys().cloned().collect();
-    if keys.contains(c::ALWAYS_EDGE) { return "Always".to_string(); }
-    if keys.contains(c::AFTER) { return "After".to_string(); }
+    // 1) Prefer explicit Name text if present
+    if let Some(name_val) = components.get(c::NAME) {
+        let maybe_name = name_val.as_str().map(|s| s.trim().to_string()).or_else(|| {
+            if let Value::Object(obj) = name_val {
+                for v in obj.values() {
+                    if let Some(s) = v.as_str() { return Some(s.trim().to_string()); }
+                }
+            }
+            None
+        });
+        if let Some(name) = maybe_name { if !name.is_empty() { return name; } }
+    }
 
-    // Prefer generic EventEdge types
+    // 2) Otherwise, prefer EventEdge<T> → use inner T (simple name)
+    let keys: HashSet<String> = components.keys().cloned().collect();
     let mut event_edge_types: Vec<&String> = keys.iter().filter(|s| s.contains(c::EVENT_EDGE_SUBSTR)) .collect();
     event_edge_types.sort();
     if let Some(ty) = event_edge_types.first() {
@@ -151,9 +161,7 @@ fn choose_edge_label(components: &HashMap<String, Value>) -> String {
         if let (Some(start), Some(end)) = (s.find('<'), s.rfind('>')) {
             if end > start + 1 {
                 let inner = &s[start + 1..end];
-                if let Some(simple) = inner.rsplit("::").next() {
-                    return simple.to_string();
-                }
+                if let Some(simple) = inner.rsplit("::").next() { return simple.to_string(); }
                 return inner.to_string();
             }
         }
@@ -161,25 +169,10 @@ fn choose_edge_label(components: &HashMap<String, Value>) -> String {
         return (*ty).clone();
     }
 
-    // Fallback: try to extract a label from the edge's Name like "... (OnComplete)"
-    if let Some(name_val) = components.get(c::NAME) {
-        let maybe_name = name_val.as_str().map(|s| s.to_string()).or_else(|| {
-            if let Value::Object(obj) = name_val {
-                for v in obj.values() {
-                    if let Some(s) = v.as_str() { return Some(s.to_string()); }
-                }
-            }
-            None
-        });
-        if let Some(name) = maybe_name {
-            if let (Some(l), Some(r)) = (name.rfind('('), name.rfind(')')) {
-                if r > l + 1 {
-                    return name[l+1..r].to_string();
-                }
-            }
-        }
-    }
+    // 3) Else, if AlwaysEdge present, use "Always"
+    if keys.contains(c::ALWAYS_EDGE) { return "Always".to_string(); }
 
+    // Fallback
     "Edge".to_string()
 }
 
@@ -268,7 +261,7 @@ pub(crate) async fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<
 pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result<StateMachineGraph, String> {
     // Build root node
     let root_comps = get_components(url, machine, Some(&[c::STATE_CHILDREN, c::NAME])).await?;
-    let root_id = NodeId(EntityId::Server(ServerEntity(machine)));
+    let root_id = EntityId::Server(ServerEntity(machine));
     let mut root_node = StateNode::new(root_id);
     // Fill components bag for root
     let mut root_bag = ComponentBag::default();
@@ -280,14 +273,14 @@ pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result
     let mut graph = StateMachineGraph::new(root_node);
 
     // Traverse children and build nodes
-    let mut stack: Vec<(NodeId, u64)> = Vec::new();
+    let mut stack: Vec<(EntityId, u64)> = Vec::new();
     if let Some(value) = root_comps.get(c::STATE_CHILDREN) {
         for child in parse_entity_list(value) {
             stack.push((root_id, child));
         }
     }
     while let Some((parent_id, entity)) = stack.pop() {
-        let id = NodeId(EntityId::Server(ServerEntity(entity)));
+        let id = EntityId::Server(ServerEntity(entity));
         if graph.nodes.contains_key(&id) { continue; }
         let comps = get_components(url, entity, Some(&[c::STATE_CHILDREN, c::NAME])).await?;
         let mut node = StateNode::new(id);
@@ -302,7 +295,7 @@ pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result
         if let Some(children) = comps.get(c::STATE_CHILDREN) {
             let child_ids = parse_entity_list(children);
             for child in &child_ids { stack.push((id, *child)); }
-            node.children = child_ids.into_iter().map(|e| NodeId(EntityId::Server(ServerEntity(e)))).collect();
+            node.children = child_ids.into_iter().map(|e| EntityId::Server(ServerEntity(e))).collect();
         }
         // Insert and update parent's child list (ensure parent exists)
         graph.nodes.insert(id, node);
@@ -311,7 +304,7 @@ pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result
 
     // Build edges by scanning transitions of each node
     for node_id in graph.nodes.keys().cloned().collect::<Vec<_>>() {
-        let entity = match node_id.0 { EntityId::Server(ServerEntity(e)) => e, _ => continue };
+        let entity = match node_id { EntityId::Server(ServerEntity(e)) => e, _ => continue };
         let comps = get_components(url, entity, Some(&[c::TRANSITIONS])).await?;
         let Some(transitions_val) = comps.get(c::TRANSITIONS) else { continue; };
         let edge_entities = parse_entity_list(transitions_val);
@@ -325,12 +318,13 @@ pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result
             if let Some(v) = all.get(c::NAME).cloned() { bag.insert(ComponentEntry::new(c::NAME.to_string(), v)); }
 
             let target_id_u64 = all.get(c::TARGET).and_then(|v| parse_single_entity(v)).unwrap_or(0);
-            let target_id = NodeId(EntityId::Server(ServerEntity(target_id_u64)));
+            let target_id = EntityId::Server(ServerEntity(target_id_u64));
             // Ensure target exists at least as a placeholder
             graph.nodes.entry(target_id).or_insert_with(|| StateNode::new(target_id));
 
-            let e_id = EdgeId(EntityId::Server(ServerEntity(edge_e)));
-            let edge = Edge { id: e_id, source: node_id, target: target_id, components: bag, display_label: None, dirty: Default::default(), server_version: None };
+            let e_id = EntityId::Server(ServerEntity(edge_e));
+            let display_label = Some(choose_edge_label(&all));
+            let edge = Edge { id: e_id, source: node_id, target: target_id, components: bag, display_label, dirty: Default::default(), server_version: None };
             graph.adjacency_out.entry(node_id).or_default().push(e_id);
             graph.adjacency_in.entry(target_id).or_default().push(e_id);
             graph.edges.insert(e_id, edge);

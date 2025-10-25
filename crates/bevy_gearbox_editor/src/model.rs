@@ -21,6 +21,12 @@ pub(crate) enum EntityId {
     Local(LocalId),
 }
 
+impl Default for EntityId {
+    fn default() -> Self {
+        EntityId::Local(LocalId(0))
+    }
+}
+
 impl fmt::Display for EntityId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -29,20 +35,6 @@ impl fmt::Display for EntityId {
         }
     }
 }
-
-/// Node identifier wrapper for clarity at use sites.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(crate) struct NodeId(pub EntityId);
-
-impl Default for NodeId {
-    fn default() -> Self {
-        Self(EntityId::Local(LocalId(0)))
-    }
-}
-
-/// Edge identifier wrapper for clarity at use sites.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(crate) struct EdgeId(pub EntityId);
 
 /// Tracks structural and data changes in the editor model.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,10 +90,10 @@ impl ComponentBag {
 /// A state in the machine hierarchy.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct StateNode {
-    pub(crate) id: NodeId,
-    pub(crate) parent: Option<NodeId>,
+    pub(crate) id: EntityId,
+    pub(crate) parent: Option<EntityId>,
     /// Child state nodes in display order.
-    pub(crate) children: Vec<NodeId>,
+    pub(crate) children: Vec<EntityId>,
     pub(crate) components: ComponentBag,
     /// Derived, non-authoritative label (e.g., from `Name`).
     pub(crate) display_name: Option<String>,
@@ -112,7 +104,7 @@ pub(crate) struct StateNode {
 }
 
 impl StateNode {
-    pub(crate) fn new(id: NodeId) -> Self {
+    pub(crate) fn new(id: EntityId) -> Self {
         Self {
             id,
             parent: None,
@@ -127,16 +119,16 @@ impl StateNode {
 
 impl Default for StateNode {
     fn default() -> Self {
-        Self::new(NodeId::default())
+        Self::new(EntityId::Local(LocalId(0)))
     }
 }
 
 /// A transition edge between states.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Edge {
-    pub(crate) id: EdgeId,
-    pub(crate) source: NodeId,
-    pub(crate) target: NodeId,
+    pub(crate) id: EntityId,
+    pub(crate) source: EntityId,
+    pub(crate) target: EntityId,
     pub(crate) components: ComponentBag,
     /// Derived label for display (e.g., event name), not authoritative.
     pub(crate) display_label: Option<String>,
@@ -145,7 +137,7 @@ pub(crate) struct Edge {
 }
 
 impl Edge {
-    pub(crate) fn new(id: EdgeId, source: NodeId, target: NodeId) -> Self {
+    pub(crate) fn new(id: EntityId, source: EntityId, target: EntityId) -> Self {
         Self {
             id,
             source,
@@ -162,12 +154,12 @@ impl Edge {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct StateMachineGraph {
     /// The root state of the machine. The root is also present in `nodes`.
-    pub(crate) root: NodeId,
-    pub(crate) nodes: HashMap<NodeId, StateNode>,
-    pub(crate) edges: HashMap<EdgeId, Edge>,
+    pub(crate) root: EntityId,
+    pub(crate) nodes: HashMap<EntityId, StateNode>,
+    pub(crate) edges: HashMap<EntityId, Edge>,
     /// Cached adjacency for quick traversal; rebuild or keep in sync on edits.
-    pub(crate) adjacency_out: HashMap<NodeId, Vec<EdgeId>>,
-    pub(crate) adjacency_in: HashMap<NodeId, Vec<EdgeId>>,
+    pub(crate) adjacency_out: HashMap<EntityId, Vec<EntityId>>,
+    pub(crate) adjacency_in: HashMap<EntityId, Vec<EntityId>>,
 }
 
 impl StateMachineGraph {
@@ -186,12 +178,12 @@ impl StateMachineGraph {
     }
 
     /// Returns all outgoing edges for a node.
-    pub(crate) fn outgoing(&self, node: &NodeId) -> &[EdgeId] {
+    pub(crate) fn outgoing(&self, node: &EntityId) -> &[EntityId] {
         self.adjacency_out.get(node).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Returns all incoming edges for a node.
-    pub(crate) fn incoming(&self, node: &NodeId) -> &[EdgeId] {
+    pub(crate) fn incoming(&self, node: &EntityId) -> &[EntityId] {
         self.adjacency_in.get(node).map(|v| v.as_slice()).unwrap_or(&[])
     }
 }
@@ -219,10 +211,10 @@ impl IdMapping {
 impl fmt::Display for StateMachineGraph {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Collect names for nodes lazily
-        let mut names: HashMap<NodeId, String> = HashMap::new();
+        let mut names: HashMap<EntityId, String> = HashMap::new();
 
         // Helper to extract a displayable name from a node's components
-        let mut get_node_name = |id: &NodeId| -> String {
+        let mut get_node_name = |id: &EntityId| -> String {
             if let Some(n) = names.get(id) { return n.clone(); }
             let name = self.nodes.get(id)
                 .and_then(|node| node.display_name.clone().or_else(|| extract_name_from_bag(&node.components)))
@@ -232,9 +224,9 @@ impl fmt::Display for StateMachineGraph {
         };
 
         // Traverse states from root using children relationships, tracking depth
-        let mut ordered: Vec<(NodeId, usize)> = Vec::new();
-        let mut stack: Vec<(NodeId, usize)> = Vec::new();
-        let mut visited: HashSet<NodeId> = HashSet::new();
+        let mut ordered: Vec<(EntityId, usize)> = Vec::new();
+        let mut stack: Vec<(EntityId, usize)> = Vec::new();
+        let mut visited: HashSet<EntityId> = HashSet::new();
         if self.nodes.contains_key(&self.root) { stack.push((self.root, 0)); }
         while let Some((id, depth)) = stack.pop() {
             if !visited.insert(id) { continue; }
@@ -317,11 +309,23 @@ fn extract_name_from_bag(bag: &ComponentBag) -> Option<String> {
 }
 
 fn choose_edge_label_bag(bag: &ComponentBag) -> String {
-    let keys: HashSet<String> = bag.entries.keys().cloned().collect();
-    if keys.contains(c::ALWAYS_EDGE) { return "Always".to_string(); }
-    if keys.contains(c::AFTER) { return "After".to_string(); }
+    // 1) Prefer explicit Name text if present
+    if let Some(name_val) = bag.entries.get(c::NAME).map(|e| e.value_json.clone()) {
+        if let Some(s) = name_val.as_str() {
+            let text = s.trim();
+            if !text.is_empty() { return text.to_string(); }
+        } else if let JsonValue::Object(obj) = name_val {
+            for v in obj.values() {
+                if let Some(s) = v.as_str() {
+                    let text = s.trim();
+                    if !text.is_empty() { return text.to_string(); }
+                }
+            }
+        }
+    }
 
-    // Prefer generic EventEdge types
+    // 2) Otherwise, prefer EventEdge<T> → use inner T (simple name)
+    let keys: HashSet<String> = bag.entries.keys().cloned().collect();
     let mut event_edge_types: Vec<&String> = keys.iter().filter(|s| s.contains(c::EVENT_EDGE_SUBSTR)).collect();
     event_edge_types.sort();
     if let Some(ty) = event_edge_types.first() {
@@ -329,9 +333,7 @@ fn choose_edge_label_bag(bag: &ComponentBag) -> String {
         if let (Some(start), Some(end)) = (s.find('<'), s.rfind('>')) {
             if end > start + 1 {
                 let inner = &s[start + 1..end];
-                if let Some(simple) = inner.rsplit("::").next() {
-                    return simple.to_string();
-                }
+                if let Some(simple) = inner.rsplit("::").next() { return simple.to_string(); }
                 return inner.to_string();
             }
         }
@@ -339,24 +341,10 @@ fn choose_edge_label_bag(bag: &ComponentBag) -> String {
         return (*ty).clone();
     }
 
-    // Fallback: try to extract a label from the edge's Name like "... (OnComplete)"
-    if let Some(name_val) = bag.entries.get(c::NAME).map(|e| e.value_json.clone()) {
-        if let Some(name) = name_val.as_str().map(|s| s.to_string()).or_else(|| {
-            if let JsonValue::Object(obj) = name_val {
-                for v in obj.values() {
-                    if let Some(s) = v.as_str() { return Some(s.to_string()); }
-                }
-            }
-            None
-        }) {
-            if let (Some(l), Some(r)) = (name.rfind('('), name.rfind(')')) {
-                if r > l + 1 {
-                    return name[l+1..r].to_string();
-                }
-            }
-        }
-    }
+    // 3) Else, if AlwaysEdge present, use "Always"
+    if keys.contains(c::ALWAYS_EDGE) { return "Always".to_string(); }
 
+    // Fallback
     "Edge".to_string()
 }
 
