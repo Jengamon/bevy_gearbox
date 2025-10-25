@@ -10,88 +10,123 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, egui::Color32::from_gray(20));
 
-    // Compute dynamic draw order per frame
+    // Compute dynamic draw order per frame using DFS with per-level subtree ordering
     let effective_selected = doc.dragging.or(doc.selected);
-    let mut baseline_index: std::collections::HashMap<crate::model::EntityId, usize> = std::collections::HashMap::new();
-    for (i, id) in doc.draw_order.iter().enumerate() { baseline_index.insert(*id, i); }
-    let mut depth_cache: std::collections::HashMap<crate::model::EntityId, usize> = std::collections::HashMap::new();
-    let mut compute_depth = |id: crate::model::EntityId| -> usize {
-        if let Some(d) = depth_cache.get(&id) { return *d; }
-        let mut d = 0usize;
-        let mut cur = Some(id);
-        while let Some(cid) = cur {
-            cur = doc.transform_parent.get(&cid).and_then(|p| *p);
-            if cur.is_some() { d += 1; }
-        }
-        depth_cache.insert(id, d);
-        d
-    };
-    // Build selected chain (selected node, its parent, ... up to but excluding the root/no-parent)
-    let mut selected_chain: Vec<crate::model::EntityId> = Vec::new();
+    // Build map: for each ancestor in the selected chain, which child branch is selected
+    let mut selected_by_parent: std::collections::HashMap<crate::model::EntityId, crate::model::EntityId> = std::collections::HashMap::new();
     if let Some(sel) = effective_selected {
         if !matches!(doc.views.get(&sel).map(|v| &v.kind), Some(UiViewKind::Edge { .. })) {
             let mut cur = Some(sel);
             while let Some(cid) = cur {
-                selected_chain.push(cid);
-                let next = doc.transform_parent.get(&cid).and_then(|p| *p);
-                // Stop before adding a root (None parent) to avoid lifting the universal root and forcing it on top
-                if next.is_none() { break; }
-                cur = next;
+                if let Some(pid) = doc.transform_parent.get(&cid).and_then(|p| *p) {
+                    // record that at parent pid, child cid should be ordered last among siblings
+                    selected_by_parent.insert(pid, cid);
+                    cur = Some(pid);
+                } else {
+                    break;
+                }
             }
         }
     }
-    // Exclude the last element if it has no parent (root), to avoid drawing root above everything
-    if let Some(&last) = selected_chain.last() {
-        if doc.transform_parent.get(&last).and_then(|p| *p).is_none() {
-            selected_chain.pop();
+
+    // Build a deterministic global edge order using graph adjacency
+    let mut edge_sequence: Vec<crate::model::EntityId> = Vec::new();
+    let mut node_rank: std::collections::HashMap<crate::model::EntityId, usize> = std::collections::HashMap::new();
+    if let Some(graph) = &doc.graph {
+        // Node order by DFS from root
+        let mut stack: Vec<crate::model::EntityId> = Vec::new();
+        let mut seen: std::collections::HashSet<crate::model::EntityId> = std::collections::HashSet::new();
+        stack.push(graph.root);
+        let mut node_order: Vec<crate::model::EntityId> = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) { continue; }
+            node_order.push(id);
+            if let Some(node) = graph.nodes.get(&id) {
+                for &child in node.children.iter().rev() { stack.push(child); }
+            }
+        }
+        for (i, id) in node_order.iter().enumerate() { node_rank.insert(*id, i); }
+
+        // Edge order prefers adjacency_out per node order
+        for nid in node_order.iter() {
+            if let Some(out) = graph.adjacency_out.get(nid) {
+                for eid in out { edge_sequence.push(*eid); }
+            } else {
+                // Fallback: scan edges from this source and sort by target rank then ID string
+                let mut edges: Vec<&crate::model::Edge> = graph.edges.values().filter(|e| &e.source == nid).collect();
+                edges.sort_by_key(|e| (*node_rank.get(&e.target).unwrap_or(&usize::MAX), format!("{:?}", e.id)));
+                for e in edges { edge_sequence.push(e.id); }
+            }
         }
     }
-    let chain_len = selected_chain.len();
-    let mut chain_index: std::collections::HashMap<crate::model::EntityId, usize> = std::collections::HashMap::new();
-    for (i, id) in selected_chain.iter().enumerate() { chain_index.insert(*id, i); }
-    let mut lift_cache: std::collections::HashMap<crate::model::EntityId, usize> = std::collections::HashMap::new();
-    let mut compute_lift_score = |id: crate::model::EntityId| -> usize {
-        if let Some(s) = lift_cache.get(&id) { return *s; }
-        if chain_len == 0 { lift_cache.insert(id, 0); return 0; }
-        // Walk up ancestors to find the nearest member of the selected chain
-        let mut cur = Some(id);
-        let mut nearest_idx: Option<usize> = None;
-        while let Some(cid) = cur {
-            if let Some(&idx) = chain_index.get(&cid) { nearest_idx = Some(idx); break; }
-            cur = doc.transform_parent.get(&cid).and_then(|p| *p);
+
+    // Gather edges for a given parent id in the deterministic global edge order
+    let edges_for_parent = |pid: &crate::model::EntityId, out: &mut Vec<crate::model::EntityId>| {
+        for eid in edge_sequence.iter() {
+            if doc.transform_parent.get(eid).and_then(|p| *p) == Some(*pid) {
+                out.push(*eid);
+            }
         }
-        let score = match nearest_idx {
-            Some(idx) => chain_len - idx, // selected subtree highest score, then parent subtree, ...
-            None => 0,
-        };
-        lift_cache.insert(id, score);
-        score
     };
-    let mut order: Vec<crate::model::EntityId> = doc.views.keys().cloned().collect();
-    order.sort_by(|a, b| {
-        // 0) Lift entire subtrees of selected and its ancestors above their sibling subtrees
-        let la = compute_lift_score(*a);
-        let lb = compute_lift_score(*b);
-        if la != lb { return la.cmp(&lb); }
-        // 1) Depth: children above parents (deeper drawn later). Always preserve this rule.
-        let da = compute_depth(*a);
-        let db = compute_depth(*b);
-        if da != db { return da.cmp(&db); }
-        // 2) Selected single-entity tiebreaker among same-depth siblings
-        let sa = Some(*a) == effective_selected;
-        let sb = Some(*b) == effective_selected;
-        if sa != sb { return (sa as u8).cmp(&(sb as u8)); }
-        // 3) Type: edges beneath nodes
-        let ta = match doc.views.get(a).map(|v| &v.kind) { Some(super::view_model::UiViewKind::Edge { .. }) => 0u8, _ => 1u8 };
-        let tb = match doc.views.get(b).map(|v| &v.kind) { Some(super::view_model::UiViewKind::Edge { .. }) => 0u8, _ => 1u8 };
-        if ta != tb { return ta.cmp(&tb); }
-        // 4) Stable baseline
-        let ia = *baseline_index.get(a).unwrap_or(&0usize);
-        let ib = *baseline_index.get(b).unwrap_or(&0usize);
-        ia.cmp(&ib)
-    });
-    // Persist for next frame and for hit-testing below
-    doc.draw_order = order.clone();
+
+    // DFS traversal building a contiguous order per subtree
+    let mut order: Vec<crate::model::EntityId> = Vec::new();
+    let visit = |root_id: crate::model::EntityId, order: &mut Vec<crate::model::EntityId>| {
+        // Use an explicit stack to avoid borrow issues with recursion
+        let mut stack: Vec<crate::model::EntityId> = Vec::new();
+        let mut enter_stack: Vec<bool> = Vec::new(); // false = exit, true = enter
+        stack.push(root_id);
+        enter_stack.push(true);
+
+        while let Some(enter) = enter_stack.pop() {
+            let id = stack.pop().unwrap();
+            if enter {
+                // On enter: emit node and edges according to kind, then schedule children
+                let is_parent_kind = matches!(doc.views.get(&id).map(|v| &v.kind), Some(UiViewKind::Parent | UiViewKind::Parallel));
+
+                if is_parent_kind {
+                    // Parent backgrounds first
+                    order.push(id);
+                    // Edges under children but above parent background
+                    edges_for_parent(&id, order);
+                } else {
+                    // Leaf: edges should be below the leaf itself (nodes over edges)
+                    edges_for_parent(&id, order);
+                    order.push(id);
+                }
+
+                // Determine child node order
+                let mut children_nodes: Vec<crate::model::EntityId> = Vec::new();
+                if let Some(graph) = &doc.graph {
+                    if let Some(node) = graph.nodes.get(&id) {
+                        for &c in node.children.iter() { children_nodes.push(c); }
+                    }
+                }
+                if let Some(sel_child) = selected_by_parent.get(&id) {
+                    if let Some(pos) = children_nodes.iter().position(|c| c == sel_child) {
+                        let v = children_nodes.remove(pos);
+                        children_nodes.push(v);
+                    }
+                }
+
+                // Schedule children in reverse because we push onto stack (LIFO)
+                for child in children_nodes.into_iter().rev() {
+                    stack.push(child);
+                    enter_stack.push(true);
+                }
+            } else {
+                // Currently no exit-time work
+            }
+        }
+    };
+
+    // Start traversal from graph root when available; else keep existing order
+    if let Some(graph) = &doc.graph {
+        visit(graph.root, &mut order);
+        doc.draw_order = order.clone();
+    } else {
+        order = doc.draw_order.clone();
+    }
 
     // Interactions: node/pill dragging vs background pan; hit test in front-to-back order
     let pointer_pos = response.ctx.input(|i| i.pointer.hover_pos());
