@@ -5,6 +5,9 @@ use std::collections::HashMap;
 use crate::net::{NetPlugin, NetCommand, NetEvent, NetworkConfig};
 use crate::types::ServerEntity;
 use crate::model::StateMachineGraph;
+use crate::editor::workspace::Workspace;
+use crate::editor::adapter::project_graph_into_doc;
+use crate::editor::view::draw_doc;
 
 pub(crate) struct EditorPlugin;
 
@@ -18,8 +21,9 @@ impl Plugin for EditorPlugin {
                 machines: vec![],
                 graphs: HashMap::new(),
             })
+            .init_resource::<Workspace>()
             .add_systems(Startup, setup_camera)
-            .add_systems(Update, poll_network);
+            .add_systems(Update, (poll_network, sync_snapshots_to_workspace));
 
         use bevy_egui::EguiPrimaryContextPass;
         app.add_systems(EguiPrimaryContextPass, ui_system);
@@ -87,6 +91,7 @@ fn ui_system(
     mut ui: ResMut<UiState>,
     mut cmd_writer: MessageWriter<NetCommand>,
     cfg: Res<NetworkConfig>,
+    mut workspace: ResMut<Workspace>,
 ) {
     if let Ok(ctx) = egui_ctx.ctx_mut() {
         egui::CentralPanel::default().show(ctx, |ui_egui| {
@@ -123,14 +128,26 @@ fn ui_system(
                             cmd_writer.write(NetCommand::Save { id: *id });
                         }
                     });
-                    if let Some(graph) = ui.graphs.get(id) {
-                        col.add_space(2.0);
-                        col.code(format!("{}", graph));
+                    if let Some(doc) = workspace.docs.get_mut(id) {
+                        col.add_space(4.0);
+                        egui::Frame::canvas(col.style()).show(col, |canvas| {
+                            draw_doc(canvas, doc);
+                        });
                         col.add_space(6.0);
                     }
                 }
             });
         });
+    }
+}
+
+fn sync_snapshots_to_workspace(
+    mut workspace: ResMut<Workspace>,
+    ui: Res<UiState>,
+) {
+    for (id, graph) in ui.graphs.iter() {
+        let entry = workspace.docs.entry(*id).or_default();
+        project_graph_into_doc(entry, graph.clone());
     }
 }
 

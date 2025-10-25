@@ -9,6 +9,7 @@ mod plugin;
 mod component;
 mod types;
 mod model;
+mod editor;
 
 fn main() {
     App::new()
