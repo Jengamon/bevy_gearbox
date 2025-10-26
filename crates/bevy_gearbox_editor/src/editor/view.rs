@@ -162,14 +162,11 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<cr
                     UiViewKind::Edge { .. } => {
                         // Measure pill in screen space
                         let zoom = doc.transform.zoom;
-                        let font_px = (14.0 * zoom).clamp(6.0, 64.0);
-                        let font_id = egui::FontId::proportional(font_px);
-                        let text_galley = painter.layout_no_wrap(view.label.clone(), font_id.clone(), egui::Color32::WHITE);
-                        let text_size_s = text_galley.size();
+                        let text_size_s = doc.cached_label_size_screen(&view.label, zoom, &painter);
                         let pill_pad_x = 10.0 * zoom;
                         let pill_pad_y = 6.0 * zoom;
                         let pill_size_s = egui::vec2(text_size_s.x + 2.0 * pill_pad_x, text_size_s.y + 2.0 * pill_pad_y);
-                        let center_w = view.rect.center();
+                        let center_w = view.pill.as_ref().map(|p| p.center).unwrap_or(view.rect.center());
                         let pill_center_s = doc.transform.to_screen(center_w);
                         let pill_rect_s = egui::Rect::from_center_size(pill_center_s, pill_size_s);
                         if pill_rect_s.contains(pos) { hovered_entity = Some(*eid); break; }
@@ -268,12 +265,9 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<cr
                 } else if matches!(doc.views.get(&ent).map(|v| &v.kind), Some(UiViewKind::Edge { .. })) {
                     // Compute rect without holding a mutable borrow; only write at the end
                     let label = doc.views.get(&ent).map(|v| v.label.clone()).unwrap_or_default();
-                        // Compute pill size in world (measure in screen, convert by zoom)
+                        // Compute pill size in world from cached label size
                         let zoom = doc.transform.zoom;
-                        let font_px = (14.0 * zoom).clamp(6.0, 64.0);
-                        let font_id = egui::FontId::proportional(font_px);
-                    let text_galley = painter.layout_no_wrap(label, font_id, egui::Color32::WHITE);
-                        let size_s = text_galley.size();
+                        let size_s = doc.cached_label_size_screen(&label, zoom, &painter);
                         let pad_s = egui::vec2(10.0 * zoom, 6.0 * zoom);
                         let size_w = egui::vec2((size_s.x + 2.0 * pad_s.x) / zoom, (size_s.y + 2.0 * pad_s.y) / zoom);
                         let mut rect = egui::Rect::from_min_size(desired_min, size_w);
@@ -293,13 +287,12 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<cr
                                 rect.max = rect.min + rect.size();
                             }
                         }
-                        }
+                    }
                     if let Some(v) = doc.views.get_mut(&ent) {
-                        v.rect = rect;
                         if let Some(p) = v.pill.as_mut() { p.center = rect.center(); }
                     }
-                    }
                 }
+            }
         } else {
             // Dragging with no captured entity → pan background
             if delta_screen.length_sq() > 0.0 {
@@ -608,9 +601,8 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<cr
                 let src_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(src_rect_w.min), doc.transform.to_screen(src_rect_w.max));
                 let dst_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(dst_rect_w.min), doc.transform.to_screen(dst_rect_w.max));
 
-                let pill_center_s = doc.transform.to_screen(view.rect.center());
-                let text_galley = painter.layout_no_wrap(view.label.clone(), font_id.clone(), egui::Color32::WHITE);
-                let text_size_s = text_galley.size();
+                let pill_center_s = doc.transform.to_screen(view.pill.as_ref().map(|p| p.center).unwrap_or(view.rect.center()));
+                let text_size_s = doc.cached_label_size_screen(&view.label, zoom, &painter);
                 let pill_pad_x = 10.0 * zoom;
                 let pill_pad_y = 6.0 * zoom;
                 let pill_size_s = egui::vec2(text_size_s.x + 2.0 * pill_pad_x, text_size_s.y + 2.0 * pill_pad_y);

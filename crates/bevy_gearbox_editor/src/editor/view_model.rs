@@ -80,10 +80,29 @@ pub struct GraphDoc {
     pub initial_child_of: HashMap<EntityId, EntityId>,
     /// Set of nodes that are the initial child of their parent
     pub is_initial_child: std::collections::HashSet<EntityId>,
+    /// Cache of text label sizes in screen pixels keyed by (label, font_px_rounded)
+    pub label_px_cache: std::sync::RwLock<HashMap<(String, u32), egui::Vec2>>,
 }
 
 
 impl GraphDoc {
+    /// Returns the cached screen-pixel size for a label at the current zoom, measuring if needed.
+    pub fn cached_label_size_screen(&self, label: &str, zoom: f32, painter: &egui::Painter) -> egui::Vec2 {
+        let font_px = (14.0 * zoom).clamp(6.0, 64.0);
+        let key = (label.to_string(), font_px.round() as u32);
+        if let Some(sz) = self.label_px_cache.read().ok().and_then(|m| m.get(&key).cloned()) { return sz; }
+        let font_id = egui::FontId::proportional(font_px);
+        let galley = painter.layout_no_wrap(label.to_string(), font_id, egui::Color32::WHITE);
+        let size = galley.size();
+        if let Ok(mut map) = self.label_px_cache.write() { map.insert(key, size); }
+        size
+    }
+
+    /// Returns the cached world-space size for a label at the current zoom.
+    pub fn cached_label_size_world(&self, label: &str, zoom: f32, painter: &egui::Painter) -> egui::Vec2 {
+        let size_s = self.cached_label_size_screen(label, zoom, painter);
+        egui::vec2(size_s.x / zoom, size_s.y / zoom)
+    }
     /// Returns the rect for a unified view entity (if present).
     pub fn get_rect(&self, id: &EntityId) -> Option<egui::Rect> {
         self.views.get(id).map(|v| v.rect)
