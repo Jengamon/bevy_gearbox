@@ -79,7 +79,7 @@ pub fn build_context_menu(graph: &StateMachineGraph, id: EntityId) -> Vec<MenuIt
         items.push(MenuItem { label: "Make Initial", kind: MenuItemKind::MakeInitial { parent } });
     }
 
-    // Add Child (when node has StateChildren capability)
+    // Add Child (when node has Substates capability)
     if has_state_children_capability {
         items.push(MenuItem { label: "Add Child", kind: MenuItemKind::AddChild });
     }

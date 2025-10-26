@@ -63,8 +63,8 @@ impl Plugin for RemoteServerPlugin {
 
         // Register Bevy Gearbox types commonly interacted with by the editor
         app
-            .register_type::<crate::StateChildOf>()
-            .register_type::<crate::StateChildren>()
+            .register_type::<crate::SubstateOf>()
+            .register_type::<crate::Substates>()
             .register_type::<crate::StateMachine>()
             .register_type::<crate::InitialState>()
             .register_type::<crate::Parallel>()
@@ -155,7 +155,7 @@ fn sync_active_tracker_on_state_changes(
 fn record_transition_on_actions(
     transition_actions: On<crate::TransitionActions>,
     q_source: Query<&crate::transitions::Source>,
-    q_child_of: Query<&crate::StateChildOf>,
+    q_child_of: Query<&crate::SubstateOf>,
     mut q_feed: Query<&mut TransitionFeed>,
     mut commands: Commands,
 ){
@@ -194,7 +194,7 @@ fn collect_state_machine_entities(world: &World, root: Entity) -> Vec<Entity> {
                 if world.entities().contains(edge) && !entities.contains(&edge) { entities.push(edge); }
             }
         }
-        if let Some(children) = world.get::<crate::StateChildren>(e) {
+        if let Some(children) = world.get::<crate::Substates>(e) {
             for &child in children.into_iter() { stack.push(child); }
         }
     }

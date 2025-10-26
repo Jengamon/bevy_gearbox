@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use std::marker::PhantomData;
-use crate::{guards::Guards, transitions::Source, StateChildOf};
+use crate::{guards::Guards, transitions::Source, SubstateOf};
 
 /// A strongly-typed float parameter stored on an entity.
 /// The marker type `P` identifies the parameter (e.g., `Speed`).
@@ -97,7 +97,7 @@ fn guard_key_for_float<P>() -> String { format!("float-in-range::<{}>", std::any
 pub fn apply_float_param_guards<P: Send + Sync + 'static>(
     q_edges: Query<(Entity, &Source, &FloatInRange<P>)>,
     q_params: Query<&FloatParam<P>>,
-    q_child_of: Query<&StateChildOf>,
+    q_child_of: Query<&SubstateOf>,
     mut q_guards: Query<&mut Guards>,
     mut commands: Commands,
 ) {
@@ -172,7 +172,7 @@ fn guard_key_for_int<P>() -> String { format!("int-in-range::<{}>", std::any::ty
 pub fn apply_int_param_guards<P: Send + Sync + 'static>(
     q_edges: Query<(Entity, &Source, &IntInRange<P>)>,
     q_params: Query<&IntParam<P>>,
-    q_child_of: Query<&StateChildOf>,
+    q_child_of: Query<&SubstateOf>,
     mut q_guards: Query<&mut Guards>,
     mut commands: Commands,
 ){
@@ -240,7 +240,7 @@ fn guard_key_for_bool<P>() -> String { format!("bool-equals::<{}>", std::any::ty
 pub fn apply_bool_param_guards<P: Send + Sync + 'static>(
     q_edges: Query<(Entity, &Source, &BoolEquals<P>)>,
     q_params: Query<&BoolParam<P>>,
-    q_child_of: Query<&StateChildOf>,
+    q_child_of: Query<&SubstateOf>,
     mut q_guards: Query<&mut Guards>,
     mut commands: Commands,
 ){

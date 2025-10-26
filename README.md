@@ -63,8 +63,8 @@ pub fn add_character_sm(commands: &mut Commands, entity: Entity) {
 
     // Our character can be alive, dead, standing, or jumping. Importantly, they can only
     // jump or stand if they are alive. So standing and jumping are actually sub-states of
-    // the alive state. Notice alive and dead are StateChildOf(entity), while standing and
-    // jumping are StateChildOf(alive).
+    // the alive state. Notice alive and dead are SubstateOf(entity), while standing and
+    // jumping are SubstateOf(alive).
 
     // Note: The root entity (here called `entity`) is also a state entity. This isn't
     // important for this example, but it's worth noting.
@@ -72,23 +72,23 @@ pub fn add_character_sm(commands: &mut Commands, entity: Entity) {
 
     commands.entity(alive).insert((
       Name::new("Alive"),
-      StateChildOf(entity),
+      SubstateOf(entity),
       InitialState(alive),
     ));
 
     commands.entity(dead).insert((
       Name::new("Dead"),
-      StateChildOf(entity),
+      SubstateOf(entity),
     ));
 
     commands.entity(standing).insert((
       Name::new("Standing"),
-      StateChildOf(alive),
+      SubstateOf(alive),
     ));
 
     commands.entity(jumping).insert((
       Name::new("Jumping"),
-      StateChildOf(alive),
+      SubstateOf(alive),
     ));
 
     // It is extremely important to insert the StateMachine component after all of your
@@ -167,7 +167,7 @@ pub struct Jumping;
 
 commands.entity(jumping).insert((
   Name::new("Jumping"),
-  StateChildOf(alive),
+  SubstateOf(alive),
   StateComponent(Jumping),
 ));
 ```
@@ -199,7 +199,7 @@ fn on_enter_jumping(
 
 commands.entity(jumping).insert((
   Name::new("Jumping"),
-  StateChildOf(alive),
+  SubstateOf(alive),
 )).observe(on_enter_jumping);
 ```
 

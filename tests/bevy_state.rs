@@ -33,8 +33,8 @@ fn bridge_sets_bevy_state_on_enter_and_updates_on_transition() {
     let root = app.world_mut().spawn_empty().id();
     let s_a = app.world_mut().spawn((TestState::A,)).id();
     let s_b = app.world_mut().spawn((TestState::B,)).id();
-    app.world_mut().entity_mut(s_a).insert(StateChildOf(root));
-    app.world_mut().entity_mut(s_b).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s_a).insert(SubstateOf(root));
+    app.world_mut().entity_mut(s_b).insert(SubstateOf(root));
 
     // Initial to A, and edge A --Go--> B
     app.world_mut().entity_mut(root).insert((InitialState(s_a), StateMachine::new()));
@@ -61,8 +61,8 @@ fn state_scoped_entities_are_despawned_on_exit_of_chart_state() {
     let root = app.world_mut().spawn_empty().id();
     let s_a = app.world_mut().spawn((TestState::A,)).id();
     let s_b = app.world_mut().spawn((TestState::B,)).id();
-    app.world_mut().entity_mut(s_a).insert(StateChildOf(root));
-    app.world_mut().entity_mut(s_b).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s_a).insert(SubstateOf(root));
+    app.world_mut().entity_mut(s_b).insert(SubstateOf(root));
     app.world_mut().entity_mut(root).insert((InitialState(s_a), StateMachine::new()));
 
     // An entity scoped to TestState::A
@@ -95,8 +95,8 @@ fn commands_helper_emits_to_marked_chart_root() {
     let root = app.world_mut().spawn((RootMarker,)).id();
     let s = app.world_mut().spawn_empty().id();
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
     app.world_mut().entity_mut(root).insert((InitialState(s), StateMachine::new()));
     app.world_mut().spawn((Source(s), Target(t), EventEdge::<Go>::default()));
 

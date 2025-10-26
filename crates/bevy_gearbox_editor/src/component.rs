@@ -2,7 +2,7 @@
 // Shared component type-name constants for server-side reflection queries
 
 pub(crate) const STATE_MACHINE: &str = "bevy_gearbox_core::StateMachine";
-pub(crate) const STATE_CHILDREN: &str = "bevy_gearbox_core::StateChildren";
+pub(crate) const STATE_CHILDREN: &str = "bevy_gearbox_core::Substates";
 
 pub(crate) const TRANSITIONS: &str = "bevy_gearbox_core::transitions::Transitions";
 pub(crate) const TARGET: &str = "bevy_gearbox_core::transitions::Target";

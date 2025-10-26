@@ -20,7 +20,7 @@ fn init_enters_initial_chain_and_sets_active_sets() {
     let leaf = app.world_mut().spawn_empty().id();
 
     // Wire hierarchy and initial
-    app.world_mut().entity_mut(leaf).insert(StateChildOf(root));
+    app.world_mut().entity_mut(leaf).insert(SubstateOf(root));
     app.world_mut().entity_mut(root).insert((StateMachine::new(), InitialState(leaf)));
 
     // Run one frame to initialize the machine via OnAdd<StateMachine>
@@ -51,9 +51,9 @@ fn transitions_priority_first_match_wins() {
     let t1 = app.world_mut().spawn_empty().id();
     let t2 = app.world_mut().spawn_empty().id();
 
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t1).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t2).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t1).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t2).insert(SubstateOf(root));
 
     // Create edges with insertion order priority: e1 first (S -> T1), then e2 (S -> T2)
     app.world_mut().spawn((Source(s), Target(t1), EventEdge::<TestEvt>::default()));
@@ -119,9 +119,9 @@ fn lifecycle_exit_then_transition_actions_then_enter_ordering() {
     let b = app.world_mut().spawn((Name::new("B"),)).id();
     let c = app.world_mut().spawn((Name::new("C"),)).id();
 
-    app.world_mut().entity_mut(a).insert(StateChildOf(root));
-    app.world_mut().entity_mut(b).insert(StateChildOf(a));
-    app.world_mut().entity_mut(c).insert(StateChildOf(root));
+    app.world_mut().entity_mut(a).insert(SubstateOf(root));
+    app.world_mut().entity_mut(b).insert(SubstateOf(a));
+    app.world_mut().entity_mut(c).insert(SubstateOf(root));
 
     // Edge: from B to C on TestEvt
     app.world_mut().spawn((Name::new("e_b_to_c"), Source(b), Target(c), EventEdge::<TestEvt>::default()));
@@ -157,23 +157,23 @@ fn events_root_propagation_one_per_parallel_region() {
     // Build root -> P(parallel)
     let root = app.world_mut().spawn_empty().id();
     let p = app.world_mut().spawn((Parallel,)).id();
-    app.world_mut().entity_mut(p).insert(StateChildOf(root));
+    app.world_mut().entity_mut(p).insert(SubstateOf(root));
 
     // Two regions under P
     let r1 = app.world_mut().spawn_empty().id();
     let r2 = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(r1).insert(StateChildOf(p));
-    app.world_mut().entity_mut(r2).insert(StateChildOf(p));
+    app.world_mut().entity_mut(r1).insert(SubstateOf(p));
+    app.world_mut().entity_mut(r2).insert(SubstateOf(p));
 
     // Leaves per region and their targets
     let s1 = app.world_mut().spawn_empty().id();
     let s1a = app.world_mut().spawn_empty().id();
     let s2 = app.world_mut().spawn_empty().id();
     let s2a = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s1).insert(StateChildOf(r1));
-    app.world_mut().entity_mut(s1a).insert(StateChildOf(r1));
-    app.world_mut().entity_mut(s2).insert(StateChildOf(r2));
-    app.world_mut().entity_mut(s2a).insert(StateChildOf(r2));
+    app.world_mut().entity_mut(s1).insert(SubstateOf(r1));
+    app.world_mut().entity_mut(s1a).insert(SubstateOf(r1));
+    app.world_mut().entity_mut(s2).insert(SubstateOf(r2));
+    app.world_mut().entity_mut(s2a).insert(SubstateOf(r2));
 
     // Set initial leaves per region
     app.world_mut().entity_mut(r1).insert(InitialState(s1));
@@ -210,22 +210,22 @@ fn history_shallow_saves_immediate_children_under_parallel_and_restores() {
     // root -> P(parallel, shallow history) -> regions R1,R2 with leaves A,B
     let root = app.world_mut().spawn_empty().id();
     let p = app.world_mut().spawn((Parallel, History::Shallow)).id();
-    app.world_mut().entity_mut(p).insert(StateChildOf(root));
+    app.world_mut().entity_mut(p).insert(SubstateOf(root));
     let r1 = app.world_mut().spawn_empty().id();
     let r2 = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(r1).insert(StateChildOf(p));
-    app.world_mut().entity_mut(r2).insert(StateChildOf(p));
+    app.world_mut().entity_mut(r1).insert(SubstateOf(p));
+    app.world_mut().entity_mut(r2).insert(SubstateOf(p));
 
     let a = app.world_mut().spawn_empty().id(); // region 1
     let b = app.world_mut().spawn_empty().id(); // region 2
-    app.world_mut().entity_mut(a).insert(StateChildOf(r1));
-    app.world_mut().entity_mut(b).insert(StateChildOf(r2));
+    app.world_mut().entity_mut(a).insert(SubstateOf(r1));
+    app.world_mut().entity_mut(b).insert(SubstateOf(r2));
     app.world_mut().entity_mut(r1).insert(InitialState(a));
     app.world_mut().entity_mut(r2).insert(InitialState(b));
 
     // Outside state Z and edges: P --EvtGoOut--> Z, root --EvtGoBack--> P
     let z = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(z).insert(StateChildOf(root));
+    app.world_mut().entity_mut(z).insert(SubstateOf(root));
     app.world_mut().spawn((Source(p), Target(z), EventEdge::<EvtGoOut>::default()));
     app.world_mut().spawn((Source(root), Target(p), EventEdge::<EvtGoBack>::default()));
 
@@ -262,8 +262,8 @@ fn defer_defers_when_active_and_replays_on_exit_without_consuming_region() {
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn((DeferEvent::<EvtDefer>::new(),)).id();
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
 
     // Edge exists only on root to go to T when event is replayed at root
     app.world_mut().spawn((Source(root), Target(t), EventEdge::<EvtDefer>::default()));
@@ -302,7 +302,7 @@ fn state_component_adds_on_enter_removes_on_exit() {
     // root -> S (adds Foo)
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn((StateComponent(Foo(7)),)).id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
     app.world_mut().entity_mut(root).insert((InitialState(s), StateMachine::new()));
     app.update();
 
@@ -313,7 +313,7 @@ fn state_component_adds_on_enter_removes_on_exit() {
     #[derive(SimpleTransition, EntityEvent, Clone)]
     struct Go { #[event_target] target: Entity }
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
     app.world_mut().spawn((Source(s), Target(t), EventEdge::<Go>::default()));
     app.world_mut().commands().trigger(Go { target: root });
     app.update();
@@ -332,7 +332,7 @@ fn transitions_external_vs_internal_lca_reentry() {
 
     let root = app.world_mut().spawn((Name::new("root"),)).id();
     let a = app.world_mut().spawn((Name::new("A"),)).id();
-    app.world_mut().entity_mut(a).insert(StateChildOf(root));
+    app.world_mut().entity_mut(a).insert(SubstateOf(root));
 
     // External self-edge: should cause exit A, actions, enter A
     let e_ext = app.world_mut().spawn((Name::new("edge_ext"), Source(a), Target(a), EventEdge::<TestEvt>::default())).id();
@@ -362,7 +362,7 @@ fn transitions_ignored_when_missing_target() {
 
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
     // Edge with no Target
     app.world_mut().spawn((Source(s), EventEdge::<TestEvt>::default()));
     app.world_mut().entity_mut(root).insert((InitialState(s), StateMachine::new()));
@@ -382,8 +382,8 @@ fn always_fires_on_enter_respecting_guards_and_guard_change_rechecks() {
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn_empty().id();
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
 
     // Always edge S->T with a guard initially blocking
     let edge = app.world_mut().spawn((Source(s), Target(t), AlwaysEdge, Guards { guards: std::iter::once("lock".to_string()).collect() })).id();
@@ -416,8 +416,8 @@ fn after_starts_on_enter_ticks_and_fires_once() {
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn_empty().id();
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
 
     // After edge 50ms
     app.world_mut().spawn((
@@ -446,13 +446,13 @@ fn history_deep_restores_exact_leaves() {
     // root -> P(History::Deep) -> A -> A1 (leaf) and B (sibling path)
     let root = app.world_mut().spawn_empty().id();
     let p = app.world_mut().spawn((History::Deep,)).id();
-    app.world_mut().entity_mut(p).insert(StateChildOf(root));
+    app.world_mut().entity_mut(p).insert(SubstateOf(root));
     let a = app.world_mut().spawn_empty().id();
     let a1 = app.world_mut().spawn_empty().id();
     let b = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(a).insert(StateChildOf(p));
-    app.world_mut().entity_mut(b).insert(StateChildOf(p));
-    app.world_mut().entity_mut(a1).insert(StateChildOf(a));
+    app.world_mut().entity_mut(a).insert(SubstateOf(p));
+    app.world_mut().entity_mut(b).insert(SubstateOf(p));
+    app.world_mut().entity_mut(a1).insert(SubstateOf(a));
     app.world_mut().entity_mut(p).insert(InitialState(a));
     app.world_mut().entity_mut(a).insert(InitialState(a1));
 
@@ -460,7 +460,7 @@ fn history_deep_restores_exact_leaves() {
     #[derive(SimpleTransition, EntityEvent, Clone)] struct Out { #[event_target] target: Entity }
     #[derive(SimpleTransition, EntityEvent, Clone)] struct Back { #[event_target] target: Entity }
     let z = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(z).insert(StateChildOf(root));
+    app.world_mut().entity_mut(z).insert(SubstateOf(root));
     app.world_mut().spawn((Source(p), Target(z), EventEdge::<Out>::default()));
     app.world_mut().spawn((Source(root), Target(p), EventEdge::<Back>::default()));
 
@@ -488,8 +488,8 @@ fn event_after_does_not_auto_fire_without_event() {
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn_empty().id();
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
 
     // Edge s --(EvtDelayed, After 50ms)--> t
     app.world_mut().spawn((
@@ -520,8 +520,8 @@ fn event_after_delays_and_fires() {
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn_empty().id();
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
 
     // Edge s --(EvtDelayed, After 50ms)--> t
     app.world_mut().spawn((
@@ -562,24 +562,24 @@ fn transitioning_parent_with_parallel_child_exits_all_descendant_leaves() {
     // and a sibling Talents leaf under InGame.
     let root = app.world_mut().spawn_empty().id();
     let in_game = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(in_game).insert(StateChildOf(root));
+    app.world_mut().entity_mut(in_game).insert(SubstateOf(root));
 
     let panels = app.world_mut().spawn((Parallel,)).id();
-    app.world_mut().entity_mut(panels).insert(StateChildOf(in_game));
+    app.world_mut().entity_mut(panels).insert(SubstateOf(in_game));
     let talents = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(talents).insert(StateChildOf(in_game));
+    app.world_mut().entity_mut(talents).insert(SubstateOf(in_game));
 
     // Two regions under Panels
     let left_region = app.world_mut().spawn_empty().id();
     let right_region = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(left_region).insert(StateChildOf(panels));
-    app.world_mut().entity_mut(right_region).insert(StateChildOf(panels));
+    app.world_mut().entity_mut(left_region).insert(SubstateOf(panels));
+    app.world_mut().entity_mut(right_region).insert(SubstateOf(panels));
 
     // Leaves under regions
     let left_closed = app.world_mut().spawn_empty().id();
     let right_closed = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(left_closed).insert(StateChildOf(left_region));
-    app.world_mut().entity_mut(right_closed).insert(StateChildOf(right_region));
+    app.world_mut().entity_mut(left_closed).insert(SubstateOf(left_region));
+    app.world_mut().entity_mut(right_closed).insert(SubstateOf(right_region));
 
     // Initials: InGame -> Panels; Panels -> left_closed & right_closed
     app.world_mut().entity_mut(in_game).insert(InitialState(panels));
@@ -627,9 +627,9 @@ fn event_after_cancels_when_source_exits_before_timer() {
     let s = app.world_mut().spawn_empty().id();
     let t = app.world_mut().spawn_empty().id();
     let u = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
-    app.world_mut().entity_mut(u).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
+    app.world_mut().entity_mut(u).insert(SubstateOf(root));
 
     // Delayed edge s --(EvtDelayed2, After 200ms)--> t
     app.world_mut().spawn((
@@ -674,7 +674,7 @@ fn reset_machine_reinitializes() {
     let mut app = test_app();
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
     app.world_mut().entity_mut(root).insert((InitialState(s), StateMachine::new()));
     app.update();
 
@@ -701,8 +701,8 @@ fn reset_edge_triggers_scope_target() {
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn_empty().id();
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
 
     // Edge S->T with ResetEdge(Target)
     app.world_mut().spawn((Source(s), Target(t), EventEdge::<TestEvt>::default(), ResetEdge(ResetScope::Target)));
@@ -726,8 +726,8 @@ fn state_inactive_component_removes_on_enter_restores_on_exit() {
     let root = app.world_mut().spawn((Bar("present"),)).id();
     let s = app.world_mut().spawn((StateInactiveComponent(Bar("present")),)).id();
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
     app.world_mut().entity_mut(root).insert((InitialState(s), StateMachine::new()));
     app.update();
 
@@ -751,8 +751,8 @@ fn after_timer_respects_guards_added_during_delay() {
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn_empty().id();
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
 
     // After edge with 50ms delay
     let edge = app.world_mut().spawn((
@@ -787,8 +787,8 @@ fn after_timer_handles_missing_target_during_delay() {
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn_empty().id();
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
 
     // After edge with 50ms delay
     let edge = app.world_mut().spawn((
@@ -824,8 +824,8 @@ fn event_after_timer_respects_guards_added_during_delay() {
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn_empty().id();
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
 
     // Event edge with 50ms delay
     let edge = app.world_mut().spawn((
@@ -864,8 +864,8 @@ fn event_after_timer_handles_missing_target_during_delay() {
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn_empty().id();
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
 
     // Event edge with 50ms delay
     let edge = app.world_mut().spawn((

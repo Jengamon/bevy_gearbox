@@ -1,6 +1,6 @@
 use bevy::{ecs::component::Mutable, prelude::*};
 
-use crate::{EnterState, ExitState, StateChildOf};
+use crate::{EnterState, ExitState, SubstateOf};
 
 /// A component that when added to a state entity, will insert the contained component
 /// `T` into the state machine's root entity when this state is entered.
@@ -18,7 +18,7 @@ pub struct StateInactiveComponent<T: Component + Clone>(pub T);
 pub fn state_component_enter<T: Component<Mutability = Mutable> + Clone>(
     enter_state: On<EnterState>,
     q_state_component: Query<&StateComponent<T>>,
-    q_child_of: Query<&StateChildOf>,
+    q_child_of: Query<&SubstateOf>,
     mut commands: Commands,
 ) {
     let entered_state = enter_state.target;
@@ -38,7 +38,7 @@ pub fn state_component_enter<T: Component<Mutability = Mutable> + Clone>(
 pub fn state_component_exit<T: Component>(
     exit_state: On<ExitState>,
     q_state_component: Query<&StateComponent<T>>,
-    q_child_of: Query<&StateChildOf>,
+    q_child_of: Query<&SubstateOf>,
     mut commands: Commands,
 ) {
     let exited_state = exit_state.target;
@@ -58,7 +58,7 @@ pub fn state_component_exit<T: Component>(
 pub fn state_inactive_component_enter<T: Component + Clone>(
     enter_state: On<EnterState>,
     q_state_inactive_component: Query<&StateInactiveComponent<T>>,
-    q_child_of: Query<&StateChildOf>,
+    q_child_of: Query<&SubstateOf>,
     mut commands: Commands,
 ) {
     let entered_state = enter_state.target;
@@ -78,7 +78,7 @@ pub fn state_inactive_component_enter<T: Component + Clone>(
 pub fn state_inactive_component_exit<T: Component + Clone>(
     exit_state: On<ExitState>,
     q_state_inactive_component: Query<&StateInactiveComponent<T>>,
-    q_child_of: Query<&StateChildOf>,
+    q_child_of: Query<&SubstateOf>,
     mut commands: Commands,
 ) {
     let exited_state = exit_state.target;

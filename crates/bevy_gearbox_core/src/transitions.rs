@@ -5,8 +5,8 @@ use bevy::prelude::*;
 use bevy::platform::collections::HashSet;
 use std::any::TypeId;
 
-use crate::StateChildren;
-use crate::{guards::Guards, EnterState, Transition, active::Active, StateChildOf, StateMachine, ExitState, Parallel};
+use crate::Substates;
+use crate::{guards::Guards, EnterState, Transition, active::Active, SubstateOf, StateMachine, ExitState, Parallel};
 use crate::state_component::Reset;
 
 /// Outbound transitions from a source state. Order defines priority (first match wins).
@@ -172,9 +172,9 @@ pub struct PhaseEvents<Exit: EntityEvent + Clone = NoEvent, Effect: EntityEvent 
 
 /// Phase callbacks the transition observer will invoke at microsteps
 pub trait PhasePayload: Clone + Send + Sync + 'static {
-    fn on_exit(&self, _commands: &mut Commands, _source: Entity, _children: &Query<&StateChildren>, _state_machine: &StateMachine) {}
-    fn on_effect(&self, _commands: &mut Commands, _edge: Entity, _children: &Query<&StateChildren>, _state_machine: &StateMachine) {}
-    fn on_entry(&self, _commands: &mut Commands, _target: Entity, _children: &Query<&StateChildren>, _state_machine: &StateMachine) {}
+    fn on_exit(&self, _commands: &mut Commands, _source: Entity, _children: &Query<&Substates>, _state_machine: &StateMachine) {}
+    fn on_effect(&self, _commands: &mut Commands, _edge: Entity, _children: &Query<&Substates>, _state_machine: &StateMachine) {}
+    fn on_entry(&self, _commands: &mut Commands, _target: Entity, _children: &Query<&Substates>, _state_machine: &StateMachine) {}
 }
 
 impl PhasePayload for () {}
@@ -188,7 +188,7 @@ where
     for<'a> <Effect as Event>::Trigger<'a>: Default,
     for<'a> <Entry as Event>::Trigger<'a>: Default,
 {
-    fn on_exit(&self, commands: &mut Commands, source: Entity, children: &Query<&StateChildren>, state_machine: &StateMachine) {
+    fn on_exit(&self, commands: &mut Commands, source: Entity, children: &Query<&Substates>, state_machine: &StateMachine) {
         if let Some(mut ev) = self.exit.clone() {
             // target the source
             *ev.event_target_mut() = source;
@@ -204,7 +204,7 @@ where
         }
     }
 
-    fn on_effect(&self, commands: &mut Commands, edge: Entity, children: &Query<&StateChildren>, state_machine: &StateMachine) {
+    fn on_effect(&self, commands: &mut Commands, edge: Entity, children: &Query<&Substates>, state_machine: &StateMachine) {
         if let Some(mut ev) = self.effect.clone() {
             *ev.event_target_mut() = edge;
             commands.trigger(ev);
@@ -218,7 +218,7 @@ where
         }
     }
 
-    fn on_entry(&self, commands: &mut Commands, target: Entity, children: &Query<&StateChildren>, state_machine: &StateMachine) {
+    fn on_entry(&self, commands: &mut Commands, target: Entity, children: &Query<&Substates>, state_machine: &StateMachine) {
         if let Some(mut ev) = self.entry.clone() {
             *ev.event_target_mut() = target;
             commands.trigger(ev);
@@ -257,7 +257,7 @@ fn try_fire_first_matching_edge_generic<E: TransitionEvent + RegisteredTransitio
     q_listener: &Query<&EventEdge<E>>, 
     q_edge_target: &Query<&Target>,
     q_guards: &Query<&Guards>,
-    q_child_of: &Query<&StateChildOf>,
+    q_child_of: &Query<&SubstateOf>,
     q_defer: &mut Query<&mut DeferEvent<E>>,
     q_active: &Query<(), With<Active>>,
     q_after: &Query<&After>,
@@ -366,7 +366,7 @@ pub fn always_edge_listener(
     q_edge_target: Query<&Target>,
     q_guards: Query<&Guards>,
     q_after: Query<&After>,
-    q_child_of: Query<&StateChildOf>,
+    q_child_of: Query<&SubstateOf>,
     mut commands: Commands,
 ){
     let source = enter_state.target;
@@ -393,7 +393,7 @@ pub fn always_edge_listener(
 /// Returns the state itself if it's not under a parallel region.
 fn find_parallel_region_root(
     state: Entity,
-    q_child_of: &Query<&StateChildOf>,
+    q_child_of: &Query<&SubstateOf>,
     q_parallel: &Query<&Parallel>,
 ) -> Entity {
     // Walk up the hierarchy to find if we're under a parallel state
@@ -416,7 +416,7 @@ fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent + Clone>(
     q_listener: Query<&EventEdge<E>>, 
     q_edge_target: Query<&Target>,
     q_guards: Query<&Guards>,
-    q_child_of: Query<&StateChildOf>,
+    q_child_of: Query<&SubstateOf>,
     q_sm: Query<&StateMachine>,
     mut q_defer: Query<&mut DeferEvent<E>>,
     q_active: Query<(), With<Active>>,
@@ -474,7 +474,7 @@ fn try_fire_first_matching_edge<E: TransitionEvent + RegisteredTransitionEvent +
     q_listener: &Query<&EventEdge<E>>, 
     q_edge_target: &Query<&Target>,
     q_guards: &Query<&Guards>,
-    q_child_of: &Query<&StateChildOf>,
+    q_child_of: &Query<&SubstateOf>,
     q_defer: &mut Query<&mut DeferEvent<E>>,
     q_active: &Query<(), With<Active>>,
     q_after: &Query<&After>,
@@ -496,7 +496,7 @@ fn try_fire_first_matching_edge_on_branch<E: EntityEvent + Clone + TransitionEve
     q_listener: &Query<&EventEdge<E>>, 
     q_edge_target: &Query<&Target>,
     q_guards: &Query<&Guards>,
-    q_child_of: &Query<&StateChildOf>,
+    q_child_of: &Query<&SubstateOf>,
     q_defer: &mut Query<&mut DeferEvent<E>>,
     q_active: &Query<(), With<Active>>,
     q_after: &Query<&After>,
@@ -540,7 +540,7 @@ fn try_fire_first_matching_edge_on_branch<E: EntityEvent + Clone + TransitionEve
 pub fn check_always_on_guards_changed(
     q_guards_changed: Query<(Entity, &Guards, &Source, Has<Target>), (Changed<Guards>, With<AlwaysEdge>)>, 
     q_transitions: Query<&Transitions>,
-    q_child_of: Query<&StateChildOf>,
+    q_child_of: Query<&SubstateOf>,
     q_active: Query<(), With<Active>>,
     q_after: Query<&After>,
     mut commands: Commands,
@@ -609,7 +609,7 @@ pub(crate) fn reset_on_transition_actions(
     transition_action: On<crate::TransitionActions>,
     q_reset_edge: Query<&ResetEdge>,
     q_edge: Query<(&Source, &Target)>,
-    q_children: Query<&crate::StateChildren>,
+    q_children: Query<&crate::Substates>,
     mut commands: Commands,
 ) {
     let edge = transition_action.target;
@@ -650,7 +650,7 @@ pub fn tick_after_system(
     q_always: Query<(), With<AlwaysEdge>>,
     q_guards: Query<&Guards>,
     q_edge_target: Query<&Target>,
-    q_child_of: Query<&StateChildOf>,
+    q_child_of: Query<&SubstateOf>,
     mut commands: Commands,
 ) {
     for (source, transitions) in q_transitions.iter() {
@@ -706,7 +706,7 @@ pub fn tick_after_event_timers<E: TransitionEvent + RegisteredTransitionEvent + 
     q_guards: Query<&Guards>,
     q_edge_target: Query<&Target>,
     q_edge_source: Query<&Source>,
-    q_child_of: Query<&StateChildOf>,
+    q_child_of: Query<&SubstateOf>,
     q_active: Query<(), With<Active>>,
     mut commands: Commands,
 ) {

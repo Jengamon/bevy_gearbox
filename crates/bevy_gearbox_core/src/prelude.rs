@@ -10,8 +10,8 @@ pub use crate::{
     // Components
     active::Active,
     active::Inactive,
-    StateChildOf,
-    StateChildren,
+    SubstateOf,
+    Substates,
     StateMachine,
     transitions::DeferEvent,
     guards::Guards,

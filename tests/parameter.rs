@@ -53,8 +53,8 @@ fn apply_param_guards_manage_guard_presence() {
     let root = app.world_mut().spawn_empty().id();
     let s = app.world_mut().spawn_empty().id();
     let t = app.world_mut().spawn_empty().id();
-    app.world_mut().entity_mut(s).insert(StateChildOf(root));
-    app.world_mut().entity_mut(t).insert(StateChildOf(root));
+    app.world_mut().entity_mut(s).insert(SubstateOf(root));
+    app.world_mut().entity_mut(t).insert(SubstateOf(root));
 
     // Edge guarded by float/int/bool conditions
     let edge = app.world_mut().spawn((

@@ -46,8 +46,8 @@ impl Plugin for GearboxPlugin {
             .register_type::<StateMachine>()
             .register_type::<History>()
             .register_type::<HistoryState>()
-            .register_type::<StateChildren>()
-            .register_type::<StateChildOf>()
+            .register_type::<Substates>()
+            .register_type::<SubstateOf>()
             .register_type::<StateMachineId>()
             .register_type::<Guards>()
             .register_type::<EnterState>()
@@ -79,11 +79,11 @@ impl Plugin for GearboxPlugin {
 
 // State-specific hierarchy relationships
 #[derive(Component, Default, Debug, PartialEq, Eq, Reflect)]
-#[relationship_target(relationship = StateChildOf, linked_spawn)]
+#[relationship_target(relationship = SubstateOf, linked_spawn)]
 #[reflect(Component, FromWorld, Default)]
-pub struct StateChildren(Vec<Entity>);
+pub struct Substates(Vec<Entity>);
 
-impl<'a> IntoIterator for &'a StateChildren {
+impl<'a> IntoIterator for &'a Substates {
     type Item = <Self::IntoIter as Iterator>::Item;
 
     type IntoIter = std::slice::Iter<'a, Entity>;
@@ -94,21 +94,21 @@ impl<'a> IntoIterator for &'a StateChildren {
     }
 }
 
-impl StateChildren {
+impl Substates {
     pub fn new() -> Self {
         Self(Vec::new())
     }
 }
 
 #[derive(Component, Clone, PartialEq, Eq, Debug, Reflect)]
-#[relationship(relationship_target = StateChildren)]
+#[relationship(relationship_target = Substates)]
 #[reflect(Component, PartialEq, Debug, FromWorld, Clone)]
-pub struct StateChildOf(#[entities] pub Entity);
+pub struct SubstateOf(#[entities] pub Entity);
 
-impl FromWorld for StateChildOf {
+impl FromWorld for SubstateOf {
     #[inline(always)]
     fn from_world(_world: &mut World) -> Self {
-        StateChildOf(Entity::PLACEHOLDER)
+        SubstateOf(Entity::PLACEHOLDER)
     }
 }
 
@@ -214,11 +214,11 @@ fn transition_observer<T: transitions::PhasePayload>(
     transition: On<Transition<T>>,
     mut q_sm: Query<&mut StateMachine>,
     q_parallel: Query<&Parallel>,
-    q_children: Query<&StateChildren>,
+    q_children: Query<&Substates>,
     q_initial_state: Query<&InitialState>,
     q_history: Query<&History>,
     mut q_history_state: Query<&mut HistoryState>,
-    q_child_of: Query<&StateChildOf>,
+    q_child_of: Query<&SubstateOf>,
     q_edge_target: Query<&transitions::Target>,
     q_kind: Query<&transitions::EdgeKind>,
     mut commands: Commands,
@@ -466,7 +466,7 @@ fn transition_observer<T: transitions::PhasePayload>(
     current_state.active = compute_active_from_leaves(&current_state.active_leaves, &q_child_of);
 }
 
-fn get_path_to_root(start_entity: Entity, q_child_of: &Query<&StateChildOf>) -> Vec<Entity> {
+fn get_path_to_root(start_entity: Entity, q_child_of: &Query<&SubstateOf>) -> Vec<Entity> {
     let mut path = vec![start_entity];
     path.extend(q_child_of.iter_ancestors(start_entity));
     path
@@ -476,11 +476,11 @@ pub fn get_all_leaf_states(
     start_node: Entity,
     state_machine: Entity,
     q_initial_state: &Query<&InitialState>,
-    q_children: &Query<&StateChildren>,
+    q_children: &Query<&Substates>,
     q_parallel: &Query<&Parallel>,
     q_history: &Query<&History>,
     q_history_state: &Query<&mut HistoryState>,
-    q_child_of: &Query<&StateChildOf>,
+    q_child_of: &Query<&SubstateOf>,
     commands: &mut Commands,
 ) -> HashSet<Entity> {
 
@@ -558,7 +558,7 @@ pub fn get_all_leaf_states(
 
 fn compute_active_from_leaves(
     leaves: &HashSet<Entity>,
-    q_child_of: &Query<&StateChildOf>,
+    q_child_of: &Query<&SubstateOf>,
 ) -> HashSet<Entity> {
     let mut active: HashSet<Entity> = HashSet::new();
     for &leaf in leaves.iter() {
@@ -584,7 +584,7 @@ fn initialize_state_machine(
 fn reset_state_region(
     reset_region: On<ResetRegion>,
     mut commands: Commands,
-    q_children: Query<&StateChildren>,
+    q_children: Query<&Substates>,
 ) {
     let root = reset_region.target;
 

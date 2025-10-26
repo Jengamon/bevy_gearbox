@@ -3,7 +3,7 @@ use bevy_gearbox::prelude::*;
 use bevy_gearbox::transitions::Source;
 use bevy_gearbox::GearboxPlugin;
 use std::time::Duration;
-use bevy_gearbox::StateChildOf;
+use bevy_gearbox::SubstateOf;
 use bevy_inspector_egui::bevy_egui::EguiPlugin;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
@@ -62,12 +62,12 @@ fn setup(mut commands: Commands) {
 
         world.entity_mut(ready).insert((
             Name::new("Ready"),
-            StateChildOf(machine_entity),
+            SubstateOf(machine_entity),
         ));
 
         world.entity_mut(repeating).insert((
             Name::new("Repeating"),
-            StateChildOf(machine_entity),
+            SubstateOf(machine_entity),
             Repeater {
                 timer: Timer::new(Duration::from_secs(1), TimerMode::Repeating),
                 remaining: 5,
@@ -109,7 +109,7 @@ fn input_system(
 /// The core logic for the repeater. Ticks the timer and fires "projectiles".
 fn repeater_system(
     mut q_repeater: Query<(Entity, &mut Repeater), With<Active>>,
-    q_child_of: Query<&bevy_gearbox::StateChildOf>,
+    q_child_of: Query<&bevy_gearbox::SubstateOf>,
     time: Res<Time>,
     mut commands: Commands,
 ) {
