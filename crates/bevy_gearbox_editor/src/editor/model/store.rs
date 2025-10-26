@@ -17,6 +17,10 @@ pub struct OpenDocument {
 #[derive(Debug, Default, Resource)]
 pub struct EditorStore {
     pub connection: ConnectionState,
+    /// Last endpoint used for connection (if any)
+    pub last_endpoint: Option<String>,
+    /// Monotonically increasing session identifier; increment on each successful connect/reconnect
+    pub session_id: u64,
     pub index: StateMachineIndex,
     pub open_docs: std::collections::HashMap<ServerEntity, OpenDocument>,
 }

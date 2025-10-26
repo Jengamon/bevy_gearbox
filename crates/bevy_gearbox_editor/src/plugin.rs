@@ -8,6 +8,10 @@ use crate::model::StateMachineGraph;
 use crate::editor::workspace::Workspace;
 use crate::editor::model::store::EditorStore;
 use crate::editor::shell;
+use crate::editor::actions::{
+    ConnectRequested, DisconnectRequested, ReconnectRequested, RefreshIndexRequested, OpenRequested,
+    on_connect_requested, on_disconnect_requested, on_reconnect_requested, on_refresh_index_requested, on_open_requested,
+};
 use crate::editor::adapter::project_graph_into_doc;
 use crate::editor::view::draw_doc;
 use crate::editor::context_menu::MenuSelection;
@@ -30,7 +34,13 @@ impl Plugin for EditorPlugin {
             .init_resource::<Workspace>()
             .insert_resource(EditorStore::default())
             .add_systems(Startup, setup_camera)
-            .add_systems(Update, (poll_network, sync_snapshots_to_workspace));
+            .add_systems(Update, (poll_network, sync_snapshots_to_workspace))
+            // Register editor observers (events are triggered via commands.trigger(...))
+            .add_observer(on_connect_requested)
+            .add_observer(on_disconnect_requested)
+            .add_observer(on_reconnect_requested)
+            .add_observer(on_refresh_index_requested)
+            .add_observer(on_open_requested);
 
         use bevy_egui::EguiPrimaryContextPass;
         app.add_systems(EguiPrimaryContextPass, ui_system);
