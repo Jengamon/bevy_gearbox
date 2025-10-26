@@ -1,8 +1,9 @@
 use super::view_model::{GraphDoc, UiViewKind};
+use super::context_menu::{build_context_menu, MenuItemKind, MenuSelection};
 use bevy_egui::egui;
 
 /// Minimal read-only view with pan/zoom and basic nodes/edges rendering.
-pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<crate::model::EntityId>) {
+pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<crate::model::EntityId>) -> Option<MenuSelection> {
     let desired = ui.available_size_before_wrap();
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::drag());
 
@@ -198,7 +199,7 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<cr
             if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
                 let pointer_world = doc.transform.to_world(cursor);
                 // Compute rect for entity (node rect or pill rect in world space)
-                let Some(view) = doc.views.get(&ent) else { return; };
+                let Some(view) = doc.views.get(&ent) else { return None; };
 
                 let anchor = egui::vec2(pointer_world.x - view.rect.min.x, pointer_world.y - view.rect.min.y);
                     doc.dragging = Some(ent);
@@ -212,6 +213,29 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<cr
     if response.clicked() {
         *selection = hovered_entity;
     }
+
+    // Right-click context menu on hovered entity; build from model and capture selection
+    let mut context_menu_selection: Option<MenuSelection> = None;
+    response.context_menu(|menu_ui| {
+        if let (Some(eid), Some(graph)) = (hovered_entity, &doc.graph) {
+            let items = build_context_menu(graph, eid);
+            for item in items.into_iter() {
+                if menu_ui.button(item.label).clicked() {
+                    let sel = match item.kind {
+                        MenuItemKind::MakeLeaf => MenuSelection::MakeLeaf { target: eid },
+                        MenuItemKind::MakeParent => MenuSelection::MakeParent { target: eid },
+                        MenuItemKind::MakeParallel => MenuSelection::MakeParallel { target: eid },
+                        MenuItemKind::Save => MenuSelection::SaveStateMachine { target: eid },
+                        MenuItemKind::Delete => MenuSelection::DeleteEntity { target: eid },
+                        MenuItemKind::MakeInitial { parent } => MenuSelection::MakeInitial { parent, new_initial: eid },
+                        MenuItemKind::AddChild => MenuSelection::AddChildStateMachine { target: eid },
+                    };
+                    context_menu_selection = Some(sel);
+                    menu_ui.close();
+                }
+            }
+        }
+    });
 
     // During drag: move draggable in world coords, with clamping to parent content
     let delta_screen = response.drag_delta();
@@ -328,7 +352,7 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<cr
     }
 
     // Draw graph if any
-    if doc.graph.is_none() { return; }
+    if doc.graph.is_none() { return context_menu_selection; }
 
     // Read-only container pass BEFORE drawing: clamp children to parent content left/top, then expand parent right/bottom
     if let Some(graph) = &doc.graph {
@@ -710,6 +734,8 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<cr
     }
 
     // (old extra sizing pass removed; handled above)
+    // (old extra sizing pass removed; handled above)
+    context_menu_selection
 }
 
 

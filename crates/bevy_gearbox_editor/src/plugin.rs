@@ -8,6 +8,7 @@ use crate::model::StateMachineGraph;
 use crate::editor::workspace::Workspace;
 use crate::editor::adapter::project_graph_into_doc;
 use crate::editor::view::draw_doc;
+use crate::editor::context_menu::MenuSelection;
 
 pub(crate) struct EditorPlugin;
 
@@ -132,9 +133,16 @@ fn ui_system(
                         let mut selected_tmp = workspace.selection.take();
                         if let Some(doc) = workspace.docs.get_mut(id) {
                             col.add_space(4.0);
-                            egui::Frame::canvas(col.style()).show(col, |canvas| {
-                                draw_doc(canvas, doc, &mut selected_tmp);
-                            });
+                            let selection_evt_inner: Option<MenuSelection>;
+                            {
+                                let response = egui::Frame::canvas(col.style()).show(col, |canvas| {
+                                    draw_doc(canvas, doc, &mut selected_tmp)
+                                });
+                                selection_evt_inner = response.inner;
+                            }
+                            if let Some(selection_evt) = selection_evt_inner {
+                                col.label(format!("Menu: {:?}", selection_evt));
+                            }
                             col.add_space(6.0);
                         }
                         workspace.selection = selected_tmp;
