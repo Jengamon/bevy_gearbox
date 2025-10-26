@@ -49,6 +49,7 @@ pub use crate::{
 };
 
 pub use bevy_gearbox_macros::register_transition;
+pub use bevy_gearbox_macros::gearbox_param;
 
 pub use crate::parameter::{
     // Parameter components

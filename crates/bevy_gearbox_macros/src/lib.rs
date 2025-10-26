@@ -1,6 +1,9 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Item};
+use syn::{parse_macro_input, DeriveInput, Item, Meta, Expr, Path};
+use syn::parse::Parser;
+use syn::punctuated::Punctuated;
+use syn::Token;
 
 /// Derive macro for simple events that don't need phase-specific payloads.
 /// 
@@ -46,10 +49,10 @@ pub fn derive_simple_transition(input: TokenStream) -> TokenStream {
             fn to_entry_event(&self) -> Option<Self::EntryEvent> { None }
         }
 
-        impl bevy_gearbox::transitions::RegisteredTransitionEvent for #name {}
+        impl bevy_gearbox::registration::RegisteredTransitionEvent for #name {}
 
         bevy_gearbox::inventory::submit! {
-            bevy_gearbox::transitions::TransitionInstaller { install: bevy_gearbox::transitions::register_transition::<#name> }
+            bevy_gearbox::registration::TransitionInstaller { install: bevy_gearbox::registration::register_transition::<#name> }
         }
     };
     
@@ -69,11 +72,98 @@ pub fn register_transition(_attr: TokenStream, item: TokenStream) -> TokenStream
     let expanded = quote! {
         #parsed
 
-        impl bevy_gearbox::transitions::RegisteredTransitionEvent for #name {}
+        impl bevy_gearbox::registration::RegisteredTransitionEvent for #name {}
 
         bevy_gearbox::inventory::submit! {
-            bevy_gearbox::transitions::TransitionInstaller { install: bevy_gearbox::transitions::register_transition::<#name> }
+            bevy_gearbox::registration::TransitionInstaller { install: bevy_gearbox::registration::register_transition::<#name> }
         }
+    };
+    TokenStream::from(expanded)
+}
+
+/// Attribute on a parameter marker that wires guards and optionally the sync binding.
+/// Usage examples:
+///   #[gearbox_param(kind = "bool", source = Hitpoints)]
+#[proc_macro_attribute]
+pub fn gearbox_param(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = Punctuated::<Meta, Token![,]>::parse_terminated
+        .parse(attr)
+        .expect("failed to parse #[gearbox_param] arguments");
+    let parsed: Item = syn::parse(item.clone()).expect("#[gearbox_param] must be applied to a type item");
+    let name = match &parsed {
+        Item::Struct(s) => &s.ident,
+        Item::Enum(e) => &e.ident,
+        _ => panic!("#[gearbox_param] supports only structs or enums"),
+    };
+
+    // Parse args: kind = "bool"|"int"|"float", optional source = Type
+    let mut kind: Option<String> = None;
+    let mut source_path: Option<Path> = None;
+    for meta in args {
+        match meta {
+            Meta::NameValue(nv) if nv.path.is_ident("kind") => {
+                if let Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(lit_str), .. }) = nv.value {
+                    kind = Some(lit_str.value());
+                } else { panic!("kind must be a string literal"); }
+            }
+            Meta::NameValue(nv) if nv.path.is_ident("source") => {
+                if let Expr::Path(p) = nv.value { source_path = Some(p.path); }
+                else { panic!("source must be a type path"); }
+            }
+            _ => {}
+        }
+    }
+
+    let kind = kind.expect("#[gearbox_param] requires kind = \"bool|int|float\"");
+
+    let guard_install = if kind == "bool" {
+        quote! { bevy_gearbox::registration::register_bool_param::<#name> }
+    } else if kind == "int" {
+        quote! { bevy_gearbox::registration::register_int_param::<#name> }
+    } else if kind == "float" {
+        quote! { bevy_gearbox::registration::register_float_param::<#name> }
+    } else {
+        panic!("invalid kind; expected bool|int|float");
+    };
+
+    let sync_install = if let Some(src_ty) = source_path.clone() {
+        if kind == "bool" {
+            quote! { bevy_gearbox::registration::register_bool_param_binding::<#src_ty, #name> }
+        } else if kind == "int" {
+            quote! { bevy_gearbox::registration::register_int_param_binding::<#src_ty, #name> }
+        } else {
+            quote! { bevy_gearbox::registration::register_float_param_binding::<#src_ty, #name> }
+        }
+    } else {
+        quote!{}
+    };
+
+    let binding_installer = if let Some(_) = source_path {
+        let ty = if kind == "bool" {
+            quote! { bevy_gearbox::registration::BoolParamBindingInstaller }
+        } else if kind == "int" {
+            quote! { bevy_gearbox::registration::IntParamBindingInstaller }
+        } else {
+            quote! { bevy_gearbox::registration::FloatParamBindingInstaller }
+        };
+        quote! {
+            bevy_gearbox::inventory::submit! { #ty { install: #sync_install } }
+        }
+    } else { quote!{} };
+
+    let guard_installer_ty = if kind == "bool" {
+        quote! { bevy_gearbox::registration::BoolParamInstaller }
+    } else if kind == "int" { quote! { bevy_gearbox::registration::IntParamInstaller } }
+    else { quote! { bevy_gearbox::registration::FloatParamInstaller } };
+
+    let expanded = quote! {
+        #parsed
+
+        bevy_gearbox::inventory::submit! {
+            #guard_installer_ty { install: #guard_install }
+        }
+
+        #binding_installer
     };
     TokenStream::from(expanded)
 }

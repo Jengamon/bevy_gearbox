@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 use bevy::platform::collections::HashSet;
-use std::any::TypeId;
 
 use crate::Substates;
 use crate::{guards::Guards, EnterState, Transition, active::Active, SubstateOf, StateMachine, ExitState, Parallel};
 use crate::state_component::Reset;
+use crate::registration::RegisteredTransitionEvent;
 
 /// Outbound transitions from a source state. Order defines priority (first match wins).
 #[derive(Component, Default, Debug, PartialEq, Eq, Reflect)]
@@ -120,47 +120,6 @@ pub trait TransitionEvent: EntityEvent + Clone {
     fn to_effect_event(&self) -> Option<Self::EffectEvent> { None }
     fn to_entry_event(&self) -> Option<Self::EntryEvent> { None }
 }
-
-/// Marker trait implemented by macros for events that are auto-registered.
-pub trait RegisteredTransitionEvent: 'static {}
-
-/// Internal resource to dedupe per-event installation.
-#[derive(Resource, Default)]
-pub struct InstalledTransitions(pub HashSet<TypeId>);
-
-/// Installer record collected via `inventory` for auto-registration of transition events.
-pub struct TransitionInstaller {
-    pub install: fn(&mut App),
-}
-
-inventory::collect!(TransitionInstaller);
-
-pub fn register_transition<E>(app: &mut App)
-where
-    E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static,
-    for<'a> <E as Event>::Trigger<'a>: Default,
-    for<'a> <<E as TransitionEvent>::ExitEvent as Event>::Trigger<'a>: Default,
-    for<'a> <<E as TransitionEvent>::EffectEvent as Event>::Trigger<'a>: Default,
-    for<'a> <<E as TransitionEvent>::EntryEvent as Event>::Trigger<'a>: Default,
-{
-    if !app.world().contains_resource::<InstalledTransitions>() {
-        app.insert_resource(InstalledTransitions(HashSet::new()));
-    }
-
-    let mut installed = app.world_mut().resource_mut::<InstalledTransitions>();
-    let already = !installed.0.insert(TypeId::of::<E>());
-    drop(installed);
-    if already { return; }
-
-    app.add_observer(edge_event_listener::<E>)
-        .add_observer(crate::transition_observer::<PhaseEvents<E::ExitEvent, E::EffectEvent, E::EntryEvent>>)
-        .add_systems(Update, tick_after_event_timers::<E>)
-        .add_observer(cancel_pending_event_on_exit::<E>)
-        .add_observer(replay_deferred_event::<E>);
-}
-
-
-// Note: No blanket impl for TransitionEvent to avoid conflicting impls in downstream crates.
 
 /// A typed phase payload holder built from a TransitionEvent
 #[derive(Clone, Default)]
@@ -410,7 +369,7 @@ fn find_parallel_region_root(
 }
 
 /// On event `E`, scan `Transitions` for a matching edge with `EventEdge<E>`, in priority order.
-fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent + Clone>(
+pub(crate) fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent + Clone>(
     transition_event: On<E>,
     q_transitions: Query<&Transitions>,
     q_listener: Query<&EventEdge<E>>, 

@@ -94,11 +94,11 @@ commands.spawn((
 ```rust
 commands.spawn((
   Name::new("Ready"),
-  StateChildOf(my_state_machine),
+  SubstateOf(my_state_machine),
 ));
 commands.spawn((
   Name::new("NotReady"),
-  StateChildOf(my_state_machine),
+  SubstateOf(my_state_machine),
 ));
 ```
 
@@ -122,6 +122,8 @@ commands.spawn((
   EventEdge::<SetReady>::default(),
 ));
 ```
+
+You can alternatively skip `SimpleTransition` and manually implement `TransitionEvent`, then add `#[register_transition]` to the type. Either path participates in inventory-based auto-registration: you don't need to call any explicit app registration for transition events.
 
 ### Triggering transitions
 ```rust

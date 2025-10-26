@@ -19,6 +19,7 @@ pub mod parameter;
 pub mod state_component;
 pub mod transitions;
 pub mod bevy_state;
+pub mod registration;
 
 // Re-exports
 pub use bevy_gearbox_macros::SimpleTransition;
@@ -70,10 +71,8 @@ impl Plugin for GearboxPlugin {
             transitions::tick_after_system,
         ));
 
-        // Auto-register all transition events discovered via inventory
-        for installer in inventory::iter::<transitions::TransitionInstaller> {
-            (installer.install)(app);
-        }
+        // Auto-register items discovered via inventory (transitions, states, params)
+        registration::run_auto_installers(app);
     }
 }
 

@@ -37,8 +37,8 @@ pub fn add_character_sm(commands: &mut Commands, entity: Entity) {
 
     // Our character can be alive, dead, standing, or jumping. Importantly, they can only
     // jump or stand if they are alive. So standing and jumping are actually sub-states of
-    // the alive state. Notice alive and dead are StateChildOf(entity), while standing and
-    // jumping are StateChildOf(alive).
+    // the alive state. Notice alive and dead are SubstateOf(entity), while standing and
+    // jumping are SubstateOf(alive).
 
     // Note: The root entity (here called `entity`) is also a state entity. This isn't
     // important for this example, but it's worth noting.
@@ -46,23 +46,23 @@ pub fn add_character_sm(commands: &mut Commands, entity: Entity) {
 
     commands.entity(alive).insert((
       Name::new("Alive"),
-      StateChildOf(entity),
+      SubstateOf(entity),
       InitialState(alive),
     ));
 
     commands.entity(dead).insert((
       Name::new("Dead"),
-      StateChildOf(entity),
+      SubstateOf(entity),
     ));
 
     commands.entity(standing).insert((
       Name::new("Standing"),
-      StateChildOf(alive),
+      SubstateOf(alive),
     ));
 
     commands.entity(jumping).insert((
       Name::new("Jumping"),
-      StateChildOf(alive),
+      SubstateOf(alive),
     ));
 
     // It is extremely important to insert the StateMachine component after all of your
@@ -116,7 +116,12 @@ pub struct Jump {
 }
 ```
 
-Transition events must always implement the `TransitionEvent` `EntityEvent`, and `Clone` traits and must always be decorated with `#[register_transition]`. Deriving `SimpleTransition` will automatically register the transition and implement TransitionEvent..
+Transition events must implement `EntityEvent`, `Clone`, and either:
+
+- derive `SimpleTransition` (auto-implements `TransitionEvent` and auto-registers via inventory), or
+- manually implement `TransitionEvent` and decorate the type with `#[register_transition]` (registers it for auto-wiring).
+
+With either approach, no manual app registration is required; `GearboxPlugin` discovers and installs transition handlers automatically.
 
 ### On using `StateComponent`s
 
@@ -141,7 +146,7 @@ pub struct Jumping;
 
 commands.entity(jumping).insert((
   Name::new("Jumping"),
-  StateChildOf(alive),
+  SubstateOf(alive),
   StateComponent(Jumping),
 ));
 ```
@@ -173,7 +178,7 @@ fn on_enter_jumping(
 
 commands.entity(jumping).insert((
   Name::new("Jumping"),
-  StateChildOf(alive),
+  SubstateOf(alive),
 )).observe(on_enter_jumping);
 ```
 
@@ -183,7 +188,7 @@ Right now we have a system somewhere that checks our character's `Hitpoints` and
 
 We'll derive a boolean parameter from `Hitpoints` and let an Always edge transition when that parameter matches a condition.
 
-1) Define a marker type and bind it to your source component so the parameter can be synced automatically:
+1) Define a marker type and bind it to your source component so the parameter can be synced automatically. Add the attribute to auto-register guards and sync:
 
 ```rust
 #[derive(Clone, Component)]
@@ -191,6 +196,7 @@ pub struct Hitpoints { pub max: f32, pub current: f32 }
 
 // Marker type for our boolean parameter
 #[derive(Clone)]
+#[gearbox_param(kind = "bool", source = Hitpoints)]
 pub struct IsDead;
 
 // Bind the parameter to Hitpoints so it evaluates to (hp.current <= 0)
@@ -220,21 +226,6 @@ c.spawn((
   AlwaysEdge,                       // fires when guards pass
   BoolEquals::<IsDead>::new(true),  // guard maintained from BoolParam<IsDead>
 ));
-```
-
-4) Register the parameter sync and guard application systems in your app. These keep `BoolParam<IsDead>` up to date and add/remove the guard on any edges with `BoolEquals::<IsDead>`:
-
-```rust
-use bevy::prelude::*;
-use bevy_gearbox::prelude::*;
-
-fn main() {
-  App::new()
-    .add_plugins((DefaultPlugins, GearboxPlugin))
-    .add_systems(Update, sync_bool_param::<Hitpoints, IsDead>)
-    .add_systems(Update, apply_bool_param_guards::<IsDead>)
-    .run();
-}
 ```
 
 With this setup:
