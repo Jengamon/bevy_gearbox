@@ -9,6 +9,7 @@ use crate::editor::workspace::Workspace;
 use crate::editor::adapter::project_graph_into_doc;
 use crate::editor::view::draw_doc;
 use crate::editor::context_menu::MenuSelection;
+use crate::persistence::{extract_sidecar_from_doc, save_sidecar, apply_sidecar_to_doc, compute_graph_fingerprint, load_sidecar};
 
 pub(crate) struct EditorPlugin;
 
@@ -143,7 +144,33 @@ fn ui_system(
                                 selection_evt_inner = response.inner;
                             }
                             if let Some(selection_evt) = selection_evt_inner {
-                                col.label(format!("Menu: {:?}", selection_evt));
+                                match selection_evt {
+                                    MenuSelection::SaveStateMachine { target: _ } => {
+                                        // Prompt for a file path; we'll derive both .scn.ron (remote) and .sm.ron (local)
+                                        let default_name = name.clone().unwrap_or_else(|| "state_machine".to_string()).replace('.', "_");
+                                        if let Some(chosen) = rfd::FileDialog::new().set_title("Save State Machine As").set_file_name(&default_name).save_file() {
+                                            let stem = chosen.file_stem().and_then(|s| s.to_str()).unwrap_or(&default_name);
+                                            // Sanitize base: strip trailing .sm or .scn if present (handles names like app_state.scn.sm)
+                                            let mut base = stem.to_string();
+                                            if base.ends_with(".sm") { base = base.trim_end_matches(".sm").to_string(); }
+                                            if base.ends_with(".scn") { base = base.trim_end_matches(".scn").to_string(); }
+                                            let dir = chosen.parent().map(|p| p.to_path_buf()).unwrap_or(std::path::PathBuf::from("."));
+                                            let sidecar_path = dir.join(format!("{}.sm.ron", base));
+                                            let asset_base = base.clone();
+                                            // Kick off remote scene save
+                                            cmd_writer.write(NetCommand::SaveAs { id: *id, asset_base: asset_base.clone(), sidecar_path: sidecar_path.clone() });
+                                            // Save sidecar immediately from current layout
+                                            if let Some(doc_ref) = workspace.docs.get(id) {
+                                                let mut sidecar = extract_sidecar_from_doc(doc_ref);
+                                                sidecar.scene_basename = Some(format!("{}.scn.ron", asset_base));
+                                                let _ = save_sidecar(&sidecar_path, &sidecar);
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        col.label(format!("Menu: {:?}", selection_evt));
+                                    }
+                                }
                             }
                             col.add_space(6.0);
                         }
@@ -162,7 +189,25 @@ fn sync_snapshots_to_workspace(
 ) {
     for (id, graph) in ui.graphs.iter() {
         let entry = workspace.docs.entry(*id).or_default();
+        let was_empty = entry.graph.is_none();
         project_graph_into_doc(entry, graph.clone());
+        // On first load per doc, try to auto-apply a sidecar if present (basename match or fingerprint cache)
+        if was_empty {
+            // Build candidate sidecar path from machine name if available
+            let fp = compute_graph_fingerprint(&graph);
+            // Simple basename lookup in current working dir
+            if let Some(name) = graph.nodes.get(&graph.root).and_then(|n| n.display_name.clone()) {
+                let stem = name.replace('.', "_");
+                let candidate = std::path::PathBuf::from(format!("{}.sm.ron", stem));
+                if candidate.exists() {
+                    if let Ok(sc) = load_sidecar(&candidate) {
+                        if sc.graph_fingerprint.as_deref() == Some(&fp) || sc.graph_fingerprint.is_none() {
+                            apply_sidecar_to_doc(entry, &sc);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -51,6 +51,8 @@ pub(crate) enum NetCommand {
     Refresh,
     Select { id: ServerEntity },
     Save { id: ServerEntity },
+    /// Save As: logical asset base name (for .scn.ron on app) and local sidecar path
+    SaveAs { id: ServerEntity, asset_base: String, sidecar_path: std::path::PathBuf },
     FetchGraph { id: ServerEntity },
 }
 
@@ -127,6 +129,15 @@ pub(crate) fn handle_commands(
                             NetCommand::FetchGraph { id } => {
                                 let result = fetch_machine_graph_model(&url, id.0).await.map_err(NetError::from);
                                 NetEvent::GraphResult { id, result }
+                            }
+                            NetCommand::SaveAs { id, asset_base, sidecar_path } => {
+                                let r = (async move {
+                                    // 1) Ask app to save scene to <asset_base>.scn.ron
+                                    crate::rpcs::save_graph(&url, id.0, &asset_base).await.map_err(NetError::from)?;
+                                    // 2) Return Ok; caller will write sidecar synchronously on main thread
+                                    Ok(()) as Result<(), NetError>
+                                }).await;
+                                NetEvent::SaveResult(r)
                             }
                             NetCommand::Connect | NetCommand::Disconnect => unreachable!(),
                             NetCommand::SetUrl { .. } => unreachable!(),

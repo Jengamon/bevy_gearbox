@@ -66,9 +66,9 @@ pub fn build_context_menu(graph: &StateMachineGraph, id: EntityId) -> Vec<MenuIt
         items.push(MenuItem { label: "Make Parallel", kind: MenuItemKind::MakeParallel });
     }
 
-    // Save (when this node has StateMachine)
+    // Save As (when this node has StateMachine)
     if has_state_machine {
-        items.push(MenuItem { label: "Save", kind: MenuItemKind::Save });
+        items.push(MenuItem { label: "Save As", kind: MenuItemKind::Save });
     }
 
     // Delete (always)
