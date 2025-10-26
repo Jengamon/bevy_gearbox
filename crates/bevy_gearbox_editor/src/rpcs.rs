@@ -338,3 +338,56 @@ pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result
     Ok(graph)
 }
 
+// Transport helpers for server-exposed trackers
+
+pub(crate) async fn fetch_active_states(url: &str, machine: u64) -> Result<(Vec<u64>, Vec<u64>), String> {
+    let comps = get_components(url, machine, Some(&[c::ACTIVE_TRACKER])).await?;
+    let Some(Value::Object(tracker)) = comps.get(c::ACTIVE_TRACKER) else { return Ok((Vec::new(), Vec::new())); };
+    let active = tracker.get("active").map(parse_entity_list).unwrap_or_default();
+    let leaves = tracker.get("leaves").map(parse_entity_list).unwrap_or_default();
+    Ok((active, leaves))
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TransitionFeedItem {
+    pub seq: u64,
+    pub machine: Option<u64>,
+    pub source: Option<u64>,
+    pub edge: Option<u64>,
+    pub target: Option<u64>,
+    pub kind: Option<String>,
+}
+
+pub(crate) async fn fetch_transition_feed(url: &str, machine: u64) -> Result<Option<TransitionFeedItem>, String> {
+    let comps = get_components(url, machine, Some(&[c::TRANSITION_FEED])).await?;
+    let Some(Value::Object(feed)) = comps.get(c::TRANSITION_FEED) else { return Ok(None); };
+    let seq = feed.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+    let Some(Value::Object(last)) = feed.get("last") else { return Ok(None); };
+    let machine_v = last.get("machine").and_then(parse_single_entity);
+    let source_v = last.get("source").and_then(parse_single_entity);
+    let edge_v = last.get("edge").and_then(parse_single_entity);
+    let target_v = last.get("target").and_then(parse_single_entity);
+    let kind_v = match last.get("kind") {
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(Value::Object(o)) => o.get("variant").and_then(|v| v.as_str()).map(|s| s.to_string()).or_else(|| o.get("name").and_then(|v| v.as_str()).map(|s| s.to_string())),
+        _ => None,
+    };
+    Ok(Some(TransitionFeedItem { seq, machine: machine_v, source: source_v, edge: edge_v, target: target_v, kind: kind_v }))
+}
+
+
+// =========================
+// File save helpers (client-side RPC calls)
+// =========================
+pub(crate) async fn save_graph(url: &str, entity: u64, asset_path_no_ext_or_full: &str) -> Result<(), String> {
+    // Ensure .scn.ron extension on the logical asset path
+    let path = if asset_path_no_ext_or_full.ends_with(".scn.ron") {
+        asset_path_no_ext_or_full.to_string()
+    } else {
+        format!("{}.scn.ron", asset_path_no_ext_or_full)
+    };
+    let params = json!({"entity": entity, "path": path});
+    let _ = jsonrpc_call(url, "editor.save_graph", Some(params)).await?;
+    Ok(())
+}
+
