@@ -97,13 +97,13 @@ fn guard_key_for_float<P>() -> String { format!("float-in-range::<{}>", std::any
 pub fn apply_float_param_guards<P: Send + Sync + 'static>(
     q_edges: Query<(Entity, &Source, &FloatInRange<P>)>,
     q_params: Query<&FloatParam<P>>,
-    q_child_of: Query<&SubstateOf>,
+    q_substate_of: Query<&SubstateOf>,
     mut q_guards: Query<&mut Guards>,
     mut commands: Commands,
 ) {
     let key = guard_key_for_float::<P>();
     for (edge, Source(source), range) in &q_edges {
-        let root = q_child_of.root_ancestor(*source);
+        let root = q_substate_of.root_ancestor(*source);
         // Determine desired presence of this guard without mutating existing component
         let desired_blocked = match q_params.get(root) {
             Ok(param) => {
@@ -172,13 +172,13 @@ fn guard_key_for_int<P>() -> String { format!("int-in-range::<{}>", std::any::ty
 pub fn apply_int_param_guards<P: Send + Sync + 'static>(
     q_edges: Query<(Entity, &Source, &IntInRange<P>)>,
     q_params: Query<&IntParam<P>>,
-    q_child_of: Query<&SubstateOf>,
+    q_substate_of: Query<&SubstateOf>,
     mut q_guards: Query<&mut Guards>,
     mut commands: Commands,
 ){
     let key = guard_key_for_int::<P>();
     for (edge, Source(source), range) in &q_edges {
-        let root = q_child_of.root_ancestor(*source);
+        let root = q_substate_of.root_ancestor(*source);
         let desired_blocked = match q_params.get(root) {
             Ok(param) => {
                 let v = param.get();
@@ -240,13 +240,13 @@ fn guard_key_for_bool<P>() -> String { format!("bool-equals::<{}>", std::any::ty
 pub fn apply_bool_param_guards<P: Send + Sync + 'static>(
     q_edges: Query<(Entity, &Source, &BoolEquals<P>)>,
     q_params: Query<&BoolParam<P>>,
-    q_child_of: Query<&SubstateOf>,
+    q_substate_of: Query<&SubstateOf>,
     mut q_guards: Query<&mut Guards>,
     mut commands: Commands,
 ){
     let key = guard_key_for_bool::<P>();
     for (edge, Source(source), eq) in &q_edges {
-        let root = q_child_of.root_ancestor(*source);
+        let root = q_substate_of.root_ancestor(*source);
         let desired_blocked = match q_params.get(root) {
             Ok(param) => param.get() != eq.expected,
             Err(_) => true,

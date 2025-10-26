@@ -53,7 +53,7 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
     let mut views: std::collections::HashMap<crate::model::EntityId, UiView> = std::collections::HashMap::new();
     let mut transform_parent: std::collections::HashMap<crate::model::EntityId, Option<crate::model::EntityId>> = std::collections::HashMap::new();
     let mut transform_children: std::collections::HashMap<crate::model::EntityId, Vec<crate::model::EntityId>> = std::collections::HashMap::new();
-    let mut initial_child_of: std::collections::HashMap<crate::model::EntityId, crate::model::EntityId> = std::collections::HashMap::new();
+    let mut initial_substate_of: std::collections::HashMap<crate::model::EntityId, crate::model::EntityId> = std::collections::HashMap::new();
     let mut is_initial_child: std::collections::HashSet<crate::model::EntityId> = std::collections::HashSet::new();
 
     // Insert node views
@@ -71,7 +71,7 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
             let mut try_set_child = |server_id: u64| {
                 let child = crate::model::EntityId::Server(crate::types::ServerEntity(server_id));
                 if snapshot.nodes.contains_key(&child) && snapshot.nodes.get(id).map(|n| n.children.contains(&child)).unwrap_or(false) {
-                    initial_child_of.insert(*id, child);
+                    initial_substate_of.insert(*id, child);
                     is_initial_child.insert(child);
                     true
                 } else { false }
@@ -153,7 +153,7 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
     doc.draw_order = unified_order;
     doc.transform_parent = transform_parent;
     doc.transform_children = transform_children;
-    doc.initial_child_of = initial_child_of;
+    doc.initial_substate_of = initial_substate_of;
     doc.is_initial_child = is_initial_child;
 }
 

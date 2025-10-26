@@ -77,7 +77,7 @@ pub struct GraphDoc {
     /// Transform parent for each view: node -> parent node; edge pill -> pill parent
     pub transform_parent: HashMap<EntityId, Option<EntityId>>,
     /// Mapping of parent -> initial child state (if any)
-    pub initial_child_of: HashMap<EntityId, EntityId>,
+    pub initial_substate_of: HashMap<EntityId, EntityId>,
     /// Set of nodes that are the initial child of their parent
     pub is_initial_child: std::collections::HashSet<EntityId>,
     /// Cache of text label sizes in screen pixels keyed by (label, font_px_rounded)

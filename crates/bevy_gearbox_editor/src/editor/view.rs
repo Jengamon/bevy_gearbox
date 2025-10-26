@@ -606,7 +606,7 @@ pub fn draw_doc(
     };
 
     // Helper: is this view a direct child of a Parallel state (by view kind or by graph components)?
-    let is_direct_child_of_parallel_fn = |child_id: &crate::model::EntityId| -> bool {
+    let is_direct_substate_of_parallel_fn = |child_id: &crate::model::EntityId| -> bool {
         let parent_opt = doc.transform_parent.get(child_id).and_then(|p| *p);
         let by_view = parent_opt
             .and_then(|pid| doc.views.get(&pid))
@@ -644,8 +644,8 @@ pub fn draw_doc(
                 let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
                 if is_selected { draw_selection_halo(rect_screen, egui::CornerRadius::same(8)); }
                 // Border: dashed if direct child of a Parallel (draw after header so it stays visible)
-                let is_direct_child_of_parallel = is_direct_child_of_parallel_fn(id);
-                if is_direct_child_of_parallel {
+                let is_direct_substate_of_parallel = is_direct_substate_of_parallel_fn(id);
+                if is_direct_substate_of_parallel {
                     let dash = 6.0;
                     let gap = 4.0;
                     draw_dashed_rounded_rect(rect_screen, 6.0, egui::Color32::from_gray(160), 1.0, dash, gap);
@@ -768,8 +768,8 @@ pub fn draw_doc(
                 let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
                 if is_selected { draw_selection_halo(rect_screen, egui::CornerRadius::same(8)); }
                 // Border: dashed if direct child of a Parallel
-                let is_direct_child_of_parallel = is_direct_child_of_parallel_fn(id);
-                if is_direct_child_of_parallel {
+                let is_direct_substate_of_parallel = is_direct_substate_of_parallel_fn(id);
+                if is_direct_substate_of_parallel {
                     let dash = 6.0;
                     let gap = 4.0;
                     draw_dashed_rounded_rect(rect_screen, 6.0, egui::Color32::from_gray(160), 1.0, dash, gap);

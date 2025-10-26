@@ -18,7 +18,7 @@ pub struct StateInactiveComponent<T: Component + Clone>(pub T);
 pub fn state_component_enter<T: Component<Mutability = Mutable> + Clone>(
     enter_state: On<EnterState>,
     q_state_component: Query<&StateComponent<T>>,
-    q_child_of: Query<&SubstateOf>,
+    q_substate_of: Query<&SubstateOf>,
     mut commands: Commands,
 ) {
     let entered_state = enter_state.target;
@@ -26,7 +26,7 @@ pub fn state_component_enter<T: Component<Mutability = Mutable> + Clone>(
         return;
     };
 
-    let root_entity = q_child_of.root_ancestor(entered_state);
+    let root_entity = q_substate_of.root_ancestor(entered_state);
 
     if root_entity != entered_state {
         commands.entity(root_entity).insert(insert_component.0.clone());
@@ -38,7 +38,7 @@ pub fn state_component_enter<T: Component<Mutability = Mutable> + Clone>(
 pub fn state_component_exit<T: Component>(
     exit_state: On<ExitState>,
     q_state_component: Query<&StateComponent<T>>,
-    q_child_of: Query<&SubstateOf>,
+    q_substate_of: Query<&SubstateOf>,
     mut commands: Commands,
 ) {
     let exited_state = exit_state.target;
@@ -46,7 +46,7 @@ pub fn state_component_exit<T: Component>(
         return;
     };
 
-    let root_entity = q_child_of.root_ancestor(exited_state);
+    let root_entity = q_substate_of.root_ancestor(exited_state);
 
     if root_entity != exited_state {
         commands.entity(root_entity).remove::<T>();
@@ -58,7 +58,7 @@ pub fn state_component_exit<T: Component>(
 pub fn state_inactive_component_enter<T: Component + Clone>(
     enter_state: On<EnterState>,
     q_state_inactive_component: Query<&StateInactiveComponent<T>>,
-    q_child_of: Query<&SubstateOf>,
+    q_substate_of: Query<&SubstateOf>,
     mut commands: Commands,
 ) {
     let entered_state = enter_state.target;
@@ -66,7 +66,7 @@ pub fn state_inactive_component_enter<T: Component + Clone>(
         return;
     };
 
-    let root_entity = q_child_of.root_ancestor(entered_state);
+    let root_entity = q_substate_of.root_ancestor(entered_state);
 
     if root_entity != entered_state {
         commands.entity(root_entity).remove::<T>();
@@ -78,7 +78,7 @@ pub fn state_inactive_component_enter<T: Component + Clone>(
 pub fn state_inactive_component_exit<T: Component + Clone>(
     exit_state: On<ExitState>,
     q_state_inactive_component: Query<&StateInactiveComponent<T>>,
-    q_child_of: Query<&SubstateOf>,
+    q_substate_of: Query<&SubstateOf>,
     mut commands: Commands,
 ) {
     let exited_state = exit_state.target;
@@ -86,7 +86,7 @@ pub fn state_inactive_component_exit<T: Component + Clone>(
         return;
     };
 
-    let root_entity = q_child_of.root_ancestor(exited_state);
+    let root_entity = q_substate_of.root_ancestor(exited_state);
 
     if root_entity != exited_state {
         commands.entity(root_entity).insert(remove_component.0.clone());

@@ -218,7 +218,7 @@ fn transition_observer<T: transitions::PhasePayload>(
     q_initial_state: Query<&InitialState>,
     q_history: Query<&History>,
     mut q_history_state: Query<&mut HistoryState>,
-    q_child_of: Query<&SubstateOf>,
+    q_substate_of: Query<&SubstateOf>,
     q_edge_target: Query<&transitions::Target>,
     q_kind: Query<&transitions::EdgeKind>,
     mut commands: Commands,
@@ -241,7 +241,7 @@ fn transition_observer<T: transitions::PhasePayload>(
         // Build path from target up to (but excluding) the machine root
         let mut path_to_target: Vec<Entity> = vec![new_super_state];
         path_to_target.extend(
-            q_child_of
+            q_substate_of
                 .iter_ancestors(new_super_state)
                 .take_while(|&ancestor| ancestor != state_machine),
         );
@@ -259,12 +259,12 @@ fn transition_observer<T: transitions::PhasePayload>(
             &q_parallel,
             &q_history,
             &q_history_state,
-            &q_child_of,
+            &q_substate_of,
             &mut commands,
         );
         current_state.active_leaves.extend(new_leaf_states);
         // Derive full active set from leaves
-        current_state.active = compute_active_from_leaves(&current_state.active_leaves, &q_child_of);
+        current_state.active = compute_active_from_leaves(&current_state.active_leaves, &q_substate_of);
         return;
     }
 
@@ -279,11 +279,11 @@ fn transition_observer<T: transitions::PhasePayload>(
         for &leaf in current_state.active_leaves.iter() {
             // Consider only leaves that are descendants of the parallel source
             let is_descendant = leaf == source_state
-                || q_child_of.iter_ancestors(leaf).any(|a| a == source_state);
+                || q_substate_of.iter_ancestors(leaf).any(|a| a == source_state);
             if !is_descendant { continue; }
 
             // Exit path from leaf up to source_state (inclusive)
-            let path = get_path_to_root(leaf, &q_child_of);
+            let path = get_path_to_root(leaf, &q_substate_of);
             if let Some(pos) = path.iter().position(|&e| e == source_state) {
                 let slice = &path[..=pos]; // includes source_state
                 for &e in slice {
@@ -293,8 +293,8 @@ fn transition_observer<T: transitions::PhasePayload>(
         }
 
         // 2) Enter: compute LCA between source_state and new_super_state
-        let exit_path_from_source = get_path_to_root(source_state, &q_child_of);
-        let enter_path = get_path_to_root(new_super_state, &q_child_of);
+        let exit_path_from_source = get_path_to_root(source_state, &q_substate_of);
+        let enter_path = get_path_to_root(new_super_state, &q_substate_of);
 
         let mut lca_depth = exit_path_from_source
             .iter()
@@ -324,7 +324,7 @@ fn transition_observer<T: transitions::PhasePayload>(
             .copied()
             .filter(|leaf| {
                 *leaf == source_state
-                    || q_child_of
+                    || q_substate_of
                         .iter_ancestors(*leaf)
                         .any(|ancestor| ancestor == source_state)
             })
@@ -335,7 +335,7 @@ fn transition_observer<T: transitions::PhasePayload>(
             return;
         }
 
-        let enter_path = get_path_to_root(new_super_state, &q_child_of);
+        let enter_path = get_path_to_root(new_super_state, &q_substate_of);
         let is_internal = matches!(q_kind.get(transition.event().edge), Ok(transitions::EdgeKind::Internal));
 
         // Build ordered exits by walking each leaf up to (but not including) the LCA with the target path
@@ -344,7 +344,7 @@ fn transition_observer<T: transitions::PhasePayload>(
         let mut min_lca_depth: Option<usize> = None;
 
         for leaf in descendant_leaves.drain(..) {
-            let exit_path = get_path_to_root(leaf, &q_child_of);
+            let exit_path = get_path_to_root(leaf, &q_substate_of);
             let mut lca_depth = exit_path
                 .iter()
                 .rev()
@@ -395,7 +395,7 @@ fn transition_observer<T: transitions::PhasePayload>(
                         // Track the previous node while walking ancestors; when we hit `entity`,
                         // `prev` is the immediate child under `entity`.
                         let mut prev = leaf;
-                        for ancestor in q_child_of.iter_ancestors(leaf) {
+                        for ancestor in q_substate_of.iter_ancestors(leaf) {
                             if ancestor == *entity {
                                 saved.insert(prev);
                                 break;
@@ -409,7 +409,7 @@ fn transition_observer<T: transitions::PhasePayload>(
                     // For deep history, save all active descendant leaves
                     current_state.active_leaves.iter()
                         .filter(|&&state| {
-                            state == *entity || q_child_of
+                            state == *entity || q_substate_of
                                 .iter_ancestors(state)
                                  .any(|ancestor| ancestor == *entity)
                         })
@@ -456,19 +456,19 @@ fn transition_observer<T: transitions::PhasePayload>(
         &q_parallel,
         &q_history,
         &q_history_state,
-        &q_child_of,
+        &q_substate_of,
         &mut commands,
     );
     current_state.active_leaves.extend(new_leaf_states);
     // Invoke typed Entry payload
     transition.event().payload.on_entry(&mut commands, new_super_state, &q_children, &current_state);
     // Derive full active set from leaves
-    current_state.active = compute_active_from_leaves(&current_state.active_leaves, &q_child_of);
+    current_state.active = compute_active_from_leaves(&current_state.active_leaves, &q_substate_of);
 }
 
-fn get_path_to_root(start_entity: Entity, q_child_of: &Query<&SubstateOf>) -> Vec<Entity> {
+fn get_path_to_root(start_entity: Entity, q_substate_of: &Query<&SubstateOf>) -> Vec<Entity> {
     let mut path = vec![start_entity];
-    path.extend(q_child_of.iter_ancestors(start_entity));
+    path.extend(q_substate_of.iter_ancestors(start_entity));
     path
 }
 
@@ -480,7 +480,7 @@ pub fn get_all_leaf_states(
     q_parallel: &Query<&Parallel>,
     q_history: &Query<&History>,
     q_history_state: &Query<&mut HistoryState>,
-    q_child_of: &Query<&SubstateOf>,
+    q_substate_of: &Query<&SubstateOf>,
     commands: &mut Commands,
 ) -> HashSet<Entity> {
 
@@ -504,7 +504,7 @@ pub fn get_all_leaf_states(
                     for &saved_state in &history_state.0 {
                         let mut path_to_substate = vec![saved_state];
                         path_to_substate.extend(
-                            q_child_of
+                            q_substate_of
                                 .iter_ancestors(saved_state)
                                 .take_while(|&ancestor| ancestor != entity),
                         );
@@ -535,7 +535,7 @@ pub fn get_all_leaf_states(
             // that are descendants of the current state (`entity`).
             let mut path_to_substate = vec![initial_state.0];
             path_to_substate.extend(
-                q_child_of
+                q_substate_of
                     .iter_ancestors(initial_state.0)
                     .take_while(|&ancestor| ancestor != entity),
             );
@@ -558,12 +558,12 @@ pub fn get_all_leaf_states(
 
 fn compute_active_from_leaves(
     leaves: &HashSet<Entity>,
-    q_child_of: &Query<&SubstateOf>,
+    q_substate_of: &Query<&SubstateOf>,
 ) -> HashSet<Entity> {
     let mut active: HashSet<Entity> = HashSet::new();
     for &leaf in leaves.iter() {
         active.insert(leaf);
-        for ancestor in q_child_of.iter_ancestors(leaf) {
+        for ancestor in q_substate_of.iter_ancestors(leaf) {
             active.insert(ancestor);
         }
     }

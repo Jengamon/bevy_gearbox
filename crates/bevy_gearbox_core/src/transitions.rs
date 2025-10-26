@@ -257,7 +257,7 @@ fn try_fire_first_matching_edge_generic<E: TransitionEvent + RegisteredTransitio
     q_listener: &Query<&EventEdge<E>>, 
     q_edge_target: &Query<&Target>,
     q_guards: &Query<&Guards>,
-    q_child_of: &Query<&SubstateOf>,
+    q_substate_of: &Query<&SubstateOf>,
     q_defer: &mut Query<&mut DeferEvent<E>>,
     q_active: &Query<(), With<Active>>,
     q_after: &Query<&After>,
@@ -297,7 +297,7 @@ fn try_fire_first_matching_edge_generic<E: TransitionEvent + RegisteredTransitio
             effect: event.to_effect_event(),
             entry: event.to_entry_event(),
         };
-        let root = q_child_of.root_ancestor(source);
+        let root = q_substate_of.root_ancestor(source);
         commands.trigger(Transition { machine: root, source, edge, payload });
         return true;
     }
@@ -366,7 +366,7 @@ pub fn always_edge_listener(
     q_edge_target: Query<&Target>,
     q_guards: Query<&Guards>,
     q_after: Query<&After>,
-    q_child_of: Query<&SubstateOf>,
+    q_substate_of: Query<&SubstateOf>,
     mut commands: Commands,
 ){
     let source = enter_state.target;
@@ -383,7 +383,7 @@ pub fn always_edge_listener(
         if !validate_edge_basic(edge, &q_guards, &q_edge_target) { continue; }
 
         // Fire transition
-        let root = q_child_of.root_ancestor(source);
+        let root = q_substate_of.root_ancestor(source);
         commands.trigger(Transition { machine: root, source, edge, payload: () });
         break;
     }
@@ -393,12 +393,12 @@ pub fn always_edge_listener(
 /// Returns the state itself if it's not under a parallel region.
 fn find_parallel_region_root(
     state: Entity,
-    q_child_of: &Query<&SubstateOf>,
+    q_substate_of: &Query<&SubstateOf>,
     q_parallel: &Query<&Parallel>,
 ) -> Entity {
     // Walk up the hierarchy to find if we're under a parallel state
     let mut previous_ancestor = state;
-    for ancestor in q_child_of.iter_ancestors(state) {
+    for ancestor in q_substate_of.iter_ancestors(state) {
         if q_parallel.contains(ancestor) {
             return previous_ancestor;
         }
@@ -416,7 +416,7 @@ fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent + Clone>(
     q_listener: Query<&EventEdge<E>>, 
     q_edge_target: Query<&Target>,
     q_guards: Query<&Guards>,
-    q_child_of: Query<&SubstateOf>,
+    q_substate_of: Query<&SubstateOf>,
     q_sm: Query<&StateMachine>,
     mut q_defer: Query<&mut DeferEvent<E>>,
     q_active: Query<(), With<Active>>,
@@ -435,13 +435,13 @@ fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent + Clone>(
 
         // Leaves-first: attempt to fire along each active branch (one per parallel region)
         for &leaf in current.active_leaves.iter() {
-            let region_root = find_parallel_region_root(leaf, &q_child_of, &q_parallel);
+            let region_root = find_parallel_region_root(leaf, &q_substate_of, &q_parallel);
             if fired_regions.contains(&region_root) { continue; }
 
             if try_fire_first_matching_edge_on_branch(
                 leaf, event, machine_root,
                 &q_transitions, &q_listener, &q_edge_target, &q_guards,
-                &q_child_of, &mut q_defer, &q_active, &q_after,
+                &q_substate_of, &mut q_defer, &q_active, &q_after,
                 &mut q_timer, &mut visited, &mut commands,
             ) {
                 fired_regions.insert(region_root);
@@ -452,7 +452,7 @@ fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent + Clone>(
         if fired_regions.is_empty() {
             let _ = try_fire_first_matching_edge(
                 machine_root, event, &q_transitions, &q_listener, &q_edge_target,
-                &q_guards, &q_child_of, &mut q_defer, &q_active,
+                &q_guards, &q_substate_of, &mut q_defer, &q_active,
                 &q_after, &mut q_timer, &mut commands,
             );
         }
@@ -462,7 +462,7 @@ fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent + Clone>(
     // Otherwise, evaluate on the targeted state directly
     try_fire_first_matching_edge(
         machine_root, event, &q_transitions, &q_listener, &q_edge_target,
-        &q_guards, &q_child_of, &mut q_defer, &q_active, 
+        &q_guards, &q_substate_of, &mut q_defer, &q_active, 
         &q_after, &mut q_timer, &mut commands,
     );
 }
@@ -474,7 +474,7 @@ fn try_fire_first_matching_edge<E: TransitionEvent + RegisteredTransitionEvent +
     q_listener: &Query<&EventEdge<E>>, 
     q_edge_target: &Query<&Target>,
     q_guards: &Query<&Guards>,
-    q_child_of: &Query<&SubstateOf>,
+    q_substate_of: &Query<&SubstateOf>,
     q_defer: &mut Query<&mut DeferEvent<E>>,
     q_active: &Query<(), With<Active>>,
     q_after: &Query<&After>,
@@ -483,7 +483,7 @@ fn try_fire_first_matching_edge<E: TransitionEvent + RegisteredTransitionEvent +
 ) -> bool {
     try_fire_first_matching_edge_generic(
         source, event, q_transitions, q_listener, q_edge_target,
-        q_guards, q_child_of, q_defer, q_active, q_after,
+        q_guards, q_substate_of, q_defer, q_active, q_after,
         q_timer, commands,
     )
 }
@@ -496,7 +496,7 @@ fn try_fire_first_matching_edge_on_branch<E: EntityEvent + Clone + TransitionEve
     q_listener: &Query<&EventEdge<E>>, 
     q_edge_target: &Query<&Target>,
     q_guards: &Query<&Guards>,
-    q_child_of: &Query<&SubstateOf>,
+    q_substate_of: &Query<&SubstateOf>,
     q_defer: &mut Query<&mut DeferEvent<E>>,
     q_active: &Query<(), With<Active>>,
     q_after: &Query<&After>,
@@ -510,7 +510,7 @@ fn try_fire_first_matching_edge_on_branch<E: EntityEvent + Clone + TransitionEve
         // Skip states already checked across other branches
         if !visited.insert(state) {
             if state == machine_root { break; }
-            current = q_child_of.get(state).ok().map(|rel| rel.0);
+            current = q_substate_of.get(state).ok().map(|rel| rel.0);
             continue;
         }
         if try_fire_first_matching_edge(
@@ -520,7 +520,7 @@ fn try_fire_first_matching_edge_on_branch<E: EntityEvent + Clone + TransitionEve
             q_listener,
             q_edge_target,
             q_guards,
-            q_child_of,
+            q_substate_of,
             q_defer,
             q_active,
             q_after,
@@ -530,7 +530,7 @@ fn try_fire_first_matching_edge_on_branch<E: EntityEvent + Clone + TransitionEve
             return true;
         }
         if state == machine_root { break; }
-        current = q_child_of.get(state).ok().map(|rel| rel.0);
+        current = q_substate_of.get(state).ok().map(|rel| rel.0);
     }
     false
 }
@@ -540,7 +540,7 @@ fn try_fire_first_matching_edge_on_branch<E: EntityEvent + Clone + TransitionEve
 pub fn check_always_on_guards_changed(
     q_guards_changed: Query<(Entity, &Guards, &Source, Has<Target>), (Changed<Guards>, With<AlwaysEdge>)>, 
     q_transitions: Query<&Transitions>,
-    q_child_of: Query<&SubstateOf>,
+    q_substate_of: Query<&SubstateOf>,
     q_active: Query<(), With<Active>>,
     q_after: Query<&After>,
     mut commands: Commands,
@@ -560,7 +560,7 @@ pub fn check_always_on_guards_changed(
 
         // Ensure edge has a valid target; then fire (or arm timer if delayed)
         if !edge_target { continue; }
-        let root = q_child_of.root_ancestor(source);
+        let root = q_substate_of.root_ancestor(source);
         if q_after.get(edge).is_ok() {
             let after = q_after.get(edge).unwrap();
             commands.entity(edge).insert(EdgeTimer(Timer::new(after.duration, TimerMode::Once)));
@@ -650,7 +650,7 @@ pub fn tick_after_system(
     q_always: Query<(), With<AlwaysEdge>>,
     q_guards: Query<&Guards>,
     q_edge_target: Query<&Target>,
-    q_child_of: Query<&SubstateOf>,
+    q_substate_of: Query<&SubstateOf>,
     mut commands: Commands,
 ) {
     for (source, transitions) in q_transitions.iter() {
@@ -673,7 +673,7 @@ pub fn tick_after_system(
             commands.entity(edge).remove::<EdgeTimer>();
 
             // Emit transition to the machine root with empty payload
-            let root = q_child_of.root_ancestor(source);
+            let root = q_substate_of.root_ancestor(source);
             commands.trigger(Transition { machine: root, source, edge, payload: () });
             break; // only one delayed transition per source per frame
         }
@@ -706,7 +706,7 @@ pub fn tick_after_event_timers<E: TransitionEvent + RegisteredTransitionEvent + 
     q_guards: Query<&Guards>,
     q_edge_target: Query<&Target>,
     q_edge_source: Query<&Source>,
-    q_child_of: Query<&SubstateOf>,
+    q_substate_of: Query<&SubstateOf>,
     q_active: Query<(), With<Active>>,
     mut commands: Commands,
 ) {
@@ -739,7 +739,7 @@ pub fn tick_after_event_timers<E: TransitionEvent + RegisteredTransitionEvent + 
 
         // Cleanup timer/pending and fire the transition to machine root
         cleanup_edge_timer_and_pending::<E>(&mut commands, edge);
-        let root = q_child_of.root_ancestor(*source);
+        let root = q_substate_of.root_ancestor(*source);
         commands.trigger(Transition { machine: root, source: *source, edge, payload });
     }
 }

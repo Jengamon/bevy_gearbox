@@ -155,13 +155,13 @@ fn sync_active_tracker_on_state_changes(
 fn record_transition_on_actions(
     transition_actions: On<crate::TransitionActions>,
     q_source: Query<&crate::transitions::Source>,
-    q_child_of: Query<&crate::SubstateOf>,
+    q_substate_of: Query<&crate::SubstateOf>,
     mut q_feed: Query<&mut TransitionFeed>,
     mut commands: Commands,
 ){
     let edge = transition_actions.target;
     let Ok(crate::transitions::Source(source)) = q_source.get(edge) else { return; };
-    let machine = q_child_of.root_ancestor(*source);
+    let machine = q_substate_of.root_ancestor(*source);
     if let Ok(mut feed) = q_feed.get_mut(machine) {
         let seq = feed.next_seq;
         feed.next_seq = feed.next_seq.saturating_add(1);
@@ -205,10 +205,11 @@ fn collect_state_machine_entities(world: &World, root: Entity) -> Vec<Entity> {
 fn build_scene_from_root(world: &mut World, root: Entity) -> DynamicScene {
     let entities = collect_state_machine_entities(world, root);
     let mut builder = DynamicSceneBuilder::from_world(world);
-    // Extract the target entities then deny editor-only helper components
-    builder = builder.extract_entities(entities.into_iter()).allow_all();
+    // Configure filter first, then extract target entities
+    builder = builder.allow_all();
     builder = builder.deny_component::<ActiveTracker>();
     builder = builder.deny_component::<TransitionFeed>();
+    builder = builder.extract_entities(entities.into_iter());
     builder.build()
 }
 
