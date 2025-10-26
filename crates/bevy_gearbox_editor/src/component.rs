@@ -20,4 +20,6 @@ pub(crate) const EVENT_EDGE_SUBSTR: &str = "EventEdge";
 pub(crate) const ACTIVE_TRACKER: &str = "bevy_gearbox_core::server::ActiveTracker";
 pub(crate) const TRANSITION_FEED: &str = "bevy_gearbox_core::server::TransitionFeed";
 
+pub(crate) const STATE_MACHINE_ID: &str = "bevy_gearbox_core::StateMachineId";
+
 

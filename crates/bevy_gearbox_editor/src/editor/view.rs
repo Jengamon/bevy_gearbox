@@ -1,6 +1,6 @@
 use super::view_model::{GraphDoc, UiViewKind};
 use super::context_menu::{build_context_menu, MenuItemKind, MenuSelection};
-use crate::editor::workspace::{ContextMenuState, ContextTarget};
+use crate::editor::workspace::ContextMenuState;
 use crate::types::ServerEntity;
 use bevy_egui::egui;
 
@@ -10,7 +10,7 @@ pub fn draw_doc(
     doc: &mut GraphDoc,
     selection: &mut Option<crate::model::EntityId>,
     doc_id: ServerEntity,
-    menu_state: &mut Option<ContextMenuState>,
+    _menu_state: &mut Option<ContextMenuState>,
 ) -> Option<MenuSelection> {
     let desired = ui.available_size_before_wrap();
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
@@ -240,7 +240,13 @@ pub fn draw_doc(
             // Create an invisible response covering the interactive area
             let id = egui::Id::new(("node_ctx", format!("{:?}", doc_id), format!("{:?}", eid)));
             let resp = ui.interact(rect_screen, id, egui::Sense::click());
+            // Left-click selects the node immediately
+            if resp.clicked() {
+                *selection = Some(*eid);
+            }
             resp.context_menu(|menu_ui| {
+                // Right-click also selects the node
+                *selection = Some(*eid);
                 menu_ui.set_min_width(160.0);
                 let items = build_context_menu(graph, *eid);
                 if items.is_empty() { menu_ui.close(); return; }
@@ -586,6 +592,19 @@ pub fn draw_doc(
         ));
     };
 
+    // Helper: draw a translucent selection halo ring around a rect (screen space)
+    let draw_selection_halo = |rect_screen: egui::Rect, rounding: egui::CornerRadius| {
+        let halo_w = (0.75 + 0.5 * zoom.sqrt()).clamp(0.75, 2.0);
+        let halo_rect = rect_screen.expand(4.0);
+        painter.rect(
+            halo_rect,
+            rounding,
+            egui::Color32::TRANSPARENT,
+            egui::Stroke::new(halo_w, egui::Color32::from_rgba_premultiplied(120, 180, 255, 32)),
+            egui::StrokeKind::Outside,
+        );
+    };
+
     // Helper: is this view a direct child of a Parallel state (by view kind or by graph components)?
     let is_direct_child_of_parallel_fn = |child_id: &crate::model::EntityId| -> bool {
         let parent_opt = doc.transform_parent.get(child_id).and_then(|p| *p);
@@ -621,6 +640,9 @@ pub fn draw_doc(
                 painter.hline(header_rect.x_range(), header_rect.max.y, egui::Stroke::new(1.0, egui::Color32::from_gray(90)));
                 let label_pos = header_rect.min + egui::vec2(pad, pad * 0.5);
                 painter.text(label_pos, egui::Align2::LEFT_TOP, &view.label, font_id.clone(), egui::Color32::WHITE);
+                // Selection halo (drawn before border so border stays crisp)
+                let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
+                if is_selected { draw_selection_halo(rect_screen, egui::CornerRadius::same(8)); }
                 // Border: dashed if direct child of a Parallel (draw after header so it stays visible)
                 let is_direct_child_of_parallel = is_direct_child_of_parallel_fn(id);
                 if is_direct_child_of_parallel {
@@ -657,6 +679,13 @@ pub fn draw_doc(
                 let pill_pad_y = 6.0 * zoom;
                 let pill_size_s = egui::vec2(text_size_s.x + 2.0 * pill_pad_x, text_size_s.y + 2.0 * pill_pad_y);
                 let pill_rect_s = egui::Rect::from_center_size(pill_center_s, pill_size_s);
+
+                // Selection halo around pill (drawn before pill border)
+                let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
+                if is_selected {
+                    let rounding = egui::CornerRadius::same((pill_size_s.y * 0.5).round() as u8);
+                    draw_selection_halo(pill_rect_s, rounding);
+                }
 
                 let a_start = rect_from_inside_toward(src_rect_s, pill_center_s);
                 let a_end = rect_from_outside_toward_center(pill_rect_s, a_start);
@@ -735,6 +764,9 @@ pub fn draw_doc(
             let rounding = egui::CornerRadius::same(6);
                 // Fill
                 painter.rect_filled(rect_screen, rounding, egui::Color32::from_rgb(30, 30, 35));
+                // Selection halo (drawn before border so border stays crisp)
+                let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
+                if is_selected { draw_selection_halo(rect_screen, egui::CornerRadius::same(8)); }
                 // Border: dashed if direct child of a Parallel
                 let is_direct_child_of_parallel = is_direct_child_of_parallel_fn(id);
                 if is_direct_child_of_parallel {

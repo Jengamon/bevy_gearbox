@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy::tasks::{futures_lite::future, IoTaskPool, Task};
 use crate::rpcs::{list_state_machines, fetch_machine_graph_model};
+use crate::rpcs as rpc;
 use crate::client::{jsonrpc_save_machine, jsonrpc_select};
 use crate::types::{ServerEntity, MachineSummary, NetError};
 use crate::model::StateMachineGraph;
@@ -53,6 +54,8 @@ pub(crate) enum NetCommand {
     Save { id: ServerEntity },
     /// Save As: logical asset base name (for .scn.ron on app) and local sidecar path
     SaveAs { id: ServerEntity, asset_base: String, sidecar_path: std::path::PathBuf },
+    FetchSidecarByFingerprint { fingerprint: String },
+    FetchSidecarByPath { path: String, doc: ServerEntity },
     FetchGraph { id: ServerEntity },
 }
 
@@ -64,6 +67,8 @@ pub(crate) enum NetEvent {
     RefreshResult(Result<Vec<MachineSummary>, NetError>),
     SelectResult(Result<(), NetError>),
     SaveResult(Result<(), NetError>),
+    SidecarResult(Result<Option<String>, NetError>),
+    SidecarResultFor { id: ServerEntity, result: Result<Option<String>, NetError> },
     GraphResult { id: ServerEntity, result: Result<StateMachineGraph, NetError> },
 }
 
@@ -133,11 +138,31 @@ pub(crate) fn handle_commands(
                             NetCommand::SaveAs { id, asset_base, sidecar_path } => {
                                 let r = (async move {
                                     // 1) Ask app to save scene to <asset_base>.scn.ron
-                                    crate::rpcs::save_graph(&url, id.0, &asset_base).await.map_err(NetError::from)?;
-                                    // 2) Return Ok; caller will write sidecar synchronously on main thread
+                                    rpc::save_graph(&url, id.0, &asset_base).await.map_err(NetError::from)?;
+                                    // 2) Also push sidecar to server assets: read local file and send
+                                    if let Ok(txt) = std::fs::read_to_string(&sidecar_path) {
+                                        let server_path = format!("{}.sm.ron", asset_base);
+                                        let _ = rpc::save_sidecar(&url, &server_path, &txt).await.map_err(NetError::from)?;
+                                        // 3) Set the pointer on the root machine
+                                        let _ = rpc::set_state_machine_id(&url, id.0, &server_path).await.map_err(NetError::from)?;
+                                    }
                                     Ok(()) as Result<(), NetError>
                                 }).await;
                                 NetEvent::SaveResult(r)
+                            }
+                            NetCommand::FetchSidecarByFingerprint { fingerprint } => {
+                                let r = (async move {
+                                    let txt = rpc::find_sidecar_by_fingerprint(&url, &fingerprint).await.map_err(NetError::from)?;
+                                    Ok(txt)
+                                }).await;
+                                NetEvent::SidecarResult(r)
+                            }
+                            NetCommand::FetchSidecarByPath { path, doc } => {
+                                let r = (async move {
+                                    let txt = rpc::load_sidecar(&url, &path).await.map_err(NetError::from)?;
+                                    Ok(txt)
+                                }).await;
+                                NetEvent::SidecarResultFor { id: doc, result: r }
                             }
                             NetCommand::Connect | NetCommand::Disconnect => unreachable!(),
                             NetCommand::SetUrl { .. } => unreachable!(),

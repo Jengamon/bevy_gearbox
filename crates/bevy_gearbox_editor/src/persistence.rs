@@ -113,6 +113,11 @@ pub fn load_sidecar(path: impl AsRef<Path>) -> io::Result<Sidecar> {
     Ok(sidecar)
 }
 
+pub fn parse_sidecar_text(text: &str) -> io::Result<Sidecar> {
+    let sidecar: Sidecar = ron::de::from_str(text).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("ron: {e}")))?;
+    Ok(sidecar)
+}
+
 // ======================
 // Key + fingerprint API
 // ======================
@@ -129,14 +134,16 @@ fn get_node_name(graph: &StateMachineGraph, id: &EntityId) -> String {
 }
 
 fn build_parent_path(graph: &StateMachineGraph, id: &EntityId) -> String {
+    // Build path from root down to the provided parent id, inclusive.
     let mut parts: Vec<String> = Vec::new();
     let mut cur = Some(*id);
     while let Some(cid) = cur {
         if let Some(node) = graph.nodes.get(&cid) {
-            if let Some(p) = node.parent { cur = Some(p); parts.push(get_node_name(graph, &cid)); continue; } else { parts.push(get_node_name(graph, &cid)); break; }
+            parts.push(get_node_name(graph, &cid));
+            cur = node.parent;
+            if cur.is_none() { break; }
         } else { break; }
     }
-    if parts.len() >= 1 { parts.remove(0); }
     parts.reverse();
     parts.join("/")
 }
@@ -149,10 +156,39 @@ pub fn node_key(graph: &StateMachineGraph, id: &EntityId) -> String {
     format!("{}|{}", parent_path, name)
 }
 
+// Legacy key (pre-fix): exclude the immediate parent from parent_path.
+fn legacy_build_parent_path(graph: &StateMachineGraph, id: &EntityId) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = Some(*id);
+    while let Some(cid) = cur {
+        if let Some(node) = graph.nodes.get(&cid) {
+            if let Some(p) = node.parent { cur = Some(p); parts.push(get_node_name(graph, &cid)); continue; } else { parts.push(get_node_name(graph, &cid)); break; }
+        } else { break; }
+    }
+    if parts.len() >= 1 { let _ = parts.remove(0); }
+    parts.reverse();
+    parts.join("/")
+}
+
+fn legacy_node_key(graph: &StateMachineGraph, id: &EntityId) -> String {
+    let parent = graph.nodes.get(id).and_then(|n| n.parent);
+    let parent_path = match parent { Some(pid) => legacy_build_parent_path(graph, &pid), None => String::new() };
+    let name = get_node_name(graph, id);
+    format!("{}|{}", parent_path, name)
+}
+
 pub fn edge_key(graph: &StateMachineGraph, eid: &EntityId) -> String {
     let e = match graph.edges.get(eid) { Some(e) => e, None => return format!("{:?}", eid) };
     let src = node_key(graph, &e.source);
     let dst = node_key(graph, &e.target);
+    let label = e.display_label.clone().unwrap_or_else(|| "Edge".to_string());
+    format!("{} -> {}|{}", src, dst, label)
+}
+
+fn legacy_edge_key(graph: &StateMachineGraph, eid: &EntityId) -> String {
+    let e = match graph.edges.get(eid) { Some(e) => e, None => return format!("{:?}", eid) };
+    let src = legacy_node_key(graph, &e.source);
+    let dst = legacy_node_key(graph, &e.target);
     let label = e.display_label.clone().unwrap_or_else(|| "Edge".to_string());
     format!("{} -> {}|{}", src, dst, label)
 }
@@ -201,14 +237,25 @@ pub fn apply_sidecar_to_doc(doc: &mut GraphDoc, sidecar: &Sidecar) {
             match view.kind {
                 UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => {
                     let key = node_key(graph, id);
-                    if let Some(n) = sidecar.nodes.get(&key) {
+                    let mut found = sidecar.nodes.get(&key);
+                    if found.is_none() {
+                        // Fallback to legacy key scheme
+                        let legacy = legacy_node_key(graph, id);
+                        found = sidecar.nodes.get(&legacy);
+                    }
+                    if let Some(n) = found {
                         let size = view.rect.size();
                         view.rect = egui::Rect::from_min_size(egui::pos2(n.pos.0, n.pos.1), size);
                     }
                 }
                 UiViewKind::Edge { .. } => {
                     let key = edge_key(graph, id);
-                    if let Some(e) = sidecar.edges.get(&key) {
+                    let mut found = sidecar.edges.get(&key);
+                    if found.is_none() {
+                        let legacy = legacy_edge_key(graph, id);
+                        found = sidecar.edges.get(&legacy);
+                    }
+                    if let Some(e) = found {
                         let size = view.rect.size();
                         let min = egui::pos2(e.pill_center.0 - size.x * 0.5, e.pill_center.1 - size.y * 0.5);
                         view.rect = egui::Rect::from_min_size(min, size);

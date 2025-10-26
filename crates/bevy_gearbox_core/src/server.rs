@@ -1,15 +1,17 @@
 use bevy::prelude::*;
 use std::net::SocketAddr;
-#[cfg(feature = "remote_server")]
-use bevy::scene::{DynamicScene, DynamicSceneBuilder, DynamicSceneRoot};
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
+use bevy::scene::{DynamicScene, DynamicSceneBuilder};
+#[cfg(feature = "editor")]
 use bevy::remote::{BrpError, BrpResult, RemoteMethodSystemId, RemoteMethods, error_codes};
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 use serde::Deserialize;
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 use serde_json::Value;
+#[cfg(feature = "editor")]
+use std::path::PathBuf;
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 use crate::{StateMachine};
 
 /// Configuration plugin for enabling the Bevy Remote (BRP) server from core.
@@ -17,13 +19,13 @@ use crate::{StateMachine};
 /// Defaults:
 /// - bind_address: 127.0.0.1:15703
 /// - headers: empty
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 pub struct RemoteServerPlugin {
     pub headers: Vec<(String, String)>,
     pub bind_address: SocketAddr,
 }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 impl Default for RemoteServerPlugin {
     fn default() -> Self {
         Self {
@@ -33,7 +35,7 @@ impl Default for RemoteServerPlugin {
     }
 }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 impl RemoteServerPlugin {
     pub fn new() -> Self { Self::default() }
 
@@ -53,7 +55,7 @@ impl RemoteServerPlugin {
     }
 }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 impl Plugin for RemoteServerPlugin {
     fn build(&self, app: &mut App) {
         // Register commonly-inspected types
@@ -100,7 +102,7 @@ impl Plugin for RemoteServerPlugin {
         app.add_systems(Update, sync_active_tracker_on_state_changes);
         app.add_observer(record_transition_on_actions);
 
-        // Register custom RPC endpoints for saving graphs
+        // Register custom RPC endpoints for saving graphs and sidecars
         register_editor_file_rpcs(app);
     }
 }
@@ -109,7 +111,7 @@ impl Plugin for RemoteServerPlugin {
 // =========================
 // Editor-facing tracker types
 // =========================
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 #[derive(Component, Reflect, Default)]
 #[reflect(Component, Default)]
 pub struct ActiveTracker {
@@ -117,11 +119,11 @@ pub struct ActiveTracker {
     pub leaves: Vec<Entity>,
 }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 #[derive(Reflect, Clone)]
 pub struct TransitionEdge { pub seq: u64, pub edge: Entity }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 #[derive(Component, Reflect, Default)]
 #[reflect(Component, Default)]
 pub struct TransitionFeed {
@@ -133,7 +135,7 @@ pub struct TransitionFeed {
 // =========================
 // Tracker updaters
 // =========================
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 fn sync_active_tracker_on_state_changes(
     q_changed: Query<(Entity, &StateMachine), Changed<StateMachine>>,
     mut commands: Commands,
@@ -149,7 +151,7 @@ fn sync_active_tracker_on_state_changes(
     }
 }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 fn record_transition_on_actions(
     transition_actions: On<crate::TransitionActions>,
     q_source: Query<&crate::transitions::Source>,
@@ -179,7 +181,7 @@ fn record_transition_on_actions(
 // =========================
 // Graph save RPCs (server-side)
 // =========================
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 fn collect_state_machine_entities(world: &World, root: Entity) -> Vec<Entity> {
     use crate::transitions::Transitions as EdgeTransitions;
     let mut entities: Vec<Entity> = Vec::new();
@@ -199,21 +201,25 @@ fn collect_state_machine_entities(world: &World, root: Entity) -> Vec<Entity> {
     entities
 }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 fn build_scene_from_root(world: &mut World, root: Entity) -> DynamicScene {
     let entities = collect_state_machine_entities(world, root);
-    let builder = DynamicSceneBuilder::from_world(world);
-    builder.extract_entities(entities.into_iter()).allow_all().build()
+    let mut builder = DynamicSceneBuilder::from_world(world);
+    // Extract the target entities then deny editor-only helper components
+    builder = builder.extract_entities(entities.into_iter()).allow_all();
+    builder = builder.deny_component::<ActiveTracker>();
+    builder = builder.deny_component::<TransitionFeed>();
+    builder.build()
 }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 fn serialize_scene(world: &World, scene: &DynamicScene) -> Result<String, String> {
     let reg = world.resource::<AppTypeRegistry>();
     let reg = reg.read();
     scene.serialize(&reg).map_err(|e| format!("serialize scene: {e}"))
 }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 fn atomic_write(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     use std::fs;
     use std::io::Write;
@@ -235,7 +241,7 @@ fn atomic_write(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     }
 }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 fn save_graph_to_file(world: &mut World, root: Entity, path: &std::path::Path) -> Result<(), String> {
     let scene = build_scene_from_root(world, root);
     let ron = serialize_scene(world, &scene)?;
@@ -243,11 +249,25 @@ fn save_graph_to_file(world: &mut World, root: Entity, path: &std::path::Path) -
     atomic_write(path, &ron).map_err(|e| format!("write: {e}"))
 }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 #[derive(Deserialize)]
 struct SaveGraphParams { entity: Entity, path: String }
+#[cfg(feature = "editor")]
+#[derive(Deserialize)]
+struct SetStateMachineId { entity: Entity, path: String }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
+fn set_state_machine_id_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: SetStateMachineId = parse_params(params)?;
+    if !world.entities().contains(p.entity) {
+        return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
+    }
+    let mut e = world.entity_mut(p.entity);
+    e.insert(crate::StateMachineId(p.path));
+    Ok(serde_json::json!({"ok": true}))
+}
+
+#[cfg(feature = "editor")]
 fn parse_params<T: for<'de> Deserialize<'de>>(params: Option<Value>) -> Result<T, BrpError> {
     serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError {
         code: error_codes::INVALID_PARAMS,
@@ -256,25 +276,90 @@ fn parse_params<T: for<'de> Deserialize<'de>>(params: Option<Value>) -> Result<T
     })
 }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 fn save_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
     let p: SaveGraphParams = parse_params(params)?;
-    let path = std::path::PathBuf::from(p.path);
+    let mut path = PathBuf::from(p.path);
+    if !path.is_absolute() { path = PathBuf::from("assets").join(path); }
     save_graph_to_file(world, p.entity, &path)
         .map(|_| serde_json::json!({"ok": true}))
         .map_err(|msg| BrpError { code: error_codes::INTERNAL_ERROR, message: msg, data: None })
 }
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
+#[derive(Deserialize)]
+struct SaveSidecarParams { path: String, contents: String }
+
+#[cfg(feature = "editor")]
+fn save_sidecar_handler(In(params): In<Option<Value>>, _world: &mut World) -> BrpResult {
+    let p: SaveSidecarParams = parse_params(params)?;
+    let mut path = PathBuf::from(p.path);
+    if !path.is_absolute() { path = PathBuf::from("assets").join(path); }
+    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| BrpError { code: error_codes::INTERNAL_ERROR, message: format!("mkdirs: {e}"), data: None })?; }
+    atomic_write(&path, &p.contents).map_err(|e| BrpError { code: error_codes::INTERNAL_ERROR, message: format!("write: {e}"), data: None })?;
+    Ok(serde_json::json!({"ok": true}))
+}
+
+#[cfg(feature = "editor")]
+#[derive(Deserialize)]
+struct LoadSidecarParams { path: String }
+
+#[cfg(feature = "editor")]
+fn load_sidecar_handler(In(params): In<Option<Value>>, _world: &mut World) -> BrpResult {
+    let p: LoadSidecarParams = parse_params(params)?;
+    let mut path = PathBuf::from(p.path);
+    if !path.is_absolute() { path = PathBuf::from("assets").join(path); }
+    let txt = std::fs::read_to_string(&path).map_err(|e| BrpError { code: error_codes::INTERNAL_ERROR, message: format!("read: {e}"), data: None })?;
+    Ok(serde_json::json!({"text": txt}))
+}
+
+#[cfg(feature = "editor")]
+#[derive(Deserialize)]
+struct FindByFingerprintParams { fp: String }
+
+#[cfg(feature = "editor")]
+fn find_sidecar_by_fingerprint_handler(In(params): In<Option<Value>>, _world: &mut World) -> BrpResult {
+    let p: FindByFingerprintParams = parse_params(params)?;
+    // Simple scan: current dir and ./assets for *.sm.ron
+    let mut roots: Vec<std::path::PathBuf> = vec![std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))];
+    let assets = std::path::PathBuf::from("assets");
+    if assets.exists() { roots.push(assets); }
+    for root in roots.into_iter() {
+        let walker = walkdir::WalkDir::new(&root).max_depth(6);
+        for entry in walker.into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path().to_path_buf();
+            if !path.is_file() { continue; }
+            if let Some(ext) = path.extension().and_then(|s| s.to_str()) { if ext != "ron" { continue; } }
+            if let Some(name) = path.file_name().and_then(|s| s.to_str()) { if !name.ends_with(".sm.ron") { continue; } }
+            if let Ok(txt) = std::fs::read_to_string(&path) {
+                // Lightweight parse: look for graph_fingerprint: Some("...")
+                if txt.contains(&p.fp) {
+                    return Ok(serde_json::json!({"text": txt}));
+                }
+            }
+        }
+    }
+    Ok(serde_json::json!({"text": null}))
+}
+
+#[cfg(feature = "editor")]
 fn register_editor_file_rpcs(app: &mut App) {
     if !app.world().contains_resource::<RemoteMethods>() { return; }
     let world = app.main_mut().world_mut();
     let save_id = world.register_system(save_graph_handler);
+    let save_sc_id = world.register_system(save_sidecar_handler);
+    let load_sc_id = world.register_system(load_sidecar_handler);
+    let find_sc_id = world.register_system(find_sidecar_by_fingerprint_handler);
+    let set_state_machine_id = world.register_system(set_state_machine_id_handler);
     let mut methods = world.resource_mut::<RemoteMethods>();
     methods.insert("editor.save_graph", RemoteMethodSystemId::Instant(save_id));
+    methods.insert("editor.save_sidecar", RemoteMethodSystemId::Instant(save_sc_id));
+    methods.insert("editor.load_sidecar", RemoteMethodSystemId::Instant(load_sc_id));
+    methods.insert("editor.find_sidecar_by_fingerprint", RemoteMethodSystemId::Instant(find_sc_id));
+    methods.insert("editor.set_state_machine_id", RemoteMethodSystemId::Instant(set_state_machine_id));
 }
 
-#[cfg(not(feature = "remote_server"))]
+#[cfg(not(feature = "editor"))]
 fn register_editor_file_rpcs(_app: &mut App) {}
 
 

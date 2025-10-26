@@ -1,9 +1,9 @@
 #![feature(associated_type_defaults)]
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 pub mod server;
 
-#[cfg(feature = "remote_server")]
+#[cfg(feature = "editor")]
 pub use server::RemoteServerPlugin;
 
 use bevy::{prelude::*, reflect::Reflect};
@@ -48,6 +48,7 @@ impl Plugin for GearboxPlugin {
             .register_type::<HistoryState>()
             .register_type::<StateChildren>()
             .register_type::<StateChildOf>()
+            .register_type::<StateMachineId>()
             .register_type::<Guards>()
             .register_type::<EnterState>()
             .register_type::<ExitState>()
@@ -155,6 +156,13 @@ pub struct StateMachine {
     #[reflect(ignore)] #[entities]
     pub active_leaves: HashSet<Entity>,
 }
+
+/// Stable identifier for a state machine. Stored on the root state machine entity and
+/// serialized as part of scene assets. Editors can use this to associate sidecar files
+/// (e.g., by resolving `<id>.sm.ron`).
+#[derive(Component, Reflect, Default, Clone)]
+#[reflect(Component, Default, Clone)]
+pub struct StateMachineId(pub String);
 
 impl StateMachine {
     pub fn new() -> Self {

@@ -193,18 +193,7 @@ pub(crate) async fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<
     while let Some(entity) = stack.pop() {
         if !visited.insert(entity) { continue; }
         states.push(entity);
-        let comps = get_components(url, entity, Some(&[c::STATE_CHILDREN, c::NAME])).await?;
-        if let Some(n) = comps.get(c::NAME).and_then(|v| v.as_str()) {
-            names.insert(entity, n.to_string());
-        }
-        if let Some(children) = comps.get(c::STATE_CHILDREN) {
-            for child in parse_entity_list(children) { stack.push(child); }
-        }
-    }
-
-    let mut edges_formatted: Vec<String> = Vec::new();
-    for state in &states {
-        let comps = get_components(url, *state, Some(&[c::TRANSITIONS])).await?;
+        let comps = get_components(url, entity, Some(&[c::TRANSITIONS])).await?;
         let Some(transitions_val) = comps.get(c::TRANSITIONS) else { continue; };
         let edge_entities = parse_entity_list(transitions_val);
         for edge in edge_entities {
@@ -222,7 +211,7 @@ pub(crate) async fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<
                 .get(c::TARGET)
                 .and_then(parse_single_entity)
                 .unwrap_or(0);
-            let source_name = get_name(url, &mut names, *state).await?;
+            let source_name = get_name(url, &mut names, entity).await?;
             let mut target_name = if target_id != 0 { get_name(url, &mut names, target_id).await? } else { String::new() };
             if target_name.is_empty() {
                 if let Some(Value::String(edge_name)) = all.get(c::NAME) {
@@ -235,7 +224,6 @@ pub(crate) async fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<
                 }
             }
             let label = choose_edge_label(&all);
-            edges_formatted.push(format!("{} - {} -> {}", source_name, label, target_name));
         }
     }
 
@@ -250,17 +238,14 @@ pub(crate) async fn fetch_machine_graph_text(url: &str, machine: u64) -> Result<
         out.push('\n');
     }
     out.push('\n');
-    for line in edges_formatted {
-        out.push_str(&line);
-        out.push('\n');
-    }
+    // (Edges section omitted in this text builder to reduce complexity)
     Ok(out)
 }
 
 
 pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result<StateMachineGraph, String> {
     // Build root node
-    let root_comps = get_components(url, machine, Some(&[c::STATE_CHILDREN, c::NAME, c::PARALLEL, c::INITIAL_STATE, c::STATE_MACHINE])).await?;
+    let root_comps = get_components(url, machine, Some(&[c::STATE_CHILDREN, c::NAME, c::PARALLEL, c::INITIAL_STATE, c::STATE_MACHINE, c::STATE_MACHINE_ID])).await?;
     let root_id = EntityId::Server(ServerEntity(machine));
     let mut root_node = StateNode::new(root_id);
     // Fill components bag for root
@@ -270,6 +255,7 @@ pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result
     if let Some(v) = root_comps.get(c::PARALLEL).cloned() { root_bag.insert(ComponentEntry::new(c::PARALLEL.to_string(), v)); }
     if let Some(v) = root_comps.get(c::INITIAL_STATE).cloned() { root_bag.insert(ComponentEntry::new(c::INITIAL_STATE.to_string(), v)); }
     if let Some(v) = root_comps.get(c::STATE_MACHINE).cloned() { root_bag.insert(ComponentEntry::new(c::STATE_MACHINE.to_string(), v)); }
+    if let Some(v) = root_comps.get(c::STATE_MACHINE_ID).cloned() { root_bag.insert(ComponentEntry::new(c::STATE_MACHINE_ID.to_string(), v)); }
     root_node.components = root_bag;
     if let Some(n) = root_comps.get(c::NAME).and_then(|v| v.as_str()) { root_node.display_name = Some(n.to_string()); }
 
@@ -285,7 +271,7 @@ pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result
     while let Some((parent_id, entity)) = stack.pop() {
         let id = EntityId::Server(ServerEntity(entity));
         if graph.nodes.contains_key(&id) { continue; }
-        let comps = get_components(url, entity, Some(&[c::STATE_CHILDREN, c::NAME, c::PARALLEL, c::INITIAL_STATE, c::STATE_MACHINE])).await?;
+        let comps = get_components(url, entity, Some(&[c::STATE_CHILDREN, c::NAME, c::PARALLEL, c::INITIAL_STATE, c::STATE_MACHINE, c::STATE_MACHINE_ID])).await?;
         let mut node = StateNode::new(id);
         node.parent = Some(parent_id);
         // Components bag
@@ -295,6 +281,7 @@ pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result
         if let Some(v) = comps.get(c::PARALLEL).cloned() { bag.insert(ComponentEntry::new(c::PARALLEL.to_string(), v)); }
         if let Some(v) = comps.get(c::INITIAL_STATE).cloned() { bag.insert(ComponentEntry::new(c::INITIAL_STATE.to_string(), v)); }
         if let Some(v) = comps.get(c::STATE_MACHINE).cloned() { bag.insert(ComponentEntry::new(c::STATE_MACHINE.to_string(), v)); }
+        if let Some(v) = comps.get(c::STATE_MACHINE_ID).cloned() { bag.insert(ComponentEntry::new(c::STATE_MACHINE_ID.to_string(), v)); }
         node.components = bag;
         if let Some(n) = comps.get(c::NAME).and_then(|v| v.as_str()) { node.display_name = Some(n.to_string()); }
         // Children
@@ -390,6 +377,32 @@ pub(crate) async fn save_graph(url: &str, entity: u64, asset_path_no_ext_or_full
     };
     let params = json!({"entity": entity, "path": path});
     let _ = jsonrpc_call(url, "editor.save_graph", Some(params)).await?;
+    Ok(())
+}
+
+// =========================
+// Sidecar RPC helpers
+// =========================
+
+pub(crate) async fn save_sidecar(url: &str, path: &str, contents: &str) -> Result<(), String> {
+    let _ = jsonrpc_call(url, "editor.save_sidecar", Some(json!({"path": path, "contents": contents}))).await?;
+    Ok(())
+}
+
+pub(crate) async fn load_sidecar(url: &str, path: &str) -> Result<Option<String>, String> {
+    let v = jsonrpc_call(url, "editor.load_sidecar", Some(json!({"path": path}))).await?;
+    let txt = v.get("text").and_then(|t| t.as_str()).map(|s| s.to_string());
+    Ok(txt)
+}
+
+pub(crate) async fn find_sidecar_by_fingerprint(url: &str, fp: &str) -> Result<Option<String>, String> {
+    let v = jsonrpc_call(url, "editor.find_sidecar_by_fingerprint", Some(json!({"fp": fp}))).await?;
+    let txt = v.get("text").and_then(|t| t.as_str()).map(|s| s.to_string());
+    Ok(txt)
+}
+
+pub(crate) async fn set_state_machine_id(url: &str, entity: u64, path: &str) -> Result<(), String> {
+    let _ = jsonrpc_call(url, "editor.set_state_machine_id", Some(json!({"entity": entity, "path": path}))).await?;
     Ok(())
 }
 

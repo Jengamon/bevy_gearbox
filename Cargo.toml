@@ -29,9 +29,9 @@ bevy_gearbox_editor = { path = "crates/bevy_gearbox_editor" }
 [[example]]
 name = "repeater"
 path = "examples/repeater.rs"
-required-features = ["remote_server"]
+required-features = ["editor"]
 
 [features]
-default = ["remote_server"]
-remote_server = ["bevy_gearbox_core/remote_server"]
+default = ["editor"]
+editor = ["bevy_gearbox_core/editor"]
 
