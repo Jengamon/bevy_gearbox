@@ -130,13 +130,15 @@ fn ui_system(
                         }
                     });
                     {
+                        // Split borrows: copy menu handle separately
                         let mut selected_tmp = workspace.selection.take();
+                        let mut menu_handle = workspace.menu.take();
                         if let Some(doc) = workspace.docs.get_mut(id) {
                             col.add_space(4.0);
                             let selection_evt_inner: Option<MenuSelection>;
                             {
                                 let response = egui::Frame::canvas(col.style()).show(col, |canvas| {
-                                    draw_doc(canvas, doc, &mut selected_tmp)
+                                    draw_doc(canvas, doc, &mut selected_tmp, *id, &mut menu_handle)
                                 });
                                 selection_evt_inner = response.inner;
                             }
@@ -146,6 +148,7 @@ fn ui_system(
                             col.add_space(6.0);
                         }
                         workspace.selection = selected_tmp;
+                        workspace.menu = menu_handle;
                     }
                 }
             });

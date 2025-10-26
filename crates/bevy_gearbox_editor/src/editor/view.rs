@@ -1,11 +1,19 @@
 use super::view_model::{GraphDoc, UiViewKind};
 use super::context_menu::{build_context_menu, MenuItemKind, MenuSelection};
+use crate::editor::workspace::{ContextMenuState, ContextTarget};
+use crate::types::ServerEntity;
 use bevy_egui::egui;
 
 /// Minimal read-only view with pan/zoom and basic nodes/edges rendering.
-pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<crate::model::EntityId>) -> Option<MenuSelection> {
+pub fn draw_doc(
+    ui: &mut egui::Ui,
+    doc: &mut GraphDoc,
+    selection: &mut Option<crate::model::EntityId>,
+    doc_id: ServerEntity,
+    menu_state: &mut Option<ContextMenuState>,
+) -> Option<MenuSelection> {
     let desired = ui.available_size_before_wrap();
-    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::drag());
+    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
 
     // Background
     let painter = ui.painter_at(rect);
@@ -194,12 +202,12 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<cr
     }
 
     // On drag start: capture draggable if hovering; also select it. Else pan background
-    if response.drag_started() {
+    if response.drag_started() && response.ctx.input(|i| i.pointer.primary_down()) {
         if let Some(ent) = hovered_entity {
             if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
                 let pointer_world = doc.transform.to_world(cursor);
                 // Compute rect for entity (node rect or pill rect in world space)
-                let Some(view) = doc.views.get(&ent) else { return None; };
+                let Some(view) = doc.views.get(&ent) else { println!("draw_doc: missing view for {:?}", ent); return None; };
 
                 let anchor = egui::vec2(pointer_world.x - view.rect.min.x, pointer_world.y - view.rect.min.y);
                     doc.dragging = Some(ent);
@@ -214,28 +222,46 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<cr
         *selection = hovered_entity;
     }
 
-    // Right-click context menu on hovered entity; build from model and capture selection
+    // Right-click context menu: per-node invisible responses with unique ids
     let mut context_menu_selection: Option<MenuSelection> = None;
-    response.context_menu(|menu_ui| {
-        if let (Some(eid), Some(graph)) = (hovered_entity, &doc.graph) {
-            let items = build_context_menu(graph, eid);
-            for item in items.into_iter() {
-                if menu_ui.button(item.label).clicked() {
-                    let sel = match item.kind {
-                        MenuItemKind::MakeLeaf => MenuSelection::MakeLeaf { target: eid },
-                        MenuItemKind::MakeParent => MenuSelection::MakeParent { target: eid },
-                        MenuItemKind::MakeParallel => MenuSelection::MakeParallel { target: eid },
-                        MenuItemKind::Save => MenuSelection::SaveStateMachine { target: eid },
-                        MenuItemKind::Delete => MenuSelection::DeleteEntity { target: eid },
-                        MenuItemKind::MakeInitial { parent } => MenuSelection::MakeInitial { parent, new_initial: eid },
-                        MenuItemKind::AddChild => MenuSelection::AddChildStateMachine { target: eid },
-                    };
-                    context_menu_selection = Some(sel);
-                    menu_ui.close();
+    if let Some(graph) = &doc.graph {
+        for (eid, view) in doc.views.iter() {
+            // Only nodes (not edges)
+            if !matches!(view.kind, UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel) { continue; }
+            // Compute interactive rect in screen space (header for containers, full rect for leaves)
+            let is_container = matches!(view.kind, UiViewKind::Parent | UiViewKind::Parallel) || graph.nodes.get(eid).map(|n| !n.children.is_empty()).unwrap_or(false);
+            let rect_screen = if is_container {
+                let header_h_world = 24.0;
+                let header_rect_w = egui::Rect::from_min_max(view.rect.min, egui::pos2(view.rect.max.x, view.rect.min.y + header_h_world));
+                egui::Rect::from_min_max(doc.transform.to_screen(header_rect_w.min), doc.transform.to_screen(header_rect_w.max))
+            } else {
+                egui::Rect::from_min_max(doc.transform.to_screen(view.rect.min), doc.transform.to_screen(view.rect.max))
+            };
+            // Create an invisible response covering the interactive area
+            let id = egui::Id::new(("node_ctx", format!("{:?}", doc_id), format!("{:?}", eid)));
+            let resp = ui.interact(rect_screen, id, egui::Sense::click());
+            resp.context_menu(|menu_ui| {
+                menu_ui.set_min_width(160.0);
+                let items = build_context_menu(graph, *eid);
+                if items.is_empty() { menu_ui.close(); return; }
+                for item in items.into_iter() {
+                    if menu_ui.button(item.label).clicked() {
+                        let sel = match item.kind {
+                            MenuItemKind::MakeLeaf => MenuSelection::MakeLeaf { target: *eid },
+                            MenuItemKind::MakeParent => MenuSelection::MakeParent { target: *eid },
+                            MenuItemKind::MakeParallel => MenuSelection::MakeParallel { target: *eid },
+                            MenuItemKind::Save => MenuSelection::SaveStateMachine { target: *eid },
+                            MenuItemKind::Delete => MenuSelection::DeleteEntity { target: *eid },
+                            MenuItemKind::MakeInitial { parent } => MenuSelection::MakeInitial { parent, new_initial: *eid },
+                            MenuItemKind::AddChild => MenuSelection::AddChildStateMachine { target: *eid },
+                        };
+                        context_menu_selection = Some(sel);
+                        menu_ui.close();
+                    }
                 }
-            }
+            });
         }
-    });
+    }
 
     // During drag: move draggable in world coords, with clamping to parent content
     let delta_screen = response.drag_delta();
@@ -318,8 +344,8 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<cr
                 }
             }
         } else {
-            // Dragging with no captured entity → pan background
-            if delta_screen.length_sq() > 0.0 {
+            // Dragging with no captured entity → pan background (primary only)
+            if delta_screen.length_sq() > 0.0 && response.ctx.input(|i| i.pointer.primary_down()) {
                 doc.transform.pan_screen_delta(delta_screen);
             }
         }
@@ -352,7 +378,7 @@ pub fn draw_doc(ui: &mut egui::Ui, doc: &mut GraphDoc, selection: &mut Option<cr
     }
 
     // Draw graph if any
-    if doc.graph.is_none() { return context_menu_selection; }
+    if doc.graph.is_none() { println!("draw_doc: doc.graph is None"); return context_menu_selection; }
 
     // Read-only container pass BEFORE drawing: clamp children to parent content left/top, then expand parent right/bottom
     if let Some(graph) = &doc.graph {
