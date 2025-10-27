@@ -72,6 +72,10 @@ pub fn on_connect_requested(evt: On<ConnectRequested>, mut store: ResMut<EditorS
 }
 
 pub fn on_disconnect_requested(_evt: On<DisconnectRequested>, mut store: ResMut<EditorStore>, mut net: MessageWriter<NetCommand>) {
+    // Proactively unsubscribe from all open docs before disconnecting
+    for (id, _) in store.open_docs.iter() {
+        net.write(NetCommand::Unsubscribe { id: *id });
+    }
     disconnect(&mut store);
     net.write(NetCommand::Disconnect);
 }
@@ -89,8 +93,9 @@ pub fn on_refresh_index_requested(evt: On<RefreshIndexRequested>, mut store: Res
     net.write(NetCommand::Refresh);
 }
 
-pub fn on_open_requested(evt: On<OpenRequested>, mut store: ResMut<EditorStore>, mut net: MessageWriter<NetCommand>) {
-    // Ensure an OpenDocument exists so the UI can render immediately (snapshot will fill via workspace sync)
+pub fn on_open_requested(evt: On<OpenRequested>, mut store: ResMut<EditorStore>, mut net: MessageWriter<NetCommand>, mut workspace: ResMut<Workspace>, mut commands: Commands) {
+    println!("[open] request: entity={:?}, prev_active={:?}, workspace_docs={}", evt.entity, store.active_doc, workspace.docs.len());
+    // Ensure an OpenDocument exists (UI metadata only)
     store.open_docs.entry(evt.entity).or_insert_with(|| OpenDocument {
         doc_id: DocId(evt.entity),
         tab_id: TabId(evt.entity),
@@ -98,10 +103,35 @@ pub fn on_open_requested(evt: On<OpenRequested>, mut store: ResMut<EditorStore>,
         is_subscribed: false,
         is_dirty: false,
         error: None,
-        graph: GraphDoc::default(),
     });
+    // Ensure a doc entry exists immediately for drawing feedback
+    let _ = workspace.docs.entry(evt.entity).or_default();
+    // Promote to active first, then enqueue fetch
+    let prev = store.active_doc;
     store.active_doc = Some(evt.entity);
     net.write(NetCommand::FetchGraph { id: evt.entity });
+    println!("[open] enqueued FetchGraph for {:?}", evt.entity);
+    // Decoupled unsubscribe and single-doc retention after fetch is enqueued
+    if let Some(p) = prev {
+        if p != evt.entity {
+            println!("[open] switch: prev={:?} -> new={:?}", p, evt.entity);
+            commands.trigger(super::actions::UnsubscribeRequested { entity: p });
+            workspace.selection = None;
+            workspace.docs.retain(|k, _| *k == evt.entity);
+            println!("[open] workspace.docs after retain: {}", workspace.docs.len());
+        }
+    }
+}
+
+#[derive(Debug, Clone, Event)]
+pub struct UnsubscribeRequested { pub entity: ServerEntity }
+
+pub fn on_unsubscribe_requested(evt: On<UnsubscribeRequested>, mut net: MessageWriter<NetCommand>) {
+    // Decoupled unsubscribe: stop server-side feeds for this machine. Do not couple to new selection.
+    println!("[open] enqueued Unsubscribe for {:?}", evt.entity);
+    net.write(NetCommand::Unsubscribe { id: evt.entity });
+    // Optional: also send a client-side stop hint (currently a no-op placeholder)
+    net.write(NetCommand::StopMachineWatch { id: evt.entity });
 }
 
 #[derive(Debug, Clone, Event)]

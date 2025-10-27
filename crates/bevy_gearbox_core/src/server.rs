@@ -10,6 +10,8 @@ use serde::Deserialize;
 use serde_json::Value;
 #[cfg(feature = "editor")]
 use std::path::PathBuf;
+#[cfg(feature = "editor")]
+use std::collections::HashMap;
 
 #[cfg(feature = "editor")]
 use crate::{StateMachine};
@@ -110,9 +112,8 @@ impl Plugin for RemoteServerPlugin {
         // Register custom RPC endpoints for saving graphs and sidecars
         register_editor_file_rpcs(app);
 
-        // Register discovery watcher (+watch SSE)
-        // Also initialize state used by machine +watch to de-duplicate transition entries
-        app.insert_resource(MachineWatchState::default());
+        // Register discovery watcher (+watch SSE) and machine +watch
+        register_editor_subscription_rpcs(app);
         register_editor_watch_rpcs(app);
     }
 }
@@ -155,13 +156,8 @@ pub struct ActiveChangedFeed {
     pub capacity: u16,
 }
 
-// Internal state to de-duplicate machine +watch transition events
-#[cfg(feature = "editor")]
-#[derive(Resource, Default)]
-struct MachineWatchState {
-    last_transition_seq: std::collections::HashMap<Entity, u64>,
-    last_active_seq: std::collections::HashMap<Entity, u64>,
-}
+// (Removed) Internal state for machine +watch de-duplication. The +watch endpoint
+// is now stateless and relies on client-provided cursors (last seqs) instead.
 
 // =========================
 // Tracker updaters
@@ -191,11 +187,6 @@ fn sync_active_tracker_on_state_changes(
             feed.ring.push(ActiveChangedEntry { seq, active: active_for_feed.clone(), leaves: leaves_for_feed.clone() });
             let cap = feed.capacity.max(1) as usize;
             if feed.ring.len() > cap { let _ = feed.ring.remove(0); }
-        } else {
-            // Start sequence at 1 so first event is not filtered by last_seq=0 on the watcher
-            let mut feed = ActiveChangedFeed { next_seq: 2, ring: Vec::new(), capacity: 64 };
-            feed.ring.push(ActiveChangedEntry { seq: 1, active: active_for_feed, leaves: leaves_for_feed });
-            commands.entity(root).insert(feed);
         }
     }
 }
@@ -217,11 +208,6 @@ fn record_transition_on_actions(
         feed.ring.push(TransitionEdge { seq, edge });
         let cap = feed.capacity.max(1) as usize;
         if feed.ring.len() > cap { let _ = feed.ring.remove(0); }
-    } else {
-        // Start sequence at 1 so first transition is not filtered by last_seq=0 on the watcher
-        let mut feed = TransitionFeed { next_seq: 2, ring: Vec::new(), capacity: 64 };
-        feed.ring.push(TransitionEdge { seq: 1, edge });
-        commands.entity(machine).insert(feed);
     }
 }
 
@@ -249,11 +235,6 @@ fn on_active_added(
             feed.ring.push(ActiveChangedEntry { seq, active, leaves });
             let cap = feed.capacity.max(1) as usize;
             if feed.ring.len() > cap { let _ = feed.ring.remove(0); }
-        } else {
-            // Start sequence at 1 for consistency with watcher filtering
-            let mut feed = ActiveChangedFeed { next_seq: 2, ring: Vec::new(), capacity: 64 };
-            feed.ring.push(ActiveChangedEntry { seq: 1, active, leaves });
-            commands.entity(root).insert(feed);
         }
     }
 }
@@ -280,11 +261,6 @@ fn on_active_removed(
             feed.ring.push(ActiveChangedEntry { seq, active, leaves });
             let cap = feed.capacity.max(1) as usize;
             if feed.ring.len() > cap { let _ = feed.ring.remove(0); }
-        } else {
-            // Start sequence at 1 for consistency with watcher filtering
-            let mut feed = ActiveChangedFeed { next_seq: 2, ring: Vec::new(), capacity: 64 };
-            feed.ring.push(ActiveChangedEntry { seq: 1, active, leaves });
-            commands.entity(root).insert(feed);
         }
     }
 }
@@ -477,7 +453,13 @@ fn register_editor_file_rpcs(_app: &mut App) {}
 
 #[cfg(feature = "editor")]
 #[derive(Deserialize)]
-struct MachineWatchParams { entity: Entity }
+struct MachineWatchParams {
+    entity: Entity,
+    #[serde(default)]
+    last_active_seq: u64,
+    #[serde(default)]
+    last_transition_seq: u64,
+}
 
 // =========================
 // Watch (+watch) handlers
@@ -534,50 +516,45 @@ fn machine_watch_handler(
     q_feed: Query<&TransitionFeed>,
     q_source: Query<&crate::transitions::Source>,
     q_target: Query<&crate::transitions::Target>,
-    mut state: ResMut<MachineWatchState>,
 ) -> bevy::remote::BrpResult<Option<Value>> {
     // Expect a target machine entity
     let p: MachineWatchParams = parse_params(params)?;
     let mut events: Vec<Value> = Vec::new();
 
-    // Active changes from ring: emit entries with seq greater than last seen
+    // Active changes from ring: emit entries with seq greater than provided cursor
     if let Ok(feed) = q_active_feed.get(p.entity) {
-        let last = *state.last_active_seq.get(&p.entity).unwrap_or(&0);
-        let mut max_seq = last;
+        let last = p.last_active_seq;
         for item in feed.ring.iter() {
             if item.seq <= last { continue; }
             let active: Vec<u64> = item.active.iter().map(|e| entity_to_bits(*e)).collect();
             let leaves: Vec<u64> = item.leaves.iter().map(|e| entity_to_bits(*e)).collect();
             events.push(serde_json::json!({
+                "seq": item.seq,
                 "kind": "active_changed",
                 "machine": entity_to_bits(p.entity),
                 "active": active,
                 "leaves": leaves,
             }));
-            if item.seq > max_seq { max_seq = item.seq; }
         }
-        if max_seq > last { state.last_active_seq.insert(p.entity, max_seq); }
     }
 
-    // Transition feed deltas: emit entries with seq greater than last seen
+    // Transition feed deltas: emit entries with seq greater than provided cursor
     if let Ok(feed) = q_feed.get(p.entity) {
-        let last = *state.last_transition_seq.get(&p.entity).unwrap_or(&0);
-        let mut max_seq = last;
+        let last = p.last_transition_seq;
         for item in feed.ring.iter() {
             if item.seq <= last { continue; }
             let edge = item.edge;
             let source_u64 = q_source.get(edge).ok().map(|s| entity_to_bits(s.0));
             let target_u64 = q_target.get(edge).ok().map(|t| entity_to_bits(t.0));
             events.push(serde_json::json!({
+                "seq": item.seq,
                 "kind": "transition_edge",
                 "machine": entity_to_bits(p.entity),
                 "edge": entity_to_bits(edge),
                 "source": source_u64,
                 "target": target_u64,
             }));
-            if item.seq > max_seq { max_seq = item.seq; }
         }
-        if max_seq > last { state.last_transition_seq.insert(p.entity, max_seq); }
     }
 
     if events.is_empty() {
@@ -600,4 +577,84 @@ fn register_editor_watch_rpcs(app: &mut App) {
 
 #[cfg(not(feature = "editor"))]
 fn register_editor_watch_rpcs(_app: &mut App) {}
+
+// =========================
+// Subscriptions (server-side gating of feeds)
+// =========================
+#[cfg(feature = "editor")]
+#[derive(Resource, Default)]
+struct Subscriptions { counts: HashMap<Entity, u32> }
+
+#[cfg(feature = "editor")]
+#[derive(Deserialize)]
+struct SubscribeParams { entity: Entity }
+
+#[cfg(feature = "editor")]
+fn subscribe_machine_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: SubscribeParams = parse_params(params)?;
+    if !world.entities().contains(p.entity) {
+        return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
+    }
+    // Bump count and create feeds if first subscriber
+    let mut counts = world.resource_mut::<Subscriptions>();
+    let c = counts.counts.entry(p.entity).or_insert(0);
+    *c = c.saturating_add(1);
+    if *c == 1 {
+        // Insert feeds and seed active snapshot
+        let mut insert_transition = true;
+        let mut insert_active = true;
+        if world.get::<TransitionFeed>(p.entity).is_some() { insert_transition = false; }
+        if world.get::<ActiveChangedFeed>(p.entity).is_some() { insert_active = false; }
+        if insert_transition {
+            world.entity_mut(p.entity).insert(TransitionFeed { next_seq: 1, ring: Vec::new(), capacity: 64 });
+        }
+        if insert_active {
+            let mut feed = ActiveChangedFeed { next_seq: 2, ring: Vec::new(), capacity: 64 };
+            if let Some(sm) = world.get::<StateMachine>(p.entity) {
+                let mut active: Vec<Entity> = sm.active.iter().copied().collect();
+                let mut leaves: Vec<Entity> = sm.active_leaves.iter().copied().collect();
+                active.sort_by_key(|e| e.index());
+                leaves.sort_by_key(|e| e.index());
+                feed.ring.push(ActiveChangedEntry { seq: 1, active, leaves });
+            }
+            world.entity_mut(p.entity).insert(feed);
+        }
+    }
+    Ok(serde_json::json!({"ok": true}))
+}
+
+#[cfg(feature = "editor")]
+fn unsubscribe_machine_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: SubscribeParams = parse_params(params)?;
+    if !world.entities().contains(p.entity) {
+        return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
+    }
+    let mut counts = world.resource_mut::<Subscriptions>();
+    if let Some(c) = counts.counts.get_mut(&p.entity) {
+        *c = c.saturating_sub(1);
+        if *c == 0 {
+            // Remove feeds entirely when last subscriber leaves
+            counts.counts.remove(&p.entity);
+            let mut e = world.entity_mut(p.entity);
+            if e.get::<TransitionFeed>().is_some() { e.remove::<TransitionFeed>(); }
+            if e.get::<ActiveChangedFeed>().is_some() { e.remove::<ActiveChangedFeed>(); }
+        }
+    }
+    Ok(serde_json::json!({"ok": true}))
+}
+
+#[cfg(feature = "editor")]
+fn register_editor_subscription_rpcs(app: &mut App) {
+    if !app.world().contains_resource::<RemoteMethods>() { return; }
+    if !app.world().contains_resource::<Subscriptions>() { app.insert_resource(Subscriptions::default()); }
+    let world = app.main_mut().world_mut();
+    let sub_id = world.register_system(subscribe_machine_handler);
+    let unsub_id = world.register_system(unsubscribe_machine_handler);
+    let mut methods = world.resource_mut::<RemoteMethods>();
+    methods.insert("editor.machine_subscribe", RemoteMethodSystemId::Instant(sub_id));
+    methods.insert("editor.machine_unsubscribe", RemoteMethodSystemId::Instant(unsub_id));
+}
+
+#[cfg(not(feature = "editor"))]
+fn register_editor_subscription_rpcs(_app: &mut App) {}
 

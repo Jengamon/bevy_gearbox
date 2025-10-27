@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use crate::types::ServerEntity;
 use super::types::{ConnectionState, StateMachineIndex, DocMode, DocId, TabId};
-use super::super::view_model::GraphDoc;
 
 #[derive(Debug)]
 pub struct OpenDocument {
@@ -11,7 +10,6 @@ pub struct OpenDocument {
     pub is_subscribed: bool,
     pub is_dirty: bool,
     pub error: Option<String>,
-    pub graph: GraphDoc,
 }
 
 #[derive(Debug, Default, Resource)]

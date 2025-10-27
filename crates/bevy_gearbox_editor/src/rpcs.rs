@@ -400,3 +400,17 @@ pub(crate) async fn set_state_machine_id(url: &str, entity: u64, path: &str) -> 
     Ok(())
 }
 
+// =========================
+// Subscribe / Unsubscribe helpers
+// =========================
+
+pub(crate) async fn subscribe_machine(url: &str, entity: u64) -> Result<(), String> {
+    let _ = jsonrpc_call(url, "editor.machine_subscribe", Some(json!({"entity": entity}))).await?;
+    Ok(())
+}
+
+pub(crate) async fn unsubscribe_machine(url: &str, entity: u64) -> Result<(), String> {
+    let _ = jsonrpc_call(url, "editor.machine_unsubscribe", Some(json!({"entity": entity}))).await?;
+    Ok(())
+}
+

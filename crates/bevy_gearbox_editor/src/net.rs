@@ -54,8 +54,8 @@ pub(crate) enum NetCommand {
     Refresh,
     /// Start discovery SSE watcher (BRP +watch)
     StartDiscoveryWatch,
-    /// Start per-machine SSE watcher (BRP +watch)
-    StartMachineWatch { id: ServerEntity },
+    /// Start per-machine SSE watcher (BRP +watch). Stateless: pass last seen seqs
+    StartMachineWatch { id: ServerEntity, last_active_seq: u64, last_transition_seq: u64 },
     /// Stop per-machine SSE watcher (no-op placeholder; task auto-exits on re-arm)
     StopMachineWatch { id: ServerEntity },
     Select { id: ServerEntity },
@@ -65,6 +65,9 @@ pub(crate) enum NetCommand {
     FetchSidecarByFingerprint { fingerprint: String },
     FetchSidecarByPath { path: String, doc: ServerEntity },
     FetchGraph { id: ServerEntity },
+    /// Server-side subscribe/unsubscribe for gating feeds
+    Subscribe { id: ServerEntity },
+    Unsubscribe { id: ServerEntity },
     /// One-shot fetch of active states to seed highlights
     FetchActive { id: ServerEntity },
 }
@@ -110,7 +113,9 @@ pub(crate) fn handle_commands(
     active: Res<ActiveSession>,
 ) {
     let pool = IoTaskPool::get();
-    for cmd in commands_reader.read().cloned() {
+    let cmds: Vec<NetCommand> = commands_reader.read().cloned().collect();
+    if !cmds.is_empty() { println!("[net] handle_commands: cmds_this_frame={}", cmds.len()); }
+    for cmd in cmds.into_iter() {
         match cmd {
             NetCommand::SetUrl { url } => {
                 cfg.url = url;
@@ -156,60 +161,61 @@ pub(crate) fn handle_commands(
                         };
                         let mut stream = resp.bytes_stream();
                         let mut summaries: Vec<MachineSummary> = Vec::new();
-                        while let Some(chunk) = stream.next().await {
-                            match chunk {
-                                Ok(bytes) => {
-                                    if let Ok(text) = std::str::from_utf8(&bytes) {
-                                        for line in text.split('\n') {
-                                            let line = line.trim_start();
-                                            if !line.starts_with("data: ") { continue; }
-                                            let json_str = &line[6..];
-                                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                                let events = v.get("result")
-                                                    .and_then(|r| r.get("events"))
-                                                    .and_then(|e| e.as_array())
-                                                    .cloned()
-                                                    .unwrap_or_default();
-                                                for ev in events {
-                                                    let kind = ev.get("kind").and_then(|s| s.as_str()).unwrap_or("");
-                                                    match kind {
-                                                        "machine_created" | "machine_renamed" | "machine_id_set" => {
-                                                            if let Some(raw) = ev.get("machine").and_then(|v| v.as_u64()) {
-                                                                let canon = crate::util::canonicalize_entity_u64(raw);
-                                                                let name = ev.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                                                summaries.push(MachineSummary { id: ServerEntity(canon), name });
-                                                            }
+                        // Time-box a single chunk read to avoid long-lived tasks
+                        let next_chunk = tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await;
+                        match next_chunk {
+                            Ok(Some(Ok(bytes))) => {
+                                if let Ok(text) = std::str::from_utf8(&bytes) {
+                                    for line in text.split('\n') {
+                                        let line = line.trim_start();
+                                        if !line.starts_with("data: ") { continue; }
+                                        let json_str = &line[6..];
+                                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                            let events = v.get("result")
+                                                .and_then(|r| r.get("events"))
+                                                .and_then(|e| e.as_array())
+                                                .cloned()
+                                                .unwrap_or_default();
+                                            for ev in events {
+                                                let kind = ev.get("kind").and_then(|s| s.as_str()).unwrap_or("");
+                                                match kind {
+                                                    "machine_created" | "machine_renamed" | "machine_id_set" => {
+                                                        if let Some(raw) = ev.get("machine").and_then(|v| v.as_u64()) {
+                                                            let canon = crate::util::canonicalize_entity_u64(raw);
+                                                            let name = ev.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                                            summaries.push(MachineSummary { id: ServerEntity(canon), name });
                                                         }
-                                                        "machine_removed" => {
-                                                            if let Some(raw) = ev.get("machine").and_then(|v| v.as_u64()) {
-                                                                let canon = crate::util::canonicalize_entity_u64(raw);
-                                                                summaries.push(MachineSummary { id: ServerEntity(canon), name: None });
-                                                            }
-                                                        }
-                                                        _ => {}
                                                     }
-                                                }
-                                                if !summaries.is_empty() {
-                                                    let evt = NetEvent::DiscoveryEvents(Ok(std::mem::take(&mut summaries)));
-                                                    return StampedEvent { session, event: Arc::new(evt) };
+                                                    "machine_removed" => {
+                                                        if let Some(raw) = ev.get("machine").and_then(|v| v.as_u64()) {
+                                                            let canon = crate::util::canonicalize_entity_u64(raw);
+                                                            summaries.push(MachineSummary { id: ServerEntity(canon), name: None });
+                                                        }
+                                                    }
+                                                    _ => {}
                                                 }
                                             }
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    let evt = NetEvent::ConnectionError(NetError::Other(format!("watch stream: {}", e)));
-                                    return StampedEvent { session, event: Arc::new(evt) };
-                                }
+                                let evt = NetEvent::DiscoveryEvents(Ok(std::mem::take(&mut summaries)));
+                                StampedEvent { session, event: Arc::new(evt) }
+                            }
+                            Ok(Some(Err(e))) => {
+                                let evt = NetEvent::ConnectionError(NetError::Other(format!("watch stream: {}", e)));
+                                StampedEvent { session, event: Arc::new(evt) }
+                            }
+                            // Timeout, end-of-stream, or no chunk => emit benign empty batch
+                            _ => {
+                                let evt = NetEvent::DiscoveryEvents(Ok(Vec::new()));
+                                StampedEvent { session, event: Arc::new(evt) }
                             }
                         }
-                        // If stream ends without data, emit a benign disconnect
-                        StampedEvent { session, event: Arc::new(NetEvent::Disconnected { reason: None }) }
                     })
                 });
                 pending.tasks.push(task);
             }
-            NetCommand::StartMachineWatch { id } => {
+            NetCommand::StartMachineWatch { id, last_active_seq, last_transition_seq } => {
                 let url = cfg.url.clone();
                 let session = active.0;
                 let rt_handle = rt.0.clone();
@@ -221,7 +227,7 @@ pub(crate) fn handle_commands(
                             "jsonrpc": "2.0",
                             "id": 1,
                             "method": "editor.machine+watch",
-                            "params": { "entity": id.0 },
+                            "params": { "entity": id.0, "last_active_seq": last_active_seq, "last_transition_seq": last_transition_seq },
                         });
                         let resp = match client.post(&url).json(&req).send().await {
                             Ok(r) => r,
@@ -231,34 +237,36 @@ pub(crate) fn handle_commands(
                             }
                         };
                         let mut stream = resp.bytes_stream();
-                        while let Some(chunk) = stream.next().await {
-                            match chunk {
-                                Ok(bytes) => {
-                                    if let Ok(text) = std::str::from_utf8(&bytes) {
-                                        for line in text.split('\n') {
-                                            let line = line.trim_start();
-                                            if !line.starts_with("data: ") { continue; }
-                                            let json_str = &line[6..];
-                                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                                if let Some(events) = v.get("result").and_then(|r| r.get("events")).and_then(|e| e.as_array()) {
-                                                    let added = events.len();
-                                                    if added > 0 {
-                                                        let evt = NetEvent::MachineDeltas { id, result: Ok(events.iter().cloned().collect()) };
-                                                        return StampedEvent { session, event: Arc::new(evt) };
-                                                    }
-                                                }
+                        // Time-box a single chunk read to avoid long-lived tasks
+                        let next_chunk = tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await;
+                        match next_chunk {
+                            Ok(Some(Ok(bytes))) => {
+                                if let Ok(text) = std::str::from_utf8(&bytes) {
+                                    for line in text.split('\n') {
+                                        let line = line.trim_start();
+                                        if !line.starts_with("data: ") { continue; }
+                                        let json_str = &line[6..];
+                                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                            if let Some(events) = v.get("result").and_then(|r| r.get("events")).and_then(|e| e.as_array()) {
+                                                let evt = NetEvent::MachineDeltas { id, result: Ok(events.iter().cloned().collect()) };
+                                                return StampedEvent { session, event: Arc::new(evt) };
                                             }
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    let evt = NetEvent::ConnectionError(NetError::Other(format!("watch stream: {}", e)));
-                                    return StampedEvent { session, event: Arc::new(evt) };
-                                }
+                                let evt = NetEvent::MachineDeltas { id, result: Ok(Vec::new()) };
+                                StampedEvent { session, event: Arc::new(evt) }
+                            }
+                            Ok(Some(Err(e))) => {
+                                let evt = NetEvent::ConnectionError(NetError::Other(format!("watch stream: {}", e)));
+                                StampedEvent { session, event: Arc::new(evt) }
+                            }
+                            // Timeout, end-of-stream, or no chunk => benign empty batch
+                            _ => {
+                                let evt = NetEvent::MachineDeltas { id, result: Ok(Vec::new()) };
+                                StampedEvent { session, event: Arc::new(evt) }
                             }
                         }
-                        let evt = NetEvent::MachineDeltas { id, result: Ok(Vec::new()) };
-                        StampedEvent { session, event: Arc::new(evt) }
                     })
                 });
                 pending.tasks.push(task);
@@ -296,7 +304,12 @@ pub(crate) fn handle_commands(
                                 NetEvent::SaveResult(r)
                             }
                             NetCommand::FetchGraph { id } => {
+                                println!("[net] fetch_graph start: id={:?}", id);
                                 let result = fetch_machine_graph_model(&url, id.0).await.map_err(NetError::from);
+                                match &result {
+                                    Ok(g) => println!("[net] fetch_graph result: id={:?}, nodes={}, edges={}", id, g.nodes.len(), g.edges.len()),
+                                    Err(e) => println!("[net] fetch_graph error: id={:?}, err={}", id, e),
+                                }
                                 NetEvent::GraphResult { id, result }
                             }
                             NetCommand::SaveAs { id, asset_base, sidecar_path } => {
@@ -329,11 +342,24 @@ pub(crate) fn handle_commands(
                                 NetEvent::SidecarResultFor { id: doc, result: r }
                             }
                             NetCommand::FetchActive { id } => {
+                                println!("[net] fetch_active start: id={:?}", id);
                                 let r = (async move {
                                     let (a, l) = rpc::fetch_active_states(&url, id.0).await.map_err(NetError::from)?;
                                     Ok((a, l))
                                 }).await;
                                 NetEvent::ActiveResult { id, result: r }
+                            }
+                            NetCommand::Subscribe { id } => {
+                                let r = (async move {
+                                    rpc::subscribe_machine(&url, id.0).await.map_err(NetError::from)
+                                }).await;
+                                match r { Ok(_) => NetEvent::SelectResult(Ok(())), Err(e) => NetEvent::SelectResult(Err(e)) }
+                            }
+                            NetCommand::Unsubscribe { id } => {
+                                let r = (async move {
+                                    rpc::unsubscribe_machine(&url, id.0).await.map_err(NetError::from)
+                                }).await;
+                                match r { Ok(_) => NetEvent::SelectResult(Ok(())), Err(e) => NetEvent::SelectResult(Err(e)) }
                             }
                             NetCommand::StartDiscoveryWatch => unreachable!(),
                             NetCommand::StartMachineWatch { .. } => unreachable!(),
