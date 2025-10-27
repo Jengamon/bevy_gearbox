@@ -896,15 +896,7 @@ version = "0.4.0"
 dependencies = [
  "bevy",
  "bevy-inspector-egui",
- "bevy_gearbox_core",
  "bevy_gearbox_editor",
-]
-
-[[package]]
-name = "bevy_gearbox_core"
-version = "0.1.0"
-dependencies = [
- "bevy",
  "bevy_gearbox_macros",
  "inventory",
  "ron 0.11.0",

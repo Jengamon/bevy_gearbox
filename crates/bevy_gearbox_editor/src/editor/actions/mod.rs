@@ -94,7 +94,6 @@ pub fn on_refresh_index_requested(evt: On<RefreshIndexRequested>, mut store: Res
 }
 
 pub fn on_open_requested(evt: On<OpenRequested>, mut store: ResMut<EditorStore>, mut net: MessageWriter<NetCommand>, mut workspace: ResMut<Workspace>, mut commands: Commands) {
-    println!("[open] request: entity={:?}, prev_active={:?}, workspace_docs={}", evt.entity, store.active_doc, workspace.docs.len());
     // Ensure an OpenDocument exists (UI metadata only)
     store.open_docs.entry(evt.entity).or_insert_with(|| OpenDocument {
         doc_id: DocId(evt.entity),
@@ -110,15 +109,12 @@ pub fn on_open_requested(evt: On<OpenRequested>, mut store: ResMut<EditorStore>,
     let prev = store.active_doc;
     store.active_doc = Some(evt.entity);
     net.write(NetCommand::FetchGraph { id: evt.entity });
-    println!("[open] enqueued FetchGraph for {:?}", evt.entity);
     // Decoupled unsubscribe and single-doc retention after fetch is enqueued
     if let Some(p) = prev {
         if p != evt.entity {
-            println!("[open] switch: prev={:?} -> new={:?}", p, evt.entity);
             commands.trigger(super::actions::UnsubscribeRequested { entity: p });
             workspace.selection = None;
             workspace.docs.retain(|k, _| *k == evt.entity);
-            println!("[open] workspace.docs after retain: {}", workspace.docs.len());
         }
     }
 }
@@ -128,7 +124,6 @@ pub struct UnsubscribeRequested { pub entity: ServerEntity }
 
 pub fn on_unsubscribe_requested(evt: On<UnsubscribeRequested>, mut net: MessageWriter<NetCommand>) {
     // Decoupled unsubscribe: stop server-side feeds for this machine. Do not couple to new selection.
-    println!("[open] enqueued Unsubscribe for {:?}", evt.entity);
     net.write(NetCommand::Unsubscribe { id: evt.entity });
     // Optional: also send a client-side stop hint (currently a no-op placeholder)
     net.write(NetCommand::StopMachineWatch { id: evt.entity });

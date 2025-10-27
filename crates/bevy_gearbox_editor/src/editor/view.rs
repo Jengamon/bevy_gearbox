@@ -211,7 +211,7 @@ pub fn draw_doc(
             if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
                 let pointer_world = doc.transform.to_world(cursor);
                 // Compute rect for entity (node rect or pill rect in world space)
-                let Some(view) = doc.views.get(&ent) else { println!("draw_doc: missing view for {:?}", ent); return None; };
+                let Some(view) = doc.views.get(&ent) else { return None; };
 
                 let anchor = egui::vec2(pointer_world.x - view.rect.min.x, pointer_world.y - view.rect.min.y);
                     doc.dragging = Some(ent);

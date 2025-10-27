@@ -148,21 +148,17 @@ fn poll_network(
             NetEvent::GraphResult { id, result } => {
                 match result {
                     Ok(graph) => {
-                        println!("[poll] GraphResult: id={:?}, nodes={}, edges={}, active_now={:?}", id, graph.nodes.len(), graph.edges.len(), store.active_doc);
                         // One-shot inbox: store snapshot briefly; projection will drain and clear
                         ui.graphs.insert(*id, graph.clone());
                         // Only arm network feeds if this doc is (or will be) active
                         if let Some(active) = store.active_doc {
                             if active == *id {
-                                println!("[poll] arm_watch: id={:?}", id);
                                 cmd_writer.write(NetCommand::FetchActive { id: *id });
                                 cmd_writer.write(NetCommand::Subscribe { id: *id });
                                 let la = *ui.last_active_seq.get(id).unwrap_or(&0);
                                 let lt = *ui.last_transition_seq.get(id).unwrap_or(&0);
                                 cmd_writer.write(NetCommand::StartMachineWatch { id: *id, last_active_seq: la, last_transition_seq: lt });
                             }
-                        } else {
-                            println!("[poll] not arming watch: no active doc");
                         }
                         // If the root has a StateMachineId, request its sidecar via RPC (derive path: <id>.sm.ron)
                         if let Some(id_text) = graph.nodes.get(&graph.root)
@@ -173,22 +169,18 @@ fn poll_network(
                             cmd_writer.write(NetCommand::FetchSidecarByPath { path, doc: *id });
                         }
                     }
-                    Err(e) => {
-                        println!("[poll] GraphResult error: id={:?}, err={}", id, e);
-                    }
+                    Err(e) => {}
                 }
                 processed += 1;
             }
             NetEvent::ActiveResult { id, result } => {
                 if let Ok((active, leaves)) = result {
-                    println!("[poll] ActiveResult: id={:?}, active={}, leaves={}", id, active.len(), leaves.len());
                     ui.pending_active.insert(*id, (active.clone(), leaves.clone()));
                 }
                 processed += 1;
             }
             NetEvent::MachineDeltas { id, result } => {
                 if let Ok(events) = result {
-                    println!("[poll] MachineDeltas: id={:?}, events={}", id, events.len());
                     // Stash for application in workspace sync
                     // Update last seqs before re-arming
                     let mut max_a = ui.last_active_seq.get(id).copied().unwrap_or(0);
@@ -205,7 +197,6 @@ fn poll_network(
                     let old_t = ui.last_transition_seq.get(id).copied().unwrap_or(0);
                     ui.last_active_seq.insert(*id, max_a);
                     ui.last_transition_seq.insert(*id, max_t);
-                    println!("[poll] seqs: id={:?}, active_seq {}->{}; transition_seq {}->{}; will_rearm={}", id, old_a, max_a, old_t, max_t, store.active_doc == Some(*id));
                     ui.pending_machine_events.entry(*id).or_default().extend(events.iter().cloned());
                     // Re-arm only if still connected and this is the active doc
                     if let EditorConnectionState::Connected { .. } = store.connection {
@@ -216,7 +207,6 @@ fn poll_network(
             }
             NetEvent::Disconnected { .. } | NetEvent::ConnectionError(_) => {
                 // Clear UI caches and prevent re-arming by leaving connection Disconnected
-                println!("[poll] Disconnected or error: clearing UI caches");
                 ui.machines.clear();
                 ui.graphs.clear();
                 ui.sidecar_texts.clear();
@@ -311,12 +301,10 @@ fn sync_snapshots_to_workspace(
         // Capture metrics before taking a mutable borrow of workspace.docs entry
         let docs_len = workspace.docs.len();
         let was_empty = workspace.docs.get(id).and_then(|d| d.graph.as_ref()).is_none();
-        println!("[sync] project start: id={:?}, was_empty={}, docs={}", id, was_empty, docs_len);
         let entry = workspace.docs.entry(*id).or_default();
         project_graph_into_doc(entry, graph.clone());
         // After mutation, avoid borrowing workspace again; use the entry we have
         let graph_present = entry.graph.is_some();
-        println!("[sync] project done: id={:?}, graph_present={}", id, graph_present);
         to_remove.push(*id);
         // Try applying sidecar when: (a) first load, or (b) new sidecar text arrived
         let fp = compute_graph_fingerprint(&graph);
@@ -325,7 +313,6 @@ fn sync_snapshots_to_workspace(
             if let Ok(sc) = parse_sidecar_text(text) {
                 let matched = sc.graph_fingerprint.as_deref() == Some(&fp) || sc.graph_fingerprint.is_none();
                 if matched { apply_sidecar_to_doc(entry, &sc); applied = true; }
-                println!("[sync] sidecar(immediate): id={:?}, fp_match={}, applied={}", id, matched, applied);
             }
             // mark for single-consume once attempted (avoid re-applying every frame)
             consume_sidecar_for.push(*id);
@@ -379,7 +366,6 @@ fn sync_snapshots_to_workspace(
                     let matched = sc.graph_fingerprint.as_deref() == Some(&fp) || sc.graph_fingerprint.is_none();
                     let mut applied = false;
                     if matched { apply_sidecar_to_doc(doc, &sc); applied = true; consume_sidecar_for.push(*id); }
-                    println!("[sync] sidecar(decoupled): id={:?}, fp_match={}, applied={}", id, matched, applied);
                 }
             }
         }

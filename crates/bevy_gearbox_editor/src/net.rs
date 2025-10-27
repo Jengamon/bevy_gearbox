@@ -7,6 +7,7 @@ use crate::types::{ServerEntity, MachineSummary, NetError};
 use crate::model::StateMachineGraph;
 use std::sync::Arc;
 use reqwest::Client;
+use tokio::sync::mpsc as tokio_mpsc;
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
 pub(crate) enum NetSet { Send, Drain }
@@ -22,9 +23,10 @@ impl Plugin for NetPlugin {
             .insert_resource(NetworkConfig { url: std::env::var("BRP_URL").unwrap_or_else(|_| "http://127.0.0.1:15703".to_string()) })
             .insert_resource(ConnectionStatus(ConnectionState::Disconnected))
             .insert_resource(ActiveSession(0))
+            .init_resource::<WatchManager>()
             .configure_sets(Update, (NetSet::Send, NetSet::Drain).chain())
             .add_systems(Update, handle_commands.in_set(NetSet::Send))
-            .add_systems(Update, collect_task_results.in_set(NetSet::Drain));
+            .add_systems(Update, (collect_task_results, drain_watch_events).in_set(NetSet::Drain));
     }
 }
 
@@ -104,6 +106,179 @@ pub(crate) struct PendingTasks {
 #[derive(Resource, Clone, Copy)]
 pub(crate) struct ActiveSession(pub u64);
 
+// ===============
+// Watch Manager
+// ===============
+
+#[derive(Resource, Default)]
+pub(crate) struct WatchManager {
+    ctl_tx: Option<tokio_mpsc::UnboundedSender<WatchCtl>>,
+    evt_rx: Option<tokio_mpsc::UnboundedReceiver<WatchEvt>>,
+}
+
+#[derive(Debug)]
+enum WatchCtl {
+    StartDiscovery { url: String },
+    StopDiscovery,
+    StartMachine { url: String, id: ServerEntity, last_active_seq: u64, last_transition_seq: u64 },
+    StopMachine { id: ServerEntity },
+}
+
+#[derive(Debug)]
+enum WatchEvt {
+    Discovery(Vec<MachineSummary>),
+    Machine { id: ServerEntity, events: Vec<serde_json::Value> },
+    Error(String),
+}
+
+fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
+    if mgr.ctl_tx.is_some() { return; }
+    let (ctl_tx, mut ctl_rx) = tokio_mpsc::unbounded_channel::<WatchCtl>();
+    let (evt_tx, evt_rx) = tokio_mpsc::unbounded_channel::<WatchEvt>();
+    mgr.ctl_tx = Some(ctl_tx);
+    mgr.evt_rx = Some(evt_rx);
+
+    rt.spawn(async move {
+        use std::collections::HashMap;
+        let client = Client::new();
+        let mut discovery_handle: Option<tokio::task::JoinHandle<()>> = None;
+        let mut machine_handles: HashMap<ServerEntity, tokio::task::JoinHandle<()>> = HashMap::new();
+        while let Some(cmd) = ctl_rx.recv().await {
+            match cmd {
+                WatchCtl::StartDiscovery { url } => {
+                    if let Some(h) = discovery_handle.take() { h.abort(); }
+                    let tx = evt_tx.clone();
+                    let client_clone = client.clone();
+                    discovery_handle = Some(tokio::spawn(async move {
+                        loop {
+                            // Build request
+                            let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"editor.discovery+watch","params":null});
+                            let resp = match client_clone.post(&url).json(&req).send().await { Ok(r) => r, Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch discovery http: {}", e))); tokio::time::sleep(std::time::Duration::from_millis(300)).await; continue; } };
+                            let mut stream = resp.bytes_stream();
+                            use futures_util::StreamExt as _;
+                            while let Some(chunk) = stream.next().await {
+                                match chunk {
+                                    Ok(bytes) => {
+                                        if let Ok(text) = std::str::from_utf8(&bytes) {
+                                            let mut out: Vec<MachineSummary> = Vec::new();
+                                            for line in text.split('\n') {
+                                                let line = line.trim_start();
+                                                if !line.starts_with("data: ") { continue; }
+                                                let json_str = &line[6..];
+                                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                                    if let Some(events) = v.get("result").and_then(|r| r.get("events")).and_then(|e| e.as_array()) {
+                                                        for ev in events {
+                                                            let kind = ev.get("kind").and_then(|s| s.as_str()).unwrap_or("");
+                                                            match kind {
+                                                                "machine_created" | "machine_renamed" | "machine_id_set" => {
+                                                                    if let Some(raw) = ev.get("machine").and_then(|v| v.as_u64()) {
+                                                                        let canon = crate::util::canonicalize_entity_u64(raw);
+                                                                        let name = ev.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                                                        out.push(MachineSummary { id: ServerEntity(canon), name });
+                                                                    }
+                                                                }
+                                                                "machine_removed" => {
+                                                                    if let Some(raw) = ev.get("machine").and_then(|v| v.as_u64()) {
+                                                                        let canon = crate::util::canonicalize_entity_u64(raw);
+                                                                        out.push(MachineSummary { id: ServerEntity(canon), name: None });
+                                                                    }
+                                                                }
+                                                                _ => {}
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if !out.is_empty() { let _ = tx.send(WatchEvt::Discovery(out)); }
+                                        }
+                                    }
+                                    Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch discovery stream: {}", e))); break; }
+                                }
+                            }
+                            // reconnect loop
+                        }
+                    }));
+                }
+                WatchCtl::StopDiscovery => {
+                    if let Some(h) = discovery_handle.take() { h.abort(); }
+                }
+                WatchCtl::StartMachine { url, id, last_active_seq, last_transition_seq } => {
+                    if let Some(h) = machine_handles.remove(&id) { h.abort(); }
+                    let tx = evt_tx.clone();
+                    let client_clone = client.clone();
+                    let handle = tokio::spawn(async move {
+                        let mut la = last_active_seq;
+                        let mut lt = last_transition_seq;
+                        loop {
+                            let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"editor.machine+watch","params":{"entity":id.0,"last_active_seq":la,"last_transition_seq":lt}});
+                            let resp = match client_clone.post(&url).json(&req).send().await { Ok(r) => r, Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch http: {}", e))); tokio::time::sleep(std::time::Duration::from_millis(300)).await; continue; } };
+                            let mut stream = resp.bytes_stream();
+                            use futures_util::StreamExt as _;
+                            while let Some(chunk) = stream.next().await {
+                                match chunk {
+                                    Ok(bytes) => {
+                                        if let Ok(text) = std::str::from_utf8(&bytes) {
+                                            let mut out: Vec<serde_json::Value> = Vec::new();
+                                            for line in text.split('\n') {
+                                                let line = line.trim_start();
+                                                if !line.starts_with("data: ") { continue; }
+                                                let json_str = &line[6..];
+                                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                                    if let Some(events) = v.get("result").and_then(|r| r.get("events")).and_then(|e| e.as_array()) {
+                                                        if !events.is_empty() {
+                                                            for ev in events.iter() {
+                                                                if let Some(seq) = ev.get("seq").and_then(|v| v.as_u64()) {
+                                                                    match ev.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
+                                                                        "active_changed" => if seq > la { la = seq; },
+                                                                        "transition_edge" => if seq > lt { lt = seq; },
+                                                                        _ => {}
+                                                                    }
+                                                                }
+                                                            }
+                                                            out.extend(events.iter().cloned());
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if !out.is_empty() { let _ = tx.send(WatchEvt::Machine { id, events: out }); }
+                                        }
+                                    }
+                                    Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch stream: {}", e))); break; }
+                                }
+                            }
+                            // reconnect
+                        }
+                    });
+                    machine_handles.insert(id, handle);
+                }
+                WatchCtl::StopMachine { id } => {
+                    if let Some(h) = machine_handles.remove(&id) { h.abort(); }
+                }
+            }
+        }
+    });
+}
+
+fn drain_watch_events(
+    mut mgr: ResMut<WatchManager>,
+    mut stamped_writer: MessageWriter<StampedEvent>,
+    active: Res<ActiveSession>,
+) {
+    if let Some(rx) = mgr.evt_rx.as_mut() {
+        let mut drained = 0usize;
+        while let Ok(evt) = rx.try_recv() {
+            drained += 1;
+            let event = match evt {
+                WatchEvt::Discovery(batch) => NetEvent::DiscoveryEvents(Ok(batch)),
+                WatchEvt::Machine { id, events } => NetEvent::MachineDeltas { id, result: Ok(events) },
+                WatchEvt::Error(e) => NetEvent::ConnectionError(NetError::Other(e)),
+            };
+            stamped_writer.write(StampedEvent { session: active.0, event: Arc::new(event) });
+        }
+        if drained > 0 { /* optional log */ }
+    }
+}
+
 pub(crate) fn handle_commands(
     mut commands_reader: MessageReader<NetCommand>,
     mut pending: ResMut<PendingTasks>,
@@ -111,10 +286,12 @@ pub(crate) fn handle_commands(
     mut conn: ResMut<ConnectionStatus>,
     rt: Res<TokioRuntime>,
     active: Res<ActiveSession>,
+    mut mgr: ResMut<WatchManager>,
 ) {
     let pool = IoTaskPool::get();
+    // Ensure manager exists
+    ensure_watch_manager(&rt.0, &mut *mgr);
     let cmds: Vec<NetCommand> = commands_reader.read().cloned().collect();
-    if !cmds.is_empty() { println!("[net] handle_commands: cmds_this_frame={}", cmds.len()); }
     for cmd in cmds.into_iter() {
         match cmd {
             NetCommand::SetUrl { url } => {
@@ -138,141 +315,13 @@ pub(crate) fn handle_commands(
                 // Discovery watch will be triggered by UI upon Connected event
             }
             NetCommand::StartDiscoveryWatch => {
-                let url = cfg.url.clone();
-                let session = active.0;
-                let rt_handle = rt.0.clone();
-                let task = pool.spawn(async move {
-                    rt_handle.block_on(async move {
-                        use futures_util::StreamExt as _;
-                        let client = Client::new();
-                        // Compose JSON-RPC +watch request
-                        let req = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": 1,
-                            "method": "editor.discovery+watch",
-                            "params": null,
-                        });
-                        let resp = match client.post(&url).json(&req).send().await {
-                            Ok(r) => r,
-                            Err(e) => {
-                                let evt = NetEvent::ConnectionError(NetError::Other(format!("watch http: {}", e)));
-                                return StampedEvent { session, event: Arc::new(evt) };
-                            }
-                        };
-                        let mut stream = resp.bytes_stream();
-                        let mut summaries: Vec<MachineSummary> = Vec::new();
-                        // Time-box a single chunk read to avoid long-lived tasks
-                        let next_chunk = tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await;
-                        match next_chunk {
-                            Ok(Some(Ok(bytes))) => {
-                                if let Ok(text) = std::str::from_utf8(&bytes) {
-                                    for line in text.split('\n') {
-                                        let line = line.trim_start();
-                                        if !line.starts_with("data: ") { continue; }
-                                        let json_str = &line[6..];
-                                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                            let events = v.get("result")
-                                                .and_then(|r| r.get("events"))
-                                                .and_then(|e| e.as_array())
-                                                .cloned()
-                                                .unwrap_or_default();
-                                            for ev in events {
-                                                let kind = ev.get("kind").and_then(|s| s.as_str()).unwrap_or("");
-                                                match kind {
-                                                    "machine_created" | "machine_renamed" | "machine_id_set" => {
-                                                        if let Some(raw) = ev.get("machine").and_then(|v| v.as_u64()) {
-                                                            let canon = crate::util::canonicalize_entity_u64(raw);
-                                                            let name = ev.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                                            summaries.push(MachineSummary { id: ServerEntity(canon), name });
-                                                        }
-                                                    }
-                                                    "machine_removed" => {
-                                                        if let Some(raw) = ev.get("machine").and_then(|v| v.as_u64()) {
-                                                            let canon = crate::util::canonicalize_entity_u64(raw);
-                                                            summaries.push(MachineSummary { id: ServerEntity(canon), name: None });
-                                                        }
-                                                    }
-                                                    _ => {}
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                let evt = NetEvent::DiscoveryEvents(Ok(std::mem::take(&mut summaries)));
-                                StampedEvent { session, event: Arc::new(evt) }
-                            }
-                            Ok(Some(Err(e))) => {
-                                let evt = NetEvent::ConnectionError(NetError::Other(format!("watch stream: {}", e)));
-                                StampedEvent { session, event: Arc::new(evt) }
-                            }
-                            // Timeout, end-of-stream, or no chunk => emit benign empty batch
-                            _ => {
-                                let evt = NetEvent::DiscoveryEvents(Ok(Vec::new()));
-                                StampedEvent { session, event: Arc::new(evt) }
-                            }
-                        }
-                    })
-                });
-                pending.tasks.push(task);
+                if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartDiscovery { url: cfg.url.clone() }); }
             }
             NetCommand::StartMachineWatch { id, last_active_seq, last_transition_seq } => {
-                let url = cfg.url.clone();
-                let session = active.0;
-                let rt_handle = rt.0.clone();
-                let task = pool.spawn(async move {
-                    rt_handle.block_on(async move {
-                        use futures_util::StreamExt as _;
-                        let client = Client::new();
-                        let req = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": 1,
-                            "method": "editor.machine+watch",
-                            "params": { "entity": id.0, "last_active_seq": last_active_seq, "last_transition_seq": last_transition_seq },
-                        });
-                        let resp = match client.post(&url).json(&req).send().await {
-                            Ok(r) => r,
-                            Err(e) => {
-                                let evt = NetEvent::ConnectionError(NetError::Other(format!("watch http: {}", e)));
-                                return StampedEvent { session, event: Arc::new(evt) };
-                            }
-                        };
-                        let mut stream = resp.bytes_stream();
-                        // Time-box a single chunk read to avoid long-lived tasks
-                        let next_chunk = tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await;
-                        match next_chunk {
-                            Ok(Some(Ok(bytes))) => {
-                                if let Ok(text) = std::str::from_utf8(&bytes) {
-                                    for line in text.split('\n') {
-                                        let line = line.trim_start();
-                                        if !line.starts_with("data: ") { continue; }
-                                        let json_str = &line[6..];
-                                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                            if let Some(events) = v.get("result").and_then(|r| r.get("events")).and_then(|e| e.as_array()) {
-                                                let evt = NetEvent::MachineDeltas { id, result: Ok(events.iter().cloned().collect()) };
-                                                return StampedEvent { session, event: Arc::new(evt) };
-                                            }
-                                        }
-                                    }
-                                }
-                                let evt = NetEvent::MachineDeltas { id, result: Ok(Vec::new()) };
-                                StampedEvent { session, event: Arc::new(evt) }
-                            }
-                            Ok(Some(Err(e))) => {
-                                let evt = NetEvent::ConnectionError(NetError::Other(format!("watch stream: {}", e)));
-                                StampedEvent { session, event: Arc::new(evt) }
-                            }
-                            // Timeout, end-of-stream, or no chunk => benign empty batch
-                            _ => {
-                                let evt = NetEvent::MachineDeltas { id, result: Ok(Vec::new()) };
-                                StampedEvent { session, event: Arc::new(evt) }
-                            }
-                        }
-                    })
-                });
-                pending.tasks.push(task);
+                if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartMachine { url: cfg.url.clone(), id, last_active_seq, last_transition_seq }); }
             }
             NetCommand::StopMachineWatch { .. } => {
-                // No persistent handle kept; SSE tasks complete after a batch. This is a no-op placeholder.
+                // Manager handles explicit stop via Unsubscribe routing; nothing to do here.
             }
             NetCommand::Disconnect => {
                 conn.0 = ConnectionState::Disconnected;
@@ -304,12 +353,7 @@ pub(crate) fn handle_commands(
                                 NetEvent::SaveResult(r)
                             }
                             NetCommand::FetchGraph { id } => {
-                                println!("[net] fetch_graph start: id={:?}", id);
                                 let result = fetch_machine_graph_model(&url, id.0).await.map_err(NetError::from);
-                                match &result {
-                                    Ok(g) => println!("[net] fetch_graph result: id={:?}, nodes={}, edges={}", id, g.nodes.len(), g.edges.len()),
-                                    Err(e) => println!("[net] fetch_graph error: id={:?}, err={}", id, e),
-                                }
                                 NetEvent::GraphResult { id, result }
                             }
                             NetCommand::SaveAs { id, asset_base, sidecar_path } => {
@@ -342,7 +386,6 @@ pub(crate) fn handle_commands(
                                 NetEvent::SidecarResultFor { id: doc, result: r }
                             }
                             NetCommand::FetchActive { id } => {
-                                println!("[net] fetch_active start: id={:?}", id);
                                 let r = (async move {
                                     let (a, l) = rpc::fetch_active_states(&url, id.0).await.map_err(NetError::from)?;
                                     Ok((a, l))
@@ -359,6 +402,8 @@ pub(crate) fn handle_commands(
                                 let r = (async move {
                                     rpc::unsubscribe_machine(&url, id.0).await.map_err(NetError::from)
                                 }).await;
+                                // Stop the manager-side watch as well
+                                // Note: errors on Unsubscribe are surfaced via SelectResult
                                 match r { Ok(_) => NetEvent::SelectResult(Ok(())), Err(e) => NetEvent::SelectResult(Err(e)) }
                             }
                             NetCommand::StartDiscoveryWatch => unreachable!(),

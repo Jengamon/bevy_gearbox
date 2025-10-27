@@ -46,8 +46,6 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                     let mut menu_local = workspace.menu.clone();
                     if let Some(entry) = workspace.docs.get_mut(&active) {
                         let has_graph = entry.graph.is_some();
-                        // concise: only print when not present to avoid clogging
-                        if !has_graph { println!("[draw] awaiting graph for {:?}", store.active_doc); }
                         if let Some(selection) = crate::editor::view::draw_doc(ui, entry, &mut sel_local, active, &mut menu_local) {
                             if let crate::editor::context_menu::MenuSelection::SaveStateMachine { .. } = selection {
                                 // Relay to observer via event
@@ -56,8 +54,6 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                         }
                     } else {
                         let entry = workspace.docs.entry(active).or_default();
-                        // concise: only print when doc wasn't present yet
-                        println!("[draw] created empty doc for {:?}", store.active_doc);
                         if let Some(selection) = crate::editor::view::draw_doc(ui, entry, &mut sel_local, active, &mut menu_local) {
                             if let crate::editor::context_menu::MenuSelection::SaveStateMachine { .. } = selection {
                                 commands.trigger(crate::editor::actions::SaveAsRequested { entity: active });
