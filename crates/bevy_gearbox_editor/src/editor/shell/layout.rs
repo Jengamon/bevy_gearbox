@@ -45,10 +45,19 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                     let mut sel_local = workspace.selection.clone();
                     let mut menu_local = workspace.menu.clone();
                     if let Some(entry) = workspace.docs.get_mut(&active) {
-                        let _ = crate::editor::view::draw_doc(ui, entry, &mut sel_local, active, &mut menu_local);
+                        if let Some(selection) = crate::editor::view::draw_doc(ui, entry, &mut sel_local, active, &mut menu_local) {
+                            if let crate::editor::context_menu::MenuSelection::SaveStateMachine { .. } = selection {
+                                // Relay to observer via event
+                                commands.trigger(crate::editor::actions::SaveAsRequested { entity: active });
+                            }
+                        }
                     } else {
                         let entry = workspace.docs.entry(active).or_default();
-                        let _ = crate::editor::view::draw_doc(ui, entry, &mut sel_local, active, &mut menu_local);
+                        if let Some(selection) = crate::editor::view::draw_doc(ui, entry, &mut sel_local, active, &mut menu_local) {
+                            if let crate::editor::context_menu::MenuSelection::SaveStateMachine { .. } = selection {
+                                commands.trigger(crate::editor::actions::SaveAsRequested { entity: active });
+                            }
+                        }
                     }
                     workspace.selection = sel_local;
                     workspace.menu = menu_local;

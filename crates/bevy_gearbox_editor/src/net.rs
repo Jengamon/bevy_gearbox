@@ -54,6 +54,10 @@ pub(crate) enum NetCommand {
     Refresh,
     /// Start discovery SSE watcher (BRP +watch)
     StartDiscoveryWatch,
+    /// Start per-machine SSE watcher (BRP +watch)
+    StartMachineWatch { id: ServerEntity },
+    /// Stop per-machine SSE watcher (no-op placeholder; task auto-exits on re-arm)
+    StopMachineWatch { id: ServerEntity },
     Select { id: ServerEntity },
     Save { id: ServerEntity },
     /// Save As: logical asset base name (for .scn.ron on app) and local sidecar path
@@ -61,6 +65,8 @@ pub(crate) enum NetCommand {
     FetchSidecarByFingerprint { fingerprint: String },
     FetchSidecarByPath { path: String, doc: ServerEntity },
     FetchGraph { id: ServerEntity },
+    /// One-shot fetch of active states to seed highlights
+    FetchActive { id: ServerEntity },
 }
 
 #[derive(Message)]
@@ -75,6 +81,10 @@ pub(crate) enum NetEvent {
     SidecarResult(Result<Option<String>, NetError>),
     SidecarResultFor { id: ServerEntity, result: Result<Option<String>, NetError> },
     GraphResult { id: ServerEntity, result: Result<StateMachineGraph, NetError> },
+    /// Streamed machine deltas from +watch
+    MachineDeltas { id: ServerEntity, result: Result<Vec<serde_json::Value>, NetError> },
+    /// One-shot active states fetch
+    ActiveResult { id: ServerEntity, result: Result<(Vec<u64>, Vec<u64>), NetError> },
 }
 
 #[derive(Message, Clone)]
@@ -165,12 +175,15 @@ pub(crate) fn handle_commands(
                                                     match kind {
                                                         "machine_created" | "machine_renamed" | "machine_id_set" => {
                                                             if let Some(id) = ev.get("machine").and_then(|v| v.as_u64()) {
+                                                                // Canonicalize id to to_bits format for consistency with initial list
+                                                                let id = crate::util::canonicalize_entity_u64(id);
                                                                 let name = ev.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
                                                                 summaries.push(MachineSummary { id: ServerEntity(id), name });
                                                             }
                                                         }
                                                         "machine_removed" => {
                                                             if let Some(id) = ev.get("machine").and_then(|v| v.as_u64()) {
+                                                                let id = crate::util::canonicalize_entity_u64(id);
                                                                 summaries.push(MachineSummary { id: ServerEntity(id), name: None });
                                                             }
                                                         }
@@ -196,6 +209,66 @@ pub(crate) fn handle_commands(
                     })
                 });
                 pending.tasks.push(task);
+            }
+            NetCommand::StartMachineWatch { id } => {
+                let url = cfg.url.clone();
+                let session = active.0;
+                let rt_handle = rt.0.clone();
+                let task = pool.spawn(async move {
+                    rt_handle.block_on(async move {
+                        use futures_util::StreamExt as _;
+                        let client = Client::new();
+                        let req = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "editor.machine+watch",
+                            "params": { "entity": id.0 },
+                        });
+                        let resp = match client.post(&url).json(&req).send().await {
+                            Ok(r) => r,
+                            Err(e) => {
+                                let evt = NetEvent::ConnectionError(NetError::Other(format!("watch http: {}", e)));
+                                return StampedEvent { session, event: Arc::new(evt) };
+                            }
+                        };
+                        let mut stream = resp.bytes_stream();
+                        let mut deltas: Vec<serde_json::Value> = Vec::new();
+                        println!("net: machine+watch start for {}", id.0);
+                        while let Some(chunk) = stream.next().await {
+                            match chunk {
+                                Ok(bytes) => {
+                                    if let Ok(text) = std::str::from_utf8(&bytes) {
+                                        for line in text.split('\n') {
+                                            let line = line.trim_start();
+                                            if !line.starts_with("data: ") { continue; }
+                                            let json_str = &line[6..];
+                                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                                if let Some(events) = v.get("result").and_then(|r| r.get("events")).and_then(|e| e.as_array()) {
+                                                    let added = events.len();
+                                                    if added > 0 {
+                                                        );
+                                                        let evt = NetEvent::MachineDeltas { id, result: Ok(events.iter().cloned().collect()) };
+                                                        return StampedEvent { session, event: Arc::new(evt) };
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let evt = NetEvent::ConnectionError(NetError::Other(format!("watch stream: {}", e)));
+                                    return StampedEvent { session, event: Arc::new(evt) };
+                                }
+                            }
+                        }
+                        let evt = NetEvent::MachineDeltas { id, result: Ok(deltas) };
+                        StampedEvent { session, event: Arc::new(evt) }
+                    })
+                });
+                pending.tasks.push(task);
+            }
+            NetCommand::StopMachineWatch { .. } => {
+                // No persistent handle kept; SSE tasks complete after a batch. This is a no-op placeholder.
             }
             NetCommand::Disconnect => {
                 conn.0 = ConnectionState::Disconnected;
@@ -259,7 +332,16 @@ pub(crate) fn handle_commands(
                                 }).await;
                                 NetEvent::SidecarResultFor { id: doc, result: r }
                             }
+                            NetCommand::FetchActive { id } => {
+                                let r = (async move {
+                                    let (a, l) = rpc::fetch_active_states(&url, id.0).await.map_err(NetError::from)?;
+                                    Ok((a, l))
+                                }).await;
+                                NetEvent::ActiveResult { id, result: r }
+                            }
                             NetCommand::StartDiscoveryWatch => unreachable!(),
+                            NetCommand::StartMachineWatch { .. } => unreachable!(),
+                            NetCommand::StopMachineWatch { .. } => unreachable!(),
                             NetCommand::Connect | NetCommand::Disconnect => unreachable!(),
                             NetCommand::SetUrl { .. } => unreachable!(),
                         };

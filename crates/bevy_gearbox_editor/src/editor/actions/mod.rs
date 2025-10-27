@@ -6,6 +6,9 @@ use crate::net::{NetCommand, ActiveSession};
 use super::model::store::OpenDocument;
 use super::model::types::{DocMode, DocId, TabId};
 use crate::editor::view_model::GraphDoc;
+use crate::editor::workspace::Workspace;
+use crate::persistence::{extract_sidecar_from_doc, save_sidecar};
+use rfd::FileDialog;
 
 #[derive(Debug, Clone)]
 pub struct EndpointConfig { pub endpoint: String }
@@ -99,6 +102,31 @@ pub fn on_open_requested(evt: On<OpenRequested>, mut store: ResMut<EditorStore>,
     });
     store.active_doc = Some(evt.entity);
     net.write(NetCommand::FetchGraph { id: evt.entity });
+}
+
+#[derive(Debug, Clone, Event)]
+pub struct SaveAsRequested { pub entity: ServerEntity }
+
+pub fn on_save_as_requested(save_as_requested: On<SaveAsRequested>, workspace: Res<Workspace>, mut net: MessageWriter<NetCommand>) {
+    // Open native Save dialog for .sm.ron
+    let picked = FileDialog::new()
+        .add_filter("State Machine Sidecar", &["sm.ron"])
+        .set_title("Save State Machine Sidecar (.sm.ron)")
+        .save_file();
+    if let Some(path) = picked {
+        // Persist current sidecar snapshot to chosen path if we have the doc
+        if let Some(doc) = workspace.docs.get(&save_as_requested.entity) {
+            let sc = extract_sidecar_from_doc(doc);
+            let _ = save_sidecar(&path, &sc);
+        }
+        // Derive logical asset base name (without .sm.ron extension and without directories)
+        let asset_base = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "state_machine".to_string());
+        net.write(NetCommand::SaveAs { id: save_as_requested.entity, asset_base, sidecar_path: path });
+    }
 }
 
 

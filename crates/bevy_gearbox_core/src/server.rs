@@ -77,7 +77,9 @@ impl Plugin for RemoteServerPlugin {
         app
             .register_type::<ActiveTracker>()
             .register_type::<TransitionEdge>()
-            .register_type::<TransitionFeed>();
+            .register_type::<TransitionFeed>()
+            .register_type::<ActiveChangedFeed>()
+            .register_type::<ActiveChangedEntry>();
 
         // Configure HTTP transport for BRP
         let mut http = {
@@ -101,11 +103,16 @@ impl Plugin for RemoteServerPlugin {
         // Systems/observers to keep trackers updated
         app.add_systems(Update, sync_active_tracker_on_state_changes);
         app.add_observer(record_transition_on_actions);
+        // Event-driven active feed updates using component add/remove triggers
+        app.add_observer(on_active_added);
+        app.add_observer(on_active_removed);
 
         // Register custom RPC endpoints for saving graphs and sidecars
         register_editor_file_rpcs(app);
 
         // Register discovery watcher (+watch SSE)
+        // Also initialize state used by machine +watch to de-duplicate transition entries
+        app.insert_resource(MachineWatchState::default());
         register_editor_watch_rpcs(app);
     }
 }
@@ -127,12 +134,33 @@ pub struct ActiveTracker {
 pub struct TransitionEdge { pub seq: u64, pub edge: Entity }
 
 #[cfg(feature = "editor")]
+#[derive(Reflect, Clone)]
+pub struct ActiveChangedEntry { pub seq: u64, pub active: Vec<Entity>, pub leaves: Vec<Entity> }
+
+#[cfg(feature = "editor")]
 #[derive(Component, Reflect, Default)]
 #[reflect(Component, Default)]
 pub struct TransitionFeed {
     pub next_seq: u64,
     pub ring: Vec<TransitionEdge>,
     pub capacity: u16,
+}
+
+#[cfg(feature = "editor")]
+#[derive(Component, Reflect, Default)]
+#[reflect(Component, Default)]
+pub struct ActiveChangedFeed {
+    pub next_seq: u64,
+    pub ring: Vec<ActiveChangedEntry>,
+    pub capacity: u16,
+}
+
+// Internal state to de-duplicate machine +watch transition events
+#[cfg(feature = "editor")]
+#[derive(Resource, Default)]
+struct MachineWatchState {
+    last_transition_seq: std::collections::HashMap<Entity, u64>,
+    last_active_seq: std::collections::HashMap<Entity, u64>,
 }
 
 // =========================
@@ -142,6 +170,7 @@ pub struct TransitionFeed {
 fn sync_active_tracker_on_state_changes(
     q_changed: Query<(Entity, &StateMachine), Changed<StateMachine>>,
     mut commands: Commands,
+    mut q_active_feed: Query<&mut ActiveChangedFeed>,
 ){
     for (root, sm) in q_changed.iter() {
         let mut active: Vec<Entity> = Vec::with_capacity(sm.active.len());
@@ -150,7 +179,23 @@ fn sync_active_tracker_on_state_changes(
         leaves.extend(sm.active_leaves.iter().copied());
 
         // Update or insert tracker
+        // Clone for feed before moving into the component
+        let active_for_feed = active.clone();
+        let leaves_for_feed = leaves.clone();
         commands.entity(root).insert(ActiveTracker { active, leaves });
+
+        // Also append to ActiveChangedFeed ring for reliable delivery via +watch
+        if let Ok(mut feed) = q_active_feed.get_mut(root) {
+            let seq = feed.next_seq;
+            feed.next_seq = feed.next_seq.saturating_add(1);
+            feed.ring.push(ActiveChangedEntry { seq, active: active_for_feed.clone(), leaves: leaves_for_feed.clone() });
+            let cap = feed.capacity.max(1) as usize;
+            if feed.ring.len() > cap { let _ = feed.ring.remove(0); }
+        } else {
+            let mut feed = ActiveChangedFeed { next_seq: 1, ring: Vec::new(), capacity: 64 };
+            feed.ring.push(ActiveChangedEntry { seq: 0, active: active_for_feed, leaves: leaves_for_feed });
+            commands.entity(root).insert(feed);
+        }
     }
 }
 
@@ -178,6 +223,67 @@ fn record_transition_on_actions(
     }
 }
 
+// Append to the ActiveChangedFeed when Active is added to a state
+#[cfg(feature = "editor")]
+fn on_active_added(
+    add: On<Add, crate::active::Active>,
+    q_substate_of: Query<&crate::SubstateOf>,
+    q_sm: Query<&crate::StateMachine>,
+    mut q_feed: Query<&mut ActiveChangedFeed>,
+    mut commands: Commands,
+){
+    let state = add.event().entity;
+    let root = q_substate_of.root_ancestor(state);
+    // Snapshot current active/leaves from authoritative StateMachine
+    if let Ok(sm) = q_sm.get(root) {
+        let mut active: Vec<Entity> = sm.active.iter().copied().collect();
+        let mut leaves: Vec<Entity> = sm.active_leaves.iter().copied().collect();
+        // Keep stable-ish order
+        active.sort_by_key(|e| e.index());
+        leaves.sort_by_key(|e| e.index());
+        if let Ok(mut feed) = q_feed.get_mut(root) {
+            let seq = feed.next_seq;
+            feed.next_seq = feed.next_seq.saturating_add(1);
+            feed.ring.push(ActiveChangedEntry { seq, active, leaves });
+            let cap = feed.capacity.max(1) as usize;
+            if feed.ring.len() > cap { let _ = feed.ring.remove(0); }
+        } else {
+            let mut feed = ActiveChangedFeed { next_seq: 1, ring: Vec::new(), capacity: 64 };
+            feed.ring.push(ActiveChangedEntry { seq: 0, active, leaves });
+            commands.entity(root).insert(feed);
+        }
+    }
+}
+
+// Append to the ActiveChangedFeed when Active is removed from a state
+#[cfg(feature = "editor")]
+fn on_active_removed(
+    rem: On<Remove, crate::active::Active>,
+    q_substate_of: Query<&crate::SubstateOf>,
+    q_sm: Query<&crate::StateMachine>,
+    mut q_feed: Query<&mut ActiveChangedFeed>,
+    mut commands: Commands,
+){
+    let state = rem.event().entity;
+    let root = q_substate_of.root_ancestor(state);
+    if let Ok(sm) = q_sm.get(root) {
+        let mut active: Vec<Entity> = sm.active.iter().copied().collect();
+        let mut leaves: Vec<Entity> = sm.active_leaves.iter().copied().collect();
+        active.sort_by_key(|e| e.index());
+        leaves.sort_by_key(|e| e.index());
+        if let Ok(mut feed) = q_feed.get_mut(root) {
+            let seq = feed.next_seq;
+            feed.next_seq = feed.next_seq.saturating_add(1);
+            feed.ring.push(ActiveChangedEntry { seq, active, leaves });
+            let cap = feed.capacity.max(1) as usize;
+            if feed.ring.len() > cap { let _ = feed.ring.remove(0); }
+        } else {
+            let mut feed = ActiveChangedFeed { next_seq: 1, ring: Vec::new(), capacity: 64 };
+            feed.ring.push(ActiveChangedEntry { seq: 0, active, leaves });
+            commands.entity(root).insert(feed);
+        }
+    }
+}
 // =========================
 // Graph save RPCs (server-side)
 // =========================
@@ -413,12 +519,70 @@ fn discovery_watch_handler(
 }
 
 #[cfg(feature = "editor")]
+fn machine_watch_handler(
+    In(params): In<Option<Value>>,
+    q_active_feed: Query<&ActiveChangedFeed>,
+    q_feed: Query<&TransitionFeed>,
+    q_source: Query<&crate::transitions::Source>,
+    q_target: Query<&crate::transitions::Target>,
+    mut state: ResMut<MachineWatchState>,
+) -> bevy::remote::BrpResult<Option<Value>> {
+    // Expect a target machine entity
+    let p: MachineWatchParams = parse_params(params)?;
+    let mut events: Vec<Value> = Vec::new();
+
+    // Active changes from ring: emit entries with seq greater than last seen
+    if let Ok(feed) = q_active_feed.get(p.entity) {
+        let last = *state.last_active_seq.get(&p.entity).unwrap_or(&0);
+        let mut max_seq = last;
+        for item in feed.ring.iter() {
+            if item.seq <= last { continue; }
+            let active: Vec<u64> = item.active.iter().map(|e| e.index() as u64).collect();
+            let leaves: Vec<u64> = item.leaves.iter().map(|e| e.index() as u64).collect();
+            events.push(serde_json::json!({
+                "kind": "active_changed",
+                "machine": p.entity.index() as u64,
+                "active": active,
+                "leaves": leaves,
+            }));
+            if item.seq > max_seq { max_seq = item.seq; }
+        }
+        if max_seq > last { state.last_active_seq.insert(p.entity, max_seq); }
+    }
+
+    // Transition feed deltas: emit entries with seq greater than last seen
+    if let Ok(feed) = q_feed.get(p.entity) {
+        let last = *state.last_transition_seq.get(&p.entity).unwrap_or(&0);
+        let mut max_seq = last;
+        for item in feed.ring.iter() {
+            if item.seq <= last { continue; }
+            let edge = item.edge;
+            let source_u64 = q_source.get(edge).ok().map(|s| s.0.index() as u64);
+            let target_u64 = q_target.get(edge).ok().map(|t| t.0.index() as u64);
+            events.push(serde_json::json!({
+                "kind": "transition_edge",
+                "machine": p.entity.index() as u64,
+                "edge": edge.index() as u64,
+                "source": source_u64,
+                "target": target_u64,
+            }));
+            if item.seq > max_seq { max_seq = item.seq; }
+        }
+        if max_seq > last { state.last_transition_seq.insert(p.entity, max_seq); }
+    }
+
+    if events.is_empty() { Ok(None) } else { Ok(Some(serde_json::json!({ "events": events })))}
+}
+
+#[cfg(feature = "editor")]
 fn register_editor_watch_rpcs(app: &mut App) {
     if !app.world().contains_resource::<RemoteMethods>() { return; }
     let world = app.main_mut().world_mut();
     let discovery_watch = world.register_system(discovery_watch_handler);
+    let machine_watch = world.register_system(machine_watch_handler);
     let mut methods = world.resource_mut::<RemoteMethods>();
     methods.insert("editor.discovery+watch", RemoteMethodSystemId::Watching(discovery_watch));
+    methods.insert("editor.machine+watch", RemoteMethodSystemId::Watching(machine_watch));
 }
 
 #[cfg(not(feature = "editor"))]

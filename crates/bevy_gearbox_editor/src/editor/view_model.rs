@@ -82,6 +82,14 @@ pub struct GraphDoc {
     pub is_initial_child: std::collections::HashSet<EntityId>,
     /// Cache of text label sizes in screen pixels keyed by (label, font_px_rounded)
     pub label_px_cache: std::sync::RwLock<HashMap<(String, u32), egui::Vec2>>,
+    /// Live activity: currently active state nodes
+    pub active_nodes: std::collections::HashSet<EntityId>,
+    /// Flash intensities for nodes (newly active): 0..1
+    pub node_flash: std::collections::HashMap<EntityId, f32>,
+    /// Flash intensities for edges that just fired: 0..1
+    pub edge_flash: std::collections::HashMap<EntityId, f32>,
+    /// Fade for nodes that were deactivated: 0..1 (yellow -> base)
+    pub node_fade: std::collections::HashMap<EntityId, f32>,
 }
 
 
@@ -116,6 +124,44 @@ impl GraphDoc {
     /// Returns the transform parent for an entity (node parent or pill parent).
     pub fn parent_of(&self, id: &EntityId) -> Option<EntityId> {
         self.transform_parent.get(id).and_then(|p| *p)
+    }
+
+    /// Replace the active node set, returning (newly_activated, deactivated)
+    pub fn set_active_nodes(&mut self, new_set: &std::collections::HashSet<EntityId>) -> (Vec<EntityId>, Vec<EntityId>) {
+        let mut newly_active: Vec<EntityId> = Vec::new();
+        let mut deactivated: Vec<EntityId> = Vec::new();
+        for id in new_set.iter() {
+            if !self.active_nodes.contains(id) { newly_active.push(*id); }
+        }
+        for id in self.active_nodes.iter() {
+            if !new_set.contains(id) { deactivated.push(*id); }
+        }
+        self.active_nodes = new_set.clone();
+        (newly_active, deactivated)
+    }
+
+    /// Mark an edge as having just fired
+    pub fn flash_edge(&mut self, id: EntityId) {
+        self.edge_flash.insert(id, 1.0);
+    }
+
+    /// Decay all flash intensities; return true if any are still animating
+    pub fn tick_highlights(&mut self, decay: f32) -> bool {
+        let eps = 0.01;
+        let mut any = false;
+        self.node_flash.retain(|_, v| {
+            *v *= decay;
+            if *v > eps { any = true; true } else { false }
+        });
+        self.edge_flash.retain(|_, v| {
+            *v *= decay;
+            if *v > eps { any = true; true } else { false }
+        });
+        self.node_fade.retain(|_, v| {
+            *v *= decay;
+            if *v > eps { any = true; true } else { false }
+        });
+        any
     }
 }
 

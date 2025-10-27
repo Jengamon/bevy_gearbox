@@ -323,6 +323,14 @@ pub(crate) async fn fetch_active_states(url: &str, machine: u64) -> Result<(Vec<
     Ok((active, leaves))
 }
 
+// Helpers to unwrap machine +watch delta events (untyped parsing for scaffolding)
+pub(crate) fn parse_machine_deltas(v: &Value) -> Vec<Value> {
+    if let Some(events) = v.get("result").and_then(|r| r.get("events")).and_then(|e| e.as_array()) {
+        return events.clone();
+    }
+    Vec::new()
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TransitionFeedItem {
     pub seq: u64,

@@ -19,6 +19,10 @@ pub fn draw_doc(
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, egui::Color32::from_gray(20));
 
+    // Tick highlight animations and request repaint while animating
+    let animating = doc.tick_highlights(0.92);
+    if animating { ui.ctx().request_repaint(); }
+
     // Compute dynamic draw order per frame using DFS with per-level subtree ordering
     let effective_selected = doc.dragging.or(*selection);
     // Build map: for each ancestor in the selected chain, which child branch is selected
@@ -631,15 +635,49 @@ pub fn draw_doc(
                 let max = doc.transform.to_screen(rect_world.max);
                 let rect_screen = egui::Rect::from_min_max(min, max);
                 let rounding = egui::CornerRadius::same(6);
-                // Fill
-                painter.rect_filled(rect_screen, rounding, egui::Color32::from_rgb(30, 30, 35));
+                // Fill (container body stays gray; header changes color)
+                let base_fill = egui::Color32::from_rgb(30, 30, 35);
+                let base_yellow = egui::Color32::from_rgb(230, 200, 40);
+                let bright_yellow = egui::Color32::from_rgb(255, 240, 0);
+                let lerp_color = |a: egui::Color32, b: egui::Color32, t: f32| -> egui::Color32 {
+                    let cl = |x: f32| -> u8 { x.clamp(0.0, 255.0) as u8 };
+                    let ta = t.clamp(0.0, 1.0);
+                    let inv = 1.0 - ta;
+                    let r = a.r() as f32 * inv + b.r() as f32 * ta;
+                    let g = a.g() as f32 * inv + b.g() as f32 * ta;
+                    let bch = a.b() as f32 * inv + b.b() as f32 * ta;
+                    egui::Color32::from_rgb(cl(r), cl(g), cl(bch))
+                };
+                painter.rect_filled(rect_screen, rounding, base_fill);
                 let header_min = rect_world.min;
                 let header_max = egui::pos2(rect_world.max.x, rect_world.min.y + header_h_world);
                 let header_rect = egui::Rect::from_min_max(doc.transform.to_screen(header_min), doc.transform.to_screen(header_max));
-                painter.rect_filled(header_rect, egui::CornerRadius::same(6), egui::Color32::from_rgb(38, 38, 46));
+                // Header color: active -> yellow family; deactivated fades from yellow -> gray
+                let is_active = doc.active_nodes.contains(id);
+                let flash_t = doc.node_flash.get(id).copied().unwrap_or(0.0);
+                let fade_t = doc.node_fade.get(id).copied().unwrap_or(0.0);
+                let mut header_color = egui::Color32::from_rgb(38, 38, 46);
+                if is_active {
+                    let alpha = 1.0 - flash_t;
+                    header_color = lerp_color(bright_yellow, base_yellow, alpha);
+                } else if fade_t > 0.0 {
+                    // fade down from base yellow to header gray
+                    let alpha = 1.0 - fade_t;
+                    header_color = lerp_color(base_yellow, egui::Color32::from_rgb(38, 38, 46), alpha);
+                }
+                painter.rect_filled(header_rect, egui::CornerRadius::same(6), header_color);
                 painter.hline(header_rect.x_range(), header_rect.max.y, egui::Stroke::new(1.0, egui::Color32::from_gray(90)));
                 let label_pos = header_rect.min + egui::vec2(pad, pad * 0.5);
-                painter.text(label_pos, egui::Align2::LEFT_TOP, &view.label, font_id.clone(), egui::Color32::WHITE);
+                // Text color: black when header is yellow, else white; lerp on fade
+                let mut text_col = egui::Color32::WHITE;
+                if is_active {
+                    text_col = egui::Color32::BLACK;
+                } else if fade_t > 0.0 {
+                    // approximate: crossfade black->white opposite to header fade
+                    let alpha = 1.0 - fade_t;
+                    text_col = lerp_color(egui::Color32::BLACK, egui::Color32::WHITE, alpha);
+                }
+                painter.text(label_pos, egui::Align2::LEFT_TOP, &view.label, font_id.clone(), text_col);
                 // Selection halo (drawn before border so border stays crisp)
                 let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
                 if is_selected { draw_selection_halo(rect_screen, egui::CornerRadius::same(8)); }
@@ -698,6 +736,24 @@ pub fn draw_doc(
                         cur = doc.transform_parent.get(&cid).and_then(|p| *p);
                     }
                 }
+                // Edge highlight color (bright yellow -> base gray)
+                let bright_yellow = egui::Color32::from_rgb(255, 240, 0);
+                let base_gray_line = egui::Color32::from_gray(120);
+                let base_gray_edge = egui::Color32::from_gray(160);
+                let lerp_color = |a: egui::Color32, b: egui::Color32, t: f32| -> egui::Color32 {
+                    let cl = |x: f32| -> u8 { x.clamp(0.0, 255.0) as u8 };
+                    let ta = t.clamp(0.0, 1.0);
+                    let inv = 1.0 - ta;
+                    let r = a.r() as f32 * inv + b.r() as f32 * ta;
+                    let g = a.g() as f32 * inv + b.g() as f32 * ta;
+                    let bch = a.b() as f32 * inv + b.b() as f32 * ta;
+                    egui::Color32::from_rgb(cl(r), cl(g), cl(bch))
+                };
+                let t_edge = doc.edge_flash.get(id).copied().unwrap_or(0.0);
+                let alpha = 1.0 - t_edge;
+                let edge_line_col = lerp_color(bright_yellow, base_gray_line, alpha);
+                let edge_col = lerp_color(bright_yellow, base_gray_edge, alpha);
+
                 if is_ancestor_edge {
                     // Determine outward normal based on which side a_start lies on
                     let eps = 0.5;
@@ -721,16 +777,16 @@ pub fn draw_doc(
                         let x = omt * omt * a_start.x + 2.0 * omt * t * p_out.x + t * t * a_end.x;
                         let y = omt * omt * a_start.y + 2.0 * omt * t * p_out.y + t * t * a_end.y;
                         let p = egui::pos2(x, y);
-                        painter.line_segment([prev, p], egui::Stroke::new(2.0, egui::Color32::from_gray(120)));
+                        painter.line_segment([prev, p], egui::Stroke::new(2.0, edge_line_col));
                         prev = p;
                     }
                 } else {
-                painter.line_segment([a_start, a_end], egui::Stroke::new(2.0, egui::Color32::from_gray(120)));
+                painter.line_segment([a_start, a_end], egui::Stroke::new(2.0, edge_line_col));
                 }
 
                 let b_end = rect_from_inside_toward(dst_rect_s, pill_center_s);
                 let b_start = rect_from_outside_toward_center(pill_rect_s, b_end);
-                painter.line_segment([b_start, b_end], egui::Stroke::new(2.0, egui::Color32::from_gray(120)));
+                painter.line_segment([b_start, b_end], egui::Stroke::new(2.0, edge_line_col));
 
                 let dir = (b_end - b_start).normalized();
                 let arrow_len = 10.0 * zoom;
@@ -742,7 +798,7 @@ pub fn draw_doc(
                 let right = base - perp.to_vec2() * (arrow_w * 0.5);
                 painter.add(egui::Shape::convex_polygon(
                     vec![tip, left, right],
-                    egui::Color32::from_gray(160),
+                    edge_col,
                     egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
                 ));
 
@@ -751,7 +807,7 @@ pub fn draw_doc(
                     pill_rect_s,
                     rounding,
                     egui::Color32::from_rgb(30, 30, 35),
-                    egui::Stroke::new(1.0, egui::Color32::from_gray(160)),
+                    egui::Stroke::new(1.0, edge_col),
                     egui::StrokeKind::Outside,
                 );
                 painter.text(pill_rect_s.center(), egui::Align2::CENTER_CENTER, &view.label, font_id.clone(), egui::Color32::WHITE);
@@ -762,8 +818,30 @@ pub fn draw_doc(
             let max = doc.transform.to_screen(rect_world.max);
             let rect_screen = egui::Rect::from_min_max(min, max);
             let rounding = egui::CornerRadius::same(6);
-                // Fill
-                painter.rect_filled(rect_screen, rounding, egui::Color32::from_rgb(30, 30, 35));
+                // Fill (leaf body changes fully; header rule doesn't apply here)
+                let base_fill = egui::Color32::from_rgb(30, 30, 35);
+                let base_yellow = egui::Color32::from_rgb(230, 200, 40);
+                let bright_yellow = egui::Color32::from_rgb(255, 240, 0);
+                let lerp_color = |a: egui::Color32, b: egui::Color32, t: f32| -> egui::Color32 {
+                    let cl = |x: f32| -> u8 { x.clamp(0.0, 255.0) as u8 };
+                    let ta = t.clamp(0.0, 1.0);
+                    let inv = 1.0 - ta;
+                    let r = a.r() as f32 * inv + b.r() as f32 * ta;
+                    let g = a.g() as f32 * inv + b.g() as f32 * ta;
+                    let bch = a.b() as f32 * inv + b.b() as f32 * ta;
+                    egui::Color32::from_rgb(cl(r), cl(g), cl(bch))
+                };
+                let is_active = doc.active_nodes.contains(id);
+                let flash_t = doc.node_flash.get(id).copied().unwrap_or(0.0);
+                let fade_t = doc.node_fade.get(id).copied().unwrap_or(0.0);
+                let fill_color = if is_active {
+                    let alpha = 1.0 - flash_t;
+                    lerp_color(bright_yellow, base_yellow, alpha)
+                } else if fade_t > 0.0 {
+                    let alpha = 1.0 - fade_t;
+                    lerp_color(base_yellow, base_fill, alpha)
+                } else { base_fill };
+                painter.rect_filled(rect_screen, rounding, fill_color);
                 // Selection halo (drawn before border so border stays crisp)
                 let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
                 if is_selected { draw_selection_halo(rect_screen, egui::CornerRadius::same(8)); }
@@ -782,7 +860,14 @@ pub fn draw_doc(
                 egui::StrokeKind::Outside,
             );
                 }
-                painter.text(rect_screen.center_top() + egui::vec2(0.0, 12.0 * zoom), egui::Align2::CENTER_TOP, &view.label, font_id.clone(), egui::Color32::WHITE);
+                // Text color: black when yellow-ish, else white; also lerp on fade
+                let mut text_col = egui::Color32::WHITE;
+                if is_active { text_col = egui::Color32::BLACK; }
+                else if fade_t > 0.0 {
+                    let alpha = 1.0 - fade_t;
+                    text_col = lerp_color(egui::Color32::BLACK, egui::Color32::WHITE, alpha);
+                }
+                painter.text(rect_screen.center_top() + egui::vec2(0.0, 12.0 * zoom), egui::Align2::CENTER_TOP, &view.label, font_id.clone(), text_col);
                 // Initial indicator for nodes that are the parent's initial child
                 if doc.is_initial_child.contains(id) {
                     draw_initial_indicator(rect_screen);

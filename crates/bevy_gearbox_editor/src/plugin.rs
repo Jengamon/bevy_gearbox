@@ -15,6 +15,8 @@ use crate::persistence::{apply_sidecar_to_doc, compute_graph_fingerprint, load_s
 use crate::editor::model::types::ConnectionState as EditorConnectionState;
 use crate::editor::model::types::{IndexItem};
 use crate::component as c;
+use crate::model::EntityId;
+use serde_json::Value as JsonValue;
 
 pub(crate) struct EditorPlugin;
 
@@ -28,6 +30,8 @@ impl Plugin for EditorPlugin {
                 machines: vec![],
                 graphs: HashMap::new(),
                 sidecar_texts: HashMap::new(),
+                pending_active: HashMap::new(),
+                pending_machine_events: HashMap::new(),
             })
             .init_resource::<Workspace>()
             .insert_resource(EditorStore::default())
@@ -38,7 +42,8 @@ impl Plugin for EditorPlugin {
             .add_observer(on_disconnect_requested)
             .add_observer(on_reconnect_requested)
             .add_observer(on_refresh_index_requested)
-            .add_observer(on_open_requested);
+            .add_observer(on_open_requested)
+            .add_observer(crate::editor::actions::on_save_as_requested);
 
         use bevy_egui::EguiPrimaryContextPass;
         app.add_systems(EguiPrimaryContextPass, ui_system);
@@ -54,6 +59,10 @@ struct UiState {
     graphs: HashMap<ServerEntity, StateMachineGraph>,
     /// Latest sidecar text fetched over RPC per machine (if any)
     sidecar_texts: HashMap<ServerEntity, String>,
+    /// One-shot active state snapshots awaiting application to docs
+    pending_active: HashMap<ServerEntity, (Vec<u64>, Vec<u64>)>,
+    /// Accumulated machine +watch events awaiting application to docs
+    pending_machine_events: HashMap<ServerEntity, Vec<JsonValue>>,
 }
 
 fn setup_camera(mut commands: Commands) {
@@ -134,6 +143,9 @@ fn poll_network(
                 if let Ok(graph) = result {
                     // Stash/refresh snapshot
                     ui.graphs.insert(*id, graph.clone());
+                    // Seed active states and start machine +watch
+                    cmd_writer.write(NetCommand::FetchActive { id: *id });
+                    cmd_writer.write(NetCommand::StartMachineWatch { id: *id });
                     // If the root has a StateMachineId, request its sidecar via RPC (derive path: <id>.sm.ron)
                     if let Some(id_text) = graph.nodes.get(&graph.root)
                         .and_then(|n| n.components.get(c::STATE_MACHINE_ID))
@@ -142,6 +154,21 @@ fn poll_network(
                         let path = format!("{}.sm.ron", id_text);
                         cmd_writer.write(NetCommand::FetchSidecarByPath { path, doc: *id });
                     }
+                }
+                processed += 1;
+            }
+            NetEvent::ActiveResult { id, result } => {
+                if let Ok((active, leaves)) = result {
+                    ui.pending_active.insert(*id, (active.clone(), leaves.clone()));
+                }
+                processed += 1;
+            }
+            NetEvent::MachineDeltas { id, result } => {
+                if let Ok(events) = result {
+                    // Stash for application in workspace sync
+                    ui.pending_machine_events.entry(*id).or_default().extend(events.iter().cloned());
+                    // For now, immediately re-arm the watch to keep streaming
+                    cmd_writer.write(NetCommand::StartMachineWatch { id: *id });
                 }
                 processed += 1;
             }
@@ -182,6 +209,50 @@ fn sync_snapshots_to_workspace(
     mut ui: ResMut<UiState>,
 ) {
     let mut consume_sidecar_for: Vec<ServerEntity> = Vec::new();
+    // Apply pending active snapshots and machine deltas per-doc before projecting any new graph snapshots
+    // 1) Active snapshots
+    let pending_active = std::mem::take(&mut ui.pending_active);
+    for (id, (active, _leaves)) in pending_active.into_iter() {
+        let doc = workspace.docs.entry(id).or_default();
+        // Map u64s to EntityId::Server
+        let set: std::collections::HashSet<EntityId> = active
+            .into_iter()
+            .map(|u| crate::util::canonicalize_entity_u64(u))
+            .map(|u| EntityId::Server(ServerEntity(u)))
+            .collect();
+        let known = set.iter().filter(|e| doc.views.contains_key(e)).count();
+        let (_new, _deactivated) = doc.set_active_nodes(&set);
+    }
+    // 2) Machine event batches (canonicalize ids before applying)
+    let pending_events = std::mem::take(&mut ui.pending_machine_events);
+    for (id, events) in pending_events.into_iter() {
+        let doc = workspace.docs.entry(id).or_default();
+        for ev in events.into_iter() {
+            let kind = ev.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            match kind {
+                "active_changed" => {
+                    let active: Vec<u64> = ev
+                        .get("active")
+                        .and_then(|a| a.as_array())
+                        .map(|arr| arr.iter().filter_map(|v| v.as_u64()).map(|u| crate::util::canonicalize_entity_u64(u)).collect())
+                        .unwrap_or_default();
+                    let set: std::collections::HashSet<EntityId> = active.into_iter().map(|u| EntityId::Server(ServerEntity(u))).collect();
+                    let known = set.iter().filter(|e| doc.views.contains_key(e)).count();
+                    let (new_nodes, deactivated) = doc.set_active_nodes(&set);
+                    for nid in new_nodes { doc.node_flash.insert(nid, 1.0); }
+                    for nid in deactivated { doc.node_fade.insert(nid, 1.0); }
+                }
+                "transition_edge" => {
+                    if let Some(edge) = ev.get("edge").and_then(|v| v.as_u64()) {
+                        let edge = crate::util::canonicalize_entity_u64(edge);
+                        let eid = EntityId::Server(ServerEntity(edge));
+                        doc.flash_edge(eid);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     for (id, graph) in ui.graphs.iter() {
         let entry = workspace.docs.entry(*id).or_default();
         let was_empty = entry.graph.is_none();
