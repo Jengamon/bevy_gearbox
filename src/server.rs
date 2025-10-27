@@ -13,6 +13,157 @@ use std::path::PathBuf;
 #[cfg(feature = "editor")]
 use std::collections::HashMap;
 
+/*
+================================================================================
+Editor <-> App stack overview (farm-to-table flows)
+================================================================================
+
+This file implements the app-side of the JSON-RPC (+watch SSE) surface that the
+editor consumes. Below is a practical walkthrough of how data and commands flow
+end-to-end for the main editor features. The client/editor pieces referenced
+live in crates/bevy_gearbox_editor (not in this crate), but are summarized here
+so you can reason about the whole stack from user input to UI update.
+
+-------------------------------------------------------------------------------
+1) State machine polling (listing machines for the Explorer)
+-------------------------------------------------------------------------------
+User → UI
+- User clicks connect. The editor triggers
+  a RefreshIndexRequested event.
+
+Editor (client) → Network
+- The observer writes NetCommand::Refresh.
+- net.rs handles it by calling rpcs::list_state_machines() which issues a
+  JSON-RPC call (world.query with a filter for StateMachine) against this app.
+- The query returns entity ids and optional Name components.
+- net.rs emits NetEvent::RefreshResult(Vec<MachineSummary>).
+
+Editor (UI update)
+- plugin.rs poll_network receives RefreshResult and updates the editor’s index
+  (UiState.machines and EditorStore.index). The Explorer panel renders the list.
+
+App (server)
+- This file does not implement the polling RPC directly; it relies on Bevy
+  Remote (BRP) world.query. We do ensure the StateMachine type is registered so
+  it can be filtered/queried.
+
+-------------------------------------------------------------------------------
+2) State machine loading (opening a machine onto the canvas)
+-------------------------------------------------------------------------------
+User → UI
+- User clicks a machine in the Explorer. The editor triggers OpenRequested.
+
+Editor (client) → Network
+- The observer sets the newly selected doc as active, ensures an empty document
+  is present in Workspace, and writes NetCommand::FetchGraph for that entity.
+- net.rs calls rpcs::fetch_machine_graph_model(), which:
+  - Performs structured world.get_components calls via JSON-RPC to read the
+    root and all descendant states, plus transitions, and constructs a
+    StateMachineGraph (nodes, edges, adjacency, components).
+- net.rs emits NetEvent::GraphResult { id, graph }.
+
+Editor (projection + sidecar)
+- plugin.rs poll_network stashes the snapshot briefly. In
+  sync_snapshots_to_workspace the snapshot is projected once into the active
+  Workspace document via project_graph_into_doc (computes initial layout,
+  pill positions, transform parents/children, etc.).
+- If a sidecar (.sm.ron) is available (either fetched over RPC using the
+  root’s StateMachineId pointer or discovered on disk), it is parsed and
+  applied (positions, view data) to the document.
+
+UI render
+- The canvas draws from Workspace.docs[active].graph + views; once projected,
+  the graph appears immediately. Subsequent draws only animate highlights.
+
+App (server)
+- This file doesn’t have a dedicated “load graph” RPC; the client constructs a
+  graph by reading components with world.get_components. We do register all the
+  relevant types/components so they can be read.
+
+-------------------------------------------------------------------------------
+3) Active/transition live updates (stateless +watch streams)
+-------------------------------------------------------------------------------
+High-level
+- Live updates are delivered over BRP “+watch” SSE endpoints defined here:
+  - editor.discovery+watch → creation/rename/remove events for machines
+  - editor.machine+watch → per-machine deltas for active changes and fired
+    transition edges
+- The watches are stateless: the editor passes last_active_seq /
+  last_transition_seq cursors so the server can emit only newer entries.
+
+User → UI
+- After a machine loads, the editor subscribes the app-side feeds and starts a
+  watch for the active document.
+
+Editor (client) → Network
+- The editor writes NetCommand::Subscribe { id } to gate feeds server-side
+  (see register_editor_subscription_rpcs below). Then it requests
+  NetCommand::StartMachineWatch { id, cursors }.
+- A single Tokio “Watch Manager” task runs in the editor. It receives start/
+  stop requests, owns the long-lived SSE connections, and pushes parsed events
+  back to Bevy via a channel. This avoids starving Bevy’s IoTaskPool.
+- Incoming batches from the manager are forwarded as NetEvent::MachineDeltas.
+
+Editor (UI update)
+- poll_network coalesces cursors and stashes batches. In
+  sync_snapshots_to_workspace the editor applies:
+  - ActiveChanged: replaces the document’s active set (flashes/fades nodes)
+  - TransitionEdge: flashes the edge pill
+  The canvas then reflects these changes on the next frame.
+- Discovery watch (editor.discovery+watch) similarly feeds index updates.
+
+App (server)
+- Subscriptions: editor.machine_subscribe/editor.machine_unsubscribe bump a
+  per-machine subscriber count. When the first subscriber arrives, we insert
+  TransitionFeed and ActiveChangedFeed components and seed an initial active
+  snapshot. When the last subscriber leaves, we remove these feeds.
+- Watch endpoints: discovery_watch_handler and machine_watch_handler serialize
+  recent events into JSON (using entity.to_bits() to identify entities) and
+  BRP turns these into SSE lines. Because the editor provides cursors, the
+  server can emit only new entries, keeping streams small.
+
+-------------------------------------------------------------------------------
+4) Command RPCs (e.g., rename)
+-------------------------------------------------------------------------------
+User → UI
+- User invokes a command in the editor (e.g., “Rename”). The UI triggers an
+  observer/event which then writes a NetCommand to the network layer.
+
+Editor (client) → Network
+- net.rs issues a JSON-RPC call for the command. For rename this would likely
+  be either a generic world.set_component (setting Name on the root entity) or
+  a custom editor.* RPC if there is server-side validation.
+- On success, the server mutates the world state. If the mutation changes any
+  feed-relevant data, the next discovery +watch batch will include a
+  machine_renamed event (or similar), and the per-machine +watch will continue
+  with updated state as needed.
+- net.rs emits NetEvent::Select/Save/… result for immediate feedback; the
+  watches deliver the eventual state convergence.
+
+Editor (UI update)
+- poll_network handles the immediate result (errors surfaced to UI). The
+  discovery +watch delivers the rename event which updates the index and the
+  document header (since the root Name is part of the projected graph).
+
+App (server)
+- This file demonstrates how file save commands are implemented as editor.*
+  RPCs (save_graph, save_sidecar, set_state_machine_id). A future rename RPC
+  would follow the same pattern: parse params, mutate world, return a JSON
+  result and let +watch streams disseminate the change.
+
+-------------------------------------------------------------------------------
+Notes and future server-side multiplex
+-------------------------------------------------------------------------------
+- Today each watched machine uses one HTTP SSE stream. This is fine for
+  dozens of machines and typical editor usage (often only the active doc is
+  watched). If you need to watch many (50–100+) concurrently, consider a
+  server-side multiplexed watch that aggregates multiple machines into a single
+  SSE stream. The client’s Watch Manager can continue to fan-out events to the
+  appropriate documents, but you reduce total connections.
+
+================================================================================
+*/
+
 #[cfg(feature = "editor")]
 use crate::{StateMachine};
 
