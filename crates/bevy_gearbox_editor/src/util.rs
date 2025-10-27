@@ -8,7 +8,7 @@ pub(crate) fn parse_entity_str_to_bits(s: &str) -> Option<u64> {
         let gen_txt: String = rhs[1..].chars().filter(|c| c.is_ascii_digit()).collect();
         if !idx_txt.is_empty() && !gen_txt.is_empty() {
             if let (Ok(index), Ok(gen)) = (idx_txt.parse::<u32>(), gen_txt.parse::<u32>()) {
-                let low = !index as u32 as u64;
+                let low = index as u64;
                 let high = (gen as u64) << 32;
                 return Some(high | low);
             }

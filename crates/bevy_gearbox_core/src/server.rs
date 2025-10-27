@@ -546,11 +546,11 @@ fn machine_watch_handler(
         let mut max_seq = last;
         for item in feed.ring.iter() {
             if item.seq <= last { continue; }
-            let active: Vec<u64> = item.active.iter().map(|e| e.index() as u64).collect();
-            let leaves: Vec<u64> = item.leaves.iter().map(|e| e.index() as u64).collect();
+            let active: Vec<u64> = item.active.iter().map(|e| entity_to_bits(*e)).collect();
+            let leaves: Vec<u64> = item.leaves.iter().map(|e| entity_to_bits(*e)).collect();
             events.push(serde_json::json!({
                 "kind": "active_changed",
-                "machine": p.entity.index() as u64,
+                "machine": entity_to_bits(p.entity),
                 "active": active,
                 "leaves": leaves,
             }));
