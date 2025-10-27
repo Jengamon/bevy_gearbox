@@ -224,6 +224,11 @@ fn sync_snapshots_to_workspace(
                         }
                     }
                 }
+                // As a final fallback when no sidecar is found anywhere, ensure a derived default layout
+                // is applied so the editor shows states/edges at reasonable default positions.
+                if entry.graph.is_some() && entry.views.is_empty() {
+                    project_graph_into_doc(entry, graph.clone());
+                }
             }
         }
     }
