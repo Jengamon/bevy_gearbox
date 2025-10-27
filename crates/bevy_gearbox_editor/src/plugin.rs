@@ -140,19 +140,23 @@ fn poll_network(
                 processed += 1;
             }
             NetEvent::GraphResult { id, result } => {
-                if let Ok(graph) = result {
-                    // Stash/refresh snapshot
-                    ui.graphs.insert(*id, graph.clone());
-                    // Seed active states and start machine +watch
-                    cmd_writer.write(NetCommand::FetchActive { id: *id });
-                    cmd_writer.write(NetCommand::StartMachineWatch { id: *id });
-                    // If the root has a StateMachineId, request its sidecar via RPC (derive path: <id>.sm.ron)
-                    if let Some(id_text) = graph.nodes.get(&graph.root)
-                        .and_then(|n| n.components.get(c::STATE_MACHINE_ID))
-                        .and_then(|e| e.value_json.as_str())
-                    {
-                        let path = format!("{}.sm.ron", id_text);
-                        cmd_writer.write(NetCommand::FetchSidecarByPath { path, doc: *id });
+                match result {
+                    Ok(graph) => {
+                        // Stash/refresh snapshot
+                        ui.graphs.insert(*id, graph.clone());
+                        // Seed active states and start machine +watch
+                        cmd_writer.write(NetCommand::FetchActive { id: *id });
+                        cmd_writer.write(NetCommand::StartMachineWatch { id: *id });
+                        // If the root has a StateMachineId, request its sidecar via RPC (derive path: <id>.sm.ron)
+                        if let Some(id_text) = graph.nodes.get(&graph.root)
+                            .and_then(|n| n.components.get(c::STATE_MACHINE_ID))
+                            .and_then(|e| e.value_json.as_str())
+                        {
+                            let path = format!("{}.sm.ron", id_text);
+                            cmd_writer.write(NetCommand::FetchSidecarByPath { path, doc: *id });
+                        }
+                    }
+                    Err(e) => {
                     }
                 }
                 processed += 1;

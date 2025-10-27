@@ -174,17 +174,16 @@ pub(crate) fn handle_commands(
                                                     let kind = ev.get("kind").and_then(|s| s.as_str()).unwrap_or("");
                                                     match kind {
                                                         "machine_created" | "machine_renamed" | "machine_id_set" => {
-                                                            if let Some(id) = ev.get("machine").and_then(|v| v.as_u64()) {
-                                                                // Canonicalize id to to_bits format for consistency with initial list
-                                                                let id = crate::util::canonicalize_entity_u64(id);
+                                                            if let Some(raw) = ev.get("machine").and_then(|v| v.as_u64()) {
+                                                                let canon = crate::util::canonicalize_entity_u64(raw);
                                                                 let name = ev.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                                                summaries.push(MachineSummary { id: ServerEntity(id), name });
+                                                                summaries.push(MachineSummary { id: ServerEntity(canon), name });
                                                             }
                                                         }
                                                         "machine_removed" => {
-                                                            if let Some(id) = ev.get("machine").and_then(|v| v.as_u64()) {
-                                                                let id = crate::util::canonicalize_entity_u64(id);
-                                                                summaries.push(MachineSummary { id: ServerEntity(id), name: None });
+                                                            if let Some(raw) = ev.get("machine").and_then(|v| v.as_u64()) {
+                                                                let canon = crate::util::canonicalize_entity_u64(raw);
+                                                                summaries.push(MachineSummary { id: ServerEntity(canon), name: None });
                                                             }
                                                         }
                                                         _ => {}

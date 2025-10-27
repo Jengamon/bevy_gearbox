@@ -388,7 +388,7 @@ pub fn draw_doc(
     }
 
     // Draw graph if any
-    if doc.graph.is_none() { println!("draw_doc: doc.graph is None"); return context_menu_selection; }
+    if doc.graph.is_none() { return context_menu_selection; }
 
     // Read-only container pass BEFORE drawing: clamp children to parent content left/top, then expand parent right/bottom
     if let Some(graph) = &doc.graph {

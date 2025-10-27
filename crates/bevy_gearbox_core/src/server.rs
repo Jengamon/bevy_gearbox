@@ -483,6 +483,11 @@ struct MachineWatchParams { entity: Entity }
 // Watch (+watch) handlers
 // =========================
 #[cfg(feature = "editor")]
+fn entity_to_bits(e: Entity) -> u64 {
+    e.to_bits()
+}
+
+#[cfg(feature = "editor")]
 fn discovery_watch_handler(
     _in: In<Option<Value>>,
     q_added_sm: Query<(Entity, Option<&Name>, Option<&crate::StateMachineId>), Added<StateMachine>>,
@@ -494,7 +499,7 @@ fn discovery_watch_handler(
     for (e, name, id) in q_added_sm.iter() {
         events.push(serde_json::json!({
             "kind": "machine_created",
-            "machine": e.index() as u64,
+            "machine": entity_to_bits(e),
             "name": name.map(|n| n.to_string()),
             "id_path": id.map(|p| p.0.clone()),
         }));
@@ -502,20 +507,20 @@ fn discovery_watch_handler(
     for e in removed_sm.read() {
         events.push(serde_json::json!({
             "kind": "machine_removed",
-            "machine": e.index() as u64,
+            "machine": entity_to_bits(e),
         }));
     }
     for (e, name) in q_name_changed.iter() {
         events.push(serde_json::json!({
             "kind": "machine_renamed",
-            "machine": e.index() as u64,
+            "machine": entity_to_bits(e),
             "name": name.to_string(),
         }));
     }
     for (e, id) in q_id_changed.iter() {
         events.push(serde_json::json!({
             "kind": "machine_id_set",
-            "machine": e.index() as u64,
+            "machine": entity_to_bits(e),
             "id_path": id.0.clone(),
         }));
     }
@@ -561,12 +566,12 @@ fn machine_watch_handler(
         for item in feed.ring.iter() {
             if item.seq <= last { continue; }
             let edge = item.edge;
-            let source_u64 = q_source.get(edge).ok().map(|s| s.0.index() as u64);
-            let target_u64 = q_target.get(edge).ok().map(|t| t.0.index() as u64);
+            let source_u64 = q_source.get(edge).ok().map(|s| entity_to_bits(s.0));
+            let target_u64 = q_target.get(edge).ok().map(|t| entity_to_bits(t.0));
             events.push(serde_json::json!({
                 "kind": "transition_edge",
-                "machine": p.entity.index() as u64,
-                "edge": edge.index() as u64,
+                "machine": entity_to_bits(p.entity),
+                "edge": entity_to_bits(edge),
                 "source": source_u64,
                 "target": target_u64,
             }));
