@@ -34,4 +34,14 @@ impl From<String> for NetError {
     fn from(value: String) -> Self { NetError::Other(value) }
 }
 
+impl fmt::Display for ServerEntity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Bevy-style display: "<index>v<generation>" extracted from raw bits
+        let raw = self.0;
+        let index = (raw & 0xFFFF_FFFF) as u32;
+        let generation = ((raw >> 32) & 0xFFFF_FFFF) as u32;
+        write!(f, "{}v{}", index, generation)
+    }
+}
+
 

@@ -15,11 +15,12 @@ pub(crate) struct NetPlugin;
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<NetCommand>()
-            .add_message::<NetEvent>()
+            .add_message::<StampedEvent>()
             .insert_resource(PendingTasks::default())
             .insert_resource(TokioRuntime(Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime"))))
             .insert_resource(NetworkConfig { url: std::env::var("BRP_URL").unwrap_or_else(|_| "http://127.0.0.1:15703".to_string()) })
             .insert_resource(ConnectionStatus(ConnectionState::Disconnected))
+            .insert_resource(ActiveSession(0))
             .configure_sets(Update, (NetSet::Send, NetSet::Drain).chain())
             .add_systems(Update, handle_commands.in_set(NetSet::Send))
             .add_systems(Update, collect_task_results.in_set(NetSet::Drain));
@@ -72,10 +73,19 @@ pub(crate) enum NetEvent {
     GraphResult { id: ServerEntity, result: Result<StateMachineGraph, NetError> },
 }
 
+#[derive(Message, Clone)]
+pub(crate) struct StampedEvent {
+    pub session: u64,
+    pub event: Arc<NetEvent>,
+}
+
 #[derive(Resource, Default)]
 pub(crate) struct PendingTasks {
-    tasks: Vec<Task<NetEvent>>,
+    tasks: Vec<Task<StampedEvent>>,
 }
+
+#[derive(Resource, Clone, Copy)]
+pub(crate) struct ActiveSession(pub u64);
 
 pub(crate) fn handle_commands(
     mut commands_reader: MessageReader<NetCommand>,
@@ -83,6 +93,7 @@ pub(crate) fn handle_commands(
     mut cfg: ResMut<NetworkConfig>,
     mut conn: ResMut<ConnectionStatus>,
     rt: Res<TokioRuntime>,
+    active: Res<ActiveSession>,
 ) {
     let pool = IoTaskPool::get();
     for cmd in commands_reader.read().cloned() {
@@ -94,27 +105,31 @@ pub(crate) fn handle_commands(
                 conn.0 = ConnectionState::Connecting;
                 let url = cfg.url.clone();
                 let rt_handle = rt.0.clone();
+                let session = active.0;
                 let task = pool.spawn(async move {
                     rt_handle.block_on(async move {
-                        match crate::client::jsonrpc_ping(&url).await {
+                        let evt = match crate::client::jsonrpc_ping(&url).await {
                             Ok(()) => NetEvent::Connected,
                             Err(e) => NetEvent::ConnectionError(NetError::from(e)),
-                        }
+                        };
+                        StampedEvent { session, event: Arc::new(evt) }
                     })
                 });
                 pending.tasks.push(task);
             }
             NetCommand::Disconnect => {
                 conn.0 = ConnectionState::Disconnected;
-                let task = pool.spawn(async move { NetEvent::Disconnected { reason: None } });
+                let session = active.0;
+                let task = pool.spawn(async move { StampedEvent { session, event: Arc::new(NetEvent::Disconnected { reason: None }) } });
                 pending.tasks.push(task);
             }
             other => {
                 let url = cfg.url.clone();
                 let rt_handle = rt.0.clone();
+                let session = active.0;
                 let task = pool.spawn(async move {
                     rt_handle.block_on(async move {
-                        match other {
+                        let evt = match other {
                             NetCommand::Refresh => {
                                 let r: Result<Vec<MachineSummary>, NetError> = (async move {
                                     let list = list_state_machines(&url).await.map_err(NetError::from)?;
@@ -166,7 +181,8 @@ pub(crate) fn handle_commands(
                             }
                             NetCommand::Connect | NetCommand::Disconnect => unreachable!(),
                             NetCommand::SetUrl { .. } => unreachable!(),
-                        }
+                        };
+                        StampedEvent { session, event: Arc::new(evt) }
                     })
                 });
                 pending.tasks.push(task);
@@ -177,18 +193,18 @@ pub(crate) fn handle_commands(
 
 pub(crate) fn collect_task_results(
     mut pending: ResMut<PendingTasks>,
-    mut events_writer: MessageWriter<NetEvent>,
+    mut events_writer: MessageWriter<StampedEvent>,
     mut conn: ResMut<ConnectionStatus>,
 ) {
     let mut i = 0;
     while i < pending.tasks.len() {
-        let is_ready = if let Some(evt) = future::block_on(bevy::tasks::futures_lite::future::poll_once(&mut pending.tasks[i])) {
-            match &evt {
+        let is_ready = if let Some(stamped) = future::block_on(bevy::tasks::futures_lite::future::poll_once(&mut pending.tasks[i])) {
+            match &*stamped.event {
                 NetEvent::Connected => conn.0 = ConnectionState::Connected,
                 NetEvent::Disconnected { .. } | NetEvent::ConnectionError(_) => conn.0 = ConnectionState::Disconnected,
                 _ => {}
             }
-            events_writer.write(evt);
+            events_writer.write(stamped);
             true
         } else {
             false

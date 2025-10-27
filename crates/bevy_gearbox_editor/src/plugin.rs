@@ -2,20 +2,18 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use std::collections::HashMap;
 
-use crate::net::{NetPlugin, NetCommand, NetEvent, NetworkConfig};
+use crate::net::{NetPlugin, NetCommand, NetEvent, StampedEvent, ActiveSession};
 use crate::types::ServerEntity;
 use crate::model::StateMachineGraph;
 use crate::editor::workspace::Workspace;
 use crate::editor::model::store::EditorStore;
-use crate::editor::shell;
 use crate::editor::actions::{
-    ConnectRequested, DisconnectRequested, ReconnectRequested, RefreshIndexRequested, OpenRequested,
     on_connect_requested, on_disconnect_requested, on_reconnect_requested, on_refresh_index_requested, on_open_requested,
 };
 use crate::editor::adapter::project_graph_into_doc;
-use crate::editor::view::draw_doc;
-use crate::editor::context_menu::MenuSelection;
-use crate::persistence::{extract_sidecar_from_doc, save_sidecar, apply_sidecar_to_doc, compute_graph_fingerprint, load_sidecar, parse_sidecar_text};
+use crate::persistence::{apply_sidecar_to_doc, compute_graph_fingerprint, load_sidecar, parse_sidecar_text};
+use crate::editor::model::types::ConnectionState as EditorConnectionState;
+use crate::editor::model::types::{IndexItem};
 use crate::component as c;
 
 pub(crate) struct EditorPlugin;
@@ -64,26 +62,38 @@ fn setup_camera(mut commands: Commands) {
 
 fn poll_network(
     mut ui: ResMut<UiState>,
-    mut events: MessageReader<NetEvent>,
+    mut events: MessageReader<StampedEvent>,
     mut cmd_writer: MessageWriter<NetCommand>,
+    mut active_session: ResMut<ActiveSession>,
+    mut store: ResMut<EditorStore>,
 ) {
     let mut processed = 0usize;
     const MAX_PER_FRAME: usize = 64;
-    for evt in events.read() {
+    // Keep network session aligned with editor session (placeholder; set on connect)
+    if let EditorConnectionState::Connected { session_id, .. } = store.connection.clone() {
+        if active_session.0 != session_id { active_session.0 = session_id; }
+    }
+    let cur_session = active_session.0;
+    for stamped in events.read() {
         if processed >= MAX_PER_FRAME { break; }
-        match evt {
+        // Drop stale results from previous sessions
+        if stamped.session != cur_session { continue; }
+        match &*stamped.event {
             NetEvent::RefreshResult(Ok(machines)) => {
+                // Update UI cache and editor index; no autoload
                 ui.machines = machines.iter().map(|m| (m.id, m.name.clone())).collect();
                 ui.connecting = false;
                 ui.error = None;
-                for (id, _) in ui.machines.iter() {
-                    cmd_writer.write(NetCommand::FetchGraph { id: *id });
-                }
+                store.index.is_loading = false;
+                store.index.error = None;
+                store.index.items = machines.iter().map(|m| IndexItem { name: m.name.clone(), entity: m.id }).collect();
                 processed += 1;
             }
             NetEvent::RefreshResult(Err(e)) => {
                 ui.connecting = false;
                 ui.error = Some(e.to_string());
+                store.index.is_loading = false;
+                store.index.error = Some(e.to_string());
                 processed += 1;
             }
             NetEvent::GraphResult { id, result } => {
@@ -123,10 +133,12 @@ fn poll_network(
 fn ui_system(
     mut egui_ctx: EguiContexts,
     mut store: ResMut<EditorStore>,
+    mut commands: Commands,
+    mut workspace: ResMut<Workspace>,
 ) {
     if let Ok(ctx) = egui_ctx.ctx_mut() {
         egui::CentralPanel::default().show(ctx, |ui_egui| {
-            shell::layout::draw(ui_egui, &mut store);
+            crate::editor::shell::layout::draw(ui_egui, &mut store, &mut commands, &mut workspace);
         });
     }
 }

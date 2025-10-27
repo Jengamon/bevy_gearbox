@@ -23,12 +23,15 @@ pub struct EditorStore {
     pub session_id: u64,
     pub index: StateMachineIndex,
     pub open_docs: std::collections::HashMap<ServerEntity, OpenDocument>,
+    /// Currently active/open document shown in the canvas
+    pub active_doc: Option<ServerEntity>,
 }
 
 impl EditorStore {
     pub fn clear_session(&mut self) {
         self.index = StateMachineIndex::default();
         self.open_docs.clear();
+        self.active_doc = None;
     }
 }
 
