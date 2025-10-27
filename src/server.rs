@@ -161,6 +161,41 @@ Notes and future server-side multiplex
   SSE stream. The client’s Watch Manager can continue to fan-out events to the
   appropriate documents, but you reduce total connections.
 
+-------------------------------------------------------------------------------
+Runtime and threading choices (Bevy IoTaskPool vs Tokio)
+-------------------------------------------------------------------------------
+Where we run code and why:
+
+- Bevy IoTaskPool (short-lived work)
+  - Used for one-shot network RPCs that return quickly (e.g., list machines,
+    fetch graph snapshot, fetch one active snapshot, save graph/sidecar).
+  - We spawn a Task<StampedEvent> and drain it in collect_task_results during
+    NetSet::Drain. That integrates cleanly with Bevy’s schedule and frame loop.
+  - These tasks may internally call into the Tokio runtime (rt.block_on) to
+    perform the HTTP request, but the task lifetime is bounded to a single
+    response and then the thread returns to the pool.
+  - Do NOT keep long-lived or idle waits here; they can starve the pool.
+
+- Tokio runtime (long-lived work)
+  - Used for sustained SSE “+watch” streams via a single Watch Manager task.
+  - Reasons:
+    - Long-lived, mostly-idle tasks (waiting on bytes) should not occupy Bevy’s
+      IoTaskPool threads. Tokio’s cooperative scheduler handles many such tasks
+      without starving other work.
+    - Clean cancellation: per-watch JoinHandle aborts and central supervision
+      (start/stop/reconnect/backoff) are straightforward in a single async task
+      with channels.
+    - Backpressure and coalescing: events are sent on an mpsc channel back to
+      Bevy; Bevy drains at its cadence.
+  - Only the active (or MRU) machine(s) are typically watched; Unsubscribe
+    aborts the per-machine task immediately.
+
+Rule of thumb:
+- Short, bounded operations that produce one result → IoTaskPool task.
+- Long-lived streams, reconnection loops, or anything that could block/wait →
+  Tokio (Watch Manager), then bridge back into Bevy via a channel and
+  translate into NetEvents in NetSet::Drain.
+
 ================================================================================
 */
 
