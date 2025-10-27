@@ -5,19 +5,21 @@ use crate::editor::actions::{RefreshIndexRequested, OpenRequested};
 
 pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands) {
     ui.horizontal(|ui| {
-        ui.label("Search");
         ui.text_edit_singleline(&mut store.index.filter.query);
-        if ui.button("Refresh").clicked() {
-            commands.trigger(RefreshIndexRequested { query: store.index.filter.query.clone() });
-            store.index.is_loading = true;
-        }
     });
     ui.separator();
     if store.index.is_loading { ui.label("Loading..."); return; }
     if let Some(err) = &store.index.error { ui.colored_label(egui::Color32::RED, err); }
     let mut to_open: Option<crate::types::ServerEntity> = None;
     egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-        for item in store.index.items.clone().into_iter() {
+        let query = store.index.filter.query.trim().to_lowercase();
+        let iter = store.index.items.iter().cloned().filter(|it| {
+            if query.is_empty() { return true; }
+            let name = it.name.as_deref().unwrap_or("");
+            let id_text = it.entity.to_string();
+            name.to_lowercase().contains(&query) || id_text.to_lowercase().contains(&query)
+        });
+        for item in iter {
             ui.horizontal(|ui| {
                 let title = match &item.name {
                     Some(name) => format!("{}  ({})", name, item.entity),

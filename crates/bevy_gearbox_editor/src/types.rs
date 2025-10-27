@@ -36,11 +36,20 @@ impl From<String> for NetError {
 
 impl fmt::Display for ServerEntity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Bevy-style display: "<index>v<generation>" extracted from raw bits
+        // Heuristic decode:
+        // - If high 32 bits are nonzero, or low 32 bits look like !index (large), treat as to_bits()
+        // - Otherwise treat the value as a plain row index with generation 0
         let raw = self.0;
-        let index = (raw & 0xFFFF_FFFF) as u32;
-        let generation = ((raw >> 32) & 0xFFFF_FFFF) as u32;
-        write!(f, "{}v{}", index, generation)
+        let low = (raw & 0xFFFF_FFFF) as u32;
+        let high = ((raw >> 32) & 0xFFFF_FFFF) as u32;
+        let looks_like_bits = high != 0 || low > 0x7FFF_FFFF;
+        if looks_like_bits {
+            let index = !low;
+            let generation = high;
+            write!(f, "{}v{}", index, generation)
+        } else {
+            write!(f, "{}v0", low)
+        }
     }
 }
 

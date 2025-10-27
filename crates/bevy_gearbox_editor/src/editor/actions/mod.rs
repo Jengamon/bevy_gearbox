@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use crate::types::ServerEntity;
 use super::model::store::EditorStore;
 use super::model::types::{ConnectionState, IndexFilter};
-use crate::net::NetCommand;
+use crate::net::{NetCommand, ActiveSession};
 use super::model::store::OpenDocument;
 use super::model::types::{DocMode, DocId, TabId};
 use crate::editor::view_model::GraphDoc;
@@ -13,9 +13,6 @@ pub struct EndpointConfig { pub endpoint: String }
 pub fn connect(store: &mut EditorStore, endpoint: EndpointConfig) {
     store.connection = ConnectionState::Connecting;
     store.last_endpoint = Some(endpoint.endpoint.clone());
-    // RPC connect will be wired later; for now, simulate success and bump session id.
-    store.session_id = store.session_id.wrapping_add(1);
-    store.connection = ConnectionState::Connected { session_id: store.session_id, endpoint: endpoint.endpoint };
 }
 
 pub fn disconnect(store: &mut EditorStore) {
@@ -62,9 +59,11 @@ pub struct RefreshIndexRequested { pub query: String }
 pub struct OpenRequested { pub entity: ServerEntity }
 
 // Observers: mutate store; RPC wiring will be added later
-pub fn on_connect_requested(evt: On<ConnectRequested>, mut store: ResMut<EditorStore>, mut net: MessageWriter<NetCommand>) {
+pub fn on_connect_requested(evt: On<ConnectRequested>, mut store: ResMut<EditorStore>, mut net: MessageWriter<NetCommand>, mut active_session: ResMut<ActiveSession>) {
     // Optimistically bump session and set last endpoint
     connect(&mut store, EndpointConfig { endpoint: evt.endpoint.clone() });
+    // Ensure network stamps use the new session id before any tasks are spawned
+    active_session.0 = store.session_id;
     net.write(NetCommand::SetUrl { url: evt.endpoint.clone() });
     net.write(NetCommand::Connect);
 }

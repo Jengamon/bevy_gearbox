@@ -4,6 +4,7 @@ use crate::client::{jsonrpc_call, jsonrpc_ping};
 use crate::component as c;
 use crate::model::{ComponentBag, ComponentEntry, Edge, EntityId, StateMachineGraph, StateNode};
 use crate::types::ServerEntity;
+use crate::util::{canonicalize_entity_u64, parse_entity_str_to_bits};
 
 pub(crate) fn extract_components_map(v: Value) -> Result<serde_json::Map<String, Value>, String> {
     match v {
@@ -49,6 +50,7 @@ pub(crate) async fn list_state_machines(url: &str) -> Result<Vec<(u64, Option<St
     let mut machines = vec![];
     for row in extract_result_array(list)? {
         if let Some(id) = row.get("entity").and_then(|e| e.as_u64()) {
+            let id = canonicalize_entity_u64(id);
             let comps = jsonrpc_call(
                 url,
                 "world.get_components",
@@ -92,30 +94,15 @@ fn parse_entity_list(value: &Value) -> Vec<u64> {
 
 fn parse_single_entity(value: &Value) -> Option<u64> {
     // Direct number
-    if let Some(id) = value.as_u64() { return Some(id); }
-    // String encodings like "123" or "Entity(123)" or other text containing digits
-    if let Some(s) = value.as_str() {
-        // collect the first contiguous run of digits
-        let mut digits = String::new();
-        let mut in_run = false;
-        for ch in s.chars() {
-            if ch.is_ascii_digit() {
-                digits.push(ch);
-                in_run = true;
-            } else if in_run {
-                break;
-            }
-        }
-        if !digits.is_empty() {
-            if let Ok(n) = digits.parse::<u64>() { return Some(n); }
-        }
-    }
+    if let Some(id) = value.as_u64() { return Some(canonicalize_entity_u64(id)); }
+    // String encodings like "123", "123v0", or wrapped forms
+    if let Some(s) = value.as_str() { if let Some(bits) = parse_entity_str_to_bits(s) { return Some(bits); } }
     match value {
         Value::Array(arr) => arr.get(0).and_then(|v| v.as_u64()).or_else(|| arr.get(0).and_then(|v| parse_single_entity(v))),
         Value::Object(obj) => {
             // Common shapes
-            if let Some(id) = obj.get("entity").and_then(|v| v.as_u64()) { return Some(id); }
-            if let Some(Value::Number(n)) = obj.get("0") { return n.as_u64(); }
+            if let Some(id) = obj.get("entity").and_then(|v| v.as_u64()) { return Some(canonicalize_entity_u64(id)); }
+            if let Some(Value::Number(n)) = obj.get("0") { return n.as_u64().map(canonicalize_entity_u64); }
             // Try any nested values
             for v in obj.values() {
                 if let Some(id) = parse_single_entity(v) { return Some(id); }
@@ -316,8 +303,7 @@ pub(crate) async fn fetch_machine_graph_model(url: &str, machine: u64) -> Result
             graph.nodes.entry(target_id).or_insert_with(|| StateNode::new(target_id));
 
             let e_id = EntityId::Server(ServerEntity(edge_e));
-            let display_label = Some(choose_edge_label(&all));
-            let edge = Edge { id: e_id, source: node_id, target: target_id, components: bag, display_label, dirty: Default::default(), server_version: None };
+            let edge = Edge { id: e_id, source: node_id, target: target_id, components: bag, display_label: Some(choose_edge_label(&all)), dirty: Default::default(), server_version: None };
             graph.adjacency_out.entry(node_id).or_default().push(e_id);
             graph.adjacency_in.entry(target_id).or_default().push(e_id);
             graph.edges.insert(e_id, edge);

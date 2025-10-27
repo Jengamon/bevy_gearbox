@@ -13,7 +13,8 @@ categories = ["game-development", "game-engines"]
 bevy = "0.17.2"
 bevy_egui = "0.38.0"
 hex = "0.4.3"
-reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
+futures-util = "0.3.30"
 rfd = "0.15.4"
 ron = "0.11.0"
 serde = "1.0.228"

@@ -104,6 +104,9 @@ impl Plugin for RemoteServerPlugin {
 
         // Register custom RPC endpoints for saving graphs and sidecars
         register_editor_file_rpcs(app);
+
+        // Register discovery watcher (+watch SSE)
+        register_editor_watch_rpcs(app);
     }
 }
 
@@ -361,4 +364,63 @@ fn register_editor_file_rpcs(app: &mut App) {
 fn register_editor_file_rpcs(_app: &mut App) {}
 
 
+
+#[cfg(feature = "editor")]
+#[derive(Deserialize)]
+struct MachineWatchParams { entity: Entity }
+
+// =========================
+// Watch (+watch) handlers
+// =========================
+#[cfg(feature = "editor")]
+fn discovery_watch_handler(
+    _in: In<Option<Value>>,
+    q_added_sm: Query<(Entity, Option<&Name>, Option<&crate::StateMachineId>), Added<StateMachine>>,
+    mut removed_sm: RemovedComponents<StateMachine>,
+    q_name_changed: Query<(Entity, &Name), (With<StateMachine>, Changed<Name>)>,
+    q_id_changed: Query<(Entity, &crate::StateMachineId), (With<StateMachine>, Changed<crate::StateMachineId>)>,
+) -> bevy::remote::BrpResult<Option<Value>> {
+    let mut events: Vec<Value> = Vec::new();
+    for (e, name, id) in q_added_sm.iter() {
+        events.push(serde_json::json!({
+            "kind": "machine_created",
+            "machine": e.index() as u64,
+            "name": name.map(|n| n.to_string()),
+            "id_path": id.map(|p| p.0.clone()),
+        }));
+    }
+    for e in removed_sm.read() {
+        events.push(serde_json::json!({
+            "kind": "machine_removed",
+            "machine": e.index() as u64,
+        }));
+    }
+    for (e, name) in q_name_changed.iter() {
+        events.push(serde_json::json!({
+            "kind": "machine_renamed",
+            "machine": e.index() as u64,
+            "name": name.to_string(),
+        }));
+    }
+    for (e, id) in q_id_changed.iter() {
+        events.push(serde_json::json!({
+            "kind": "machine_id_set",
+            "machine": e.index() as u64,
+            "id_path": id.0.clone(),
+        }));
+    }
+    if events.is_empty() { Ok(None) } else { Ok(Some(serde_json::json!({ "events": events }))) }
+}
+
+#[cfg(feature = "editor")]
+fn register_editor_watch_rpcs(app: &mut App) {
+    if !app.world().contains_resource::<RemoteMethods>() { return; }
+    let world = app.main_mut().world_mut();
+    let discovery_watch = world.register_system(discovery_watch_handler);
+    let mut methods = world.resource_mut::<RemoteMethods>();
+    methods.insert("editor.discovery+watch", RemoteMethodSystemId::Watching(discovery_watch));
+}
+
+#[cfg(not(feature = "editor"))]
+fn register_editor_watch_rpcs(_app: &mut App) {}
 

@@ -79,6 +79,20 @@ fn poll_network(
         // Drop stale results from previous sessions
         if stamped.session != cur_session { continue; }
         match &*stamped.event {
+            NetEvent::Connected => {
+                // First: reflect connected state and align session ids so stamped events aren't dropped
+                if let Some(ep) = store.last_endpoint.clone() {
+                    store.session_id = store.session_id.wrapping_add(1);
+                    let sid = store.session_id;
+                    store.connection = crate::editor::model::types::ConnectionState::Connected { session_id: sid, endpoint: ep };
+                    // Ensure network stamps use the new session id before spawning tasks
+                    active_session.0 = sid;
+                }
+                // Then: kick off discovery snapshot + watch
+                cmd_writer.write(NetCommand::Refresh);
+                cmd_writer.write(NetCommand::StartDiscoveryWatch);
+                processed += 1;
+            }
             NetEvent::RefreshResult(Ok(machines)) => {
                 // Update UI cache and editor index; no autoload
                 ui.machines = machines.iter().map(|m| (m.id, m.name.clone())).collect();
@@ -87,6 +101,26 @@ fn poll_network(
                 store.index.is_loading = false;
                 store.index.error = None;
                 store.index.items = machines.iter().map(|m| IndexItem { name: m.name.clone(), entity: m.id }).collect();
+                processed += 1;
+            }
+            NetEvent::DiscoveryEvents(Ok(batch)) => {
+                // Merge batch into index (simple replace-by-id for now)
+                for m in batch {
+                    if let Some(name) = m.name.clone() {
+                        if let Some(ix) = ui.machines.iter_mut().position(|(id, _)| id.0 == m.id.0) {
+                            ui.machines[ix] = (m.id, Some(name));
+                        } else {
+                            ui.machines.push((m.id, Some(name)));
+                        }
+                    } else {
+                        ui.machines.retain(|(id, _)| id.0 != m.id.0);
+                    }
+                }
+                // Rebuild store index list
+                ui.machines.sort_by_key(|(id, _)| id.0);
+                store.index.items = ui.machines.iter().map(|(id, name)| IndexItem { name: name.clone(), entity: *id }).collect();
+                // Re-arm watcher for next batch
+                cmd_writer.write(NetCommand::StartDiscoveryWatch);
                 processed += 1;
             }
             NetEvent::RefreshResult(Err(e)) => {

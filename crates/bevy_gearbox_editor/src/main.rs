@@ -9,6 +9,7 @@ mod client;
 mod plugin;
 mod component;
 mod types;
+mod util;
 mod model;
 mod editor;
 

@@ -6,6 +6,7 @@ use crate::client::{jsonrpc_save_machine, jsonrpc_select};
 use crate::types::{ServerEntity, MachineSummary, NetError};
 use crate::model::StateMachineGraph;
 use std::sync::Arc;
+use reqwest::Client;
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
 pub(crate) enum NetSet { Send, Drain }
@@ -51,6 +52,8 @@ pub(crate) enum NetCommand {
     Connect,
     Disconnect,
     Refresh,
+    /// Start discovery SSE watcher (BRP +watch)
+    StartDiscoveryWatch,
     Select { id: ServerEntity },
     Save { id: ServerEntity },
     /// Save As: logical asset base name (for .scn.ron on app) and local sidecar path
@@ -66,6 +69,7 @@ pub(crate) enum NetEvent {
     Disconnected { reason: Option<NetError> },
     ConnectionError(NetError),
     RefreshResult(Result<Vec<MachineSummary>, NetError>),
+    DiscoveryEvents(Result<Vec<MachineSummary>, NetError>),
     SelectResult(Result<(), NetError>),
     SaveResult(Result<(), NetError>),
     SidecarResult(Result<Option<String>, NetError>),
@@ -113,6 +117,82 @@ pub(crate) fn handle_commands(
                             Err(e) => NetEvent::ConnectionError(NetError::from(e)),
                         };
                         StampedEvent { session, event: Arc::new(evt) }
+                    })
+                });
+                pending.tasks.push(task);
+                // Discovery watch will be triggered by UI upon Connected event
+            }
+            NetCommand::StartDiscoveryWatch => {
+                let url = cfg.url.clone();
+                let session = active.0;
+                let rt_handle = rt.0.clone();
+                let task = pool.spawn(async move {
+                    rt_handle.block_on(async move {
+                        use futures_util::StreamExt as _;
+                        let client = Client::new();
+                        // Compose JSON-RPC +watch request
+                        let req = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "editor.discovery+watch",
+                            "params": null,
+                        });
+                        let resp = match client.post(&url).json(&req).send().await {
+                            Ok(r) => r,
+                            Err(e) => {
+                                let evt = NetEvent::ConnectionError(NetError::Other(format!("watch http: {}", e)));
+                                return StampedEvent { session, event: Arc::new(evt) };
+                            }
+                        };
+                        let mut stream = resp.bytes_stream();
+                        let mut summaries: Vec<MachineSummary> = Vec::new();
+                        while let Some(chunk) = stream.next().await {
+                            match chunk {
+                                Ok(bytes) => {
+                                    if let Ok(text) = std::str::from_utf8(&bytes) {
+                                        for line in text.split('\n') {
+                                            let line = line.trim_start();
+                                            if !line.starts_with("data: ") { continue; }
+                                            let json_str = &line[6..];
+                                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                                let events = v.get("result")
+                                                    .and_then(|r| r.get("events"))
+                                                    .and_then(|e| e.as_array())
+                                                    .cloned()
+                                                    .unwrap_or_default();
+                                                for ev in events {
+                                                    let kind = ev.get("kind").and_then(|s| s.as_str()).unwrap_or("");
+                                                    match kind {
+                                                        "machine_created" | "machine_renamed" | "machine_id_set" => {
+                                                            if let Some(id) = ev.get("machine").and_then(|v| v.as_u64()) {
+                                                                let name = ev.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                                                summaries.push(MachineSummary { id: ServerEntity(id), name });
+                                                            }
+                                                        }
+                                                        "machine_removed" => {
+                                                            if let Some(id) = ev.get("machine").and_then(|v| v.as_u64()) {
+                                                                summaries.push(MachineSummary { id: ServerEntity(id), name: None });
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                                if !summaries.is_empty() {
+                                                    let evt = NetEvent::DiscoveryEvents(Ok(std::mem::take(&mut summaries)));
+                                                    return StampedEvent { session, event: Arc::new(evt) };
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let evt = NetEvent::ConnectionError(NetError::Other(format!("watch stream: {}", e)));
+                                    return StampedEvent { session, event: Arc::new(evt) };
+                                }
+                            }
+                        }
+                        // If stream ends without data, emit a benign disconnect
+                        StampedEvent { session, event: Arc::new(NetEvent::Disconnected { reason: None }) }
                     })
                 });
                 pending.tasks.push(task);
@@ -179,6 +259,7 @@ pub(crate) fn handle_commands(
                                 }).await;
                                 NetEvent::SidecarResultFor { id: doc, result: r }
                             }
+                            NetCommand::StartDiscoveryWatch => unreachable!(),
                             NetCommand::Connect | NetCommand::Disconnect => unreachable!(),
                             NetCommand::SetUrl { .. } => unreachable!(),
                         };
