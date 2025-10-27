@@ -214,13 +214,12 @@ fn sync_snapshots_to_workspace(
     let pending_active = std::mem::take(&mut ui.pending_active);
     for (id, (active, _leaves)) in pending_active.into_iter() {
         let doc = workspace.docs.entry(id).or_default();
-        // Map u64s to EntityId::Server
+        // Map u64s to EntityId::Server (canonicalize)
         let set: std::collections::HashSet<EntityId> = active
             .into_iter()
             .map(|u| crate::util::canonicalize_entity_u64(u))
             .map(|u| EntityId::Server(ServerEntity(u)))
             .collect();
-        let known = set.iter().filter(|e| doc.views.contains_key(e)).count();
         let (_new, _deactivated) = doc.set_active_nodes(&set);
     }
     // 2) Machine event batches (canonicalize ids before applying)
@@ -237,7 +236,6 @@ fn sync_snapshots_to_workspace(
                         .map(|arr| arr.iter().filter_map(|v| v.as_u64()).map(|u| crate::util::canonicalize_entity_u64(u)).collect())
                         .unwrap_or_default();
                     let set: std::collections::HashSet<EntityId> = active.into_iter().map(|u| EntityId::Server(ServerEntity(u))).collect();
-                    let known = set.iter().filter(|e| doc.views.contains_key(e)).count();
                     let (new_nodes, deactivated) = doc.set_active_nodes(&set);
                     for nid in new_nodes { doc.node_flash.insert(nid, 1.0); }
                     for nid in deactivated { doc.node_fade.insert(nid, 1.0); }

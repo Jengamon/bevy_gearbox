@@ -192,8 +192,9 @@ fn sync_active_tracker_on_state_changes(
             let cap = feed.capacity.max(1) as usize;
             if feed.ring.len() > cap { let _ = feed.ring.remove(0); }
         } else {
-            let mut feed = ActiveChangedFeed { next_seq: 1, ring: Vec::new(), capacity: 64 };
-            feed.ring.push(ActiveChangedEntry { seq: 0, active: active_for_feed, leaves: leaves_for_feed });
+            // Start sequence at 1 so first event is not filtered by last_seq=0 on the watcher
+            let mut feed = ActiveChangedFeed { next_seq: 2, ring: Vec::new(), capacity: 64 };
+            feed.ring.push(ActiveChangedEntry { seq: 1, active: active_for_feed, leaves: leaves_for_feed });
             commands.entity(root).insert(feed);
         }
     }
@@ -217,8 +218,9 @@ fn record_transition_on_actions(
         let cap = feed.capacity.max(1) as usize;
         if feed.ring.len() > cap { let _ = feed.ring.remove(0); }
     } else {
-        let mut feed = TransitionFeed { next_seq: 1, ring: Vec::new(), capacity: 64 };
-        feed.ring.push(TransitionEdge { seq: 0, edge });
+        // Start sequence at 1 so first transition is not filtered by last_seq=0 on the watcher
+        let mut feed = TransitionFeed { next_seq: 2, ring: Vec::new(), capacity: 64 };
+        feed.ring.push(TransitionEdge { seq: 1, edge });
         commands.entity(machine).insert(feed);
     }
 }
@@ -248,8 +250,9 @@ fn on_active_added(
             let cap = feed.capacity.max(1) as usize;
             if feed.ring.len() > cap { let _ = feed.ring.remove(0); }
         } else {
-            let mut feed = ActiveChangedFeed { next_seq: 1, ring: Vec::new(), capacity: 64 };
-            feed.ring.push(ActiveChangedEntry { seq: 0, active, leaves });
+            // Start sequence at 1 for consistency with watcher filtering
+            let mut feed = ActiveChangedFeed { next_seq: 2, ring: Vec::new(), capacity: 64 };
+            feed.ring.push(ActiveChangedEntry { seq: 1, active, leaves });
             commands.entity(root).insert(feed);
         }
     }
@@ -278,8 +281,9 @@ fn on_active_removed(
             let cap = feed.capacity.max(1) as usize;
             if feed.ring.len() > cap { let _ = feed.ring.remove(0); }
         } else {
-            let mut feed = ActiveChangedFeed { next_seq: 1, ring: Vec::new(), capacity: 64 };
-            feed.ring.push(ActiveChangedEntry { seq: 0, active, leaves });
+            // Start sequence at 1 for consistency with watcher filtering
+            let mut feed = ActiveChangedFeed { next_seq: 2, ring: Vec::new(), capacity: 64 };
+            feed.ring.push(ActiveChangedEntry { seq: 1, active, leaves });
             commands.entity(root).insert(feed);
         }
     }
@@ -571,7 +575,11 @@ fn machine_watch_handler(
         if max_seq > last { state.last_transition_seq.insert(p.entity, max_seq); }
     }
 
-    if events.is_empty() { Ok(None) } else { Ok(Some(serde_json::json!({ "events": events })))}
+    if events.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(serde_json::json!({ "events": events })))
+    }
 }
 
 #[cfg(feature = "editor")]

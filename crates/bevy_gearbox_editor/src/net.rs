@@ -232,8 +232,6 @@ pub(crate) fn handle_commands(
                             }
                         };
                         let mut stream = resp.bytes_stream();
-                        let mut deltas: Vec<serde_json::Value> = Vec::new();
-                        println!("net: machine+watch start for {}", id.0);
                         while let Some(chunk) = stream.next().await {
                             match chunk {
                                 Ok(bytes) => {
@@ -246,7 +244,6 @@ pub(crate) fn handle_commands(
                                                 if let Some(events) = v.get("result").and_then(|r| r.get("events")).and_then(|e| e.as_array()) {
                                                     let added = events.len();
                                                     if added > 0 {
-                                                        );
                                                         let evt = NetEvent::MachineDeltas { id, result: Ok(events.iter().cloned().collect()) };
                                                         return StampedEvent { session, event: Arc::new(evt) };
                                                     }
@@ -261,7 +258,7 @@ pub(crate) fn handle_commands(
                                 }
                             }
                         }
-                        let evt = NetEvent::MachineDeltas { id, result: Ok(deltas) };
+                        let evt = NetEvent::MachineDeltas { id, result: Ok(Vec::new()) };
                         StampedEvent { session, event: Arc::new(evt) }
                     })
                 });

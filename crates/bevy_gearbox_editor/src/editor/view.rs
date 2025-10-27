@@ -753,6 +753,10 @@ pub fn draw_doc(
                 let alpha = 1.0 - t_edge;
                 let edge_line_col = lerp_color(bright_yellow, base_gray_line, alpha);
                 let edge_col = lerp_color(bright_yellow, base_gray_edge, alpha);
+                // Edge pill body/text: flash bright yellow then lerp back to base fill & text to white
+                let base_fill = egui::Color32::from_rgb(30, 30, 35);
+                let pill_fill_col = lerp_color(bright_yellow, base_fill, alpha);
+                let pill_text_col = lerp_color(egui::Color32::BLACK, egui::Color32::WHITE, alpha);
 
                 if is_ancestor_edge {
                     // Determine outward normal based on which side a_start lies on
@@ -806,11 +810,11 @@ pub fn draw_doc(
                 painter.rect(
                     pill_rect_s,
                     rounding,
-                    egui::Color32::from_rgb(30, 30, 35),
+                    pill_fill_col,
                     egui::Stroke::new(1.0, edge_col),
                     egui::StrokeKind::Outside,
                 );
-                painter.text(pill_rect_s.center(), egui::Align2::CENTER_CENTER, &view.label, font_id.clone(), egui::Color32::WHITE);
+                painter.text(pill_rect_s.center(), egui::Align2::CENTER_CENTER, &view.label, font_id.clone(), pill_text_col);
             }
             UiViewKind::Leaf => {
                 let rect_world = view.rect;
