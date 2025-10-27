@@ -36,22 +36,28 @@ Parsing client-side:
 - Avoid dropping your own connection/session events before you trigger the snapshot/start-watch actions; set any session stamps prior to spawning network tasks.
 
 
-### Additional notes: reliable active state syncing
+### Design notes: reliable server→client streaming
 
-- Prefer event-driven updates for actives to avoid frame ordering races:
-  - Use observers tied to component triggers: `On<Add, Active>` and `On<Remove, Active>` on state entities.
-  - In those observers, resolve the root via relationship queries and append a snapshot of the authoritative active/leaves to a ring on the machine (e.g., `ActiveChangedFeed { next_seq, ring }`).
-  - Keep a per-machine `last_active_seq` watermark in the +watch handler and emit only entries with `seq > last_active_seq`.
+- Event-driven vs sampled updates:
+  - Prefer event-driven append points when data changes (e.g., observers like `On<Add, T>` / `On<Remove, T>` or domain events) over sampling with `Changed<T>` systems. This guarantees ordering relative to the mutation.
+  - If you do sample, ensure the sampling system runs after the mutation logic; a one-frame lag may be acceptable for some UIs.
 
-- Keep transitions and actives symmetric:
-  - Both should use ring buffers with monotonically increasing `seq` and bounded `capacity`.
-  - The +watch handler should emit new entries for both feeds in the same response.
+- Sequencing and buffering:
+  - Use ring buffers with monotonically increasing `seq` for each stream (runtime activity, structure changes, metrics, etc.).
+  - Keep per-stream watermarks (e.g., `last_seq`) in the +watch handler and emit only entries with `seq` greater than the watermark.
+  - Choose bounded `capacity` appropriate for expected burstiness; evict oldest on overflow and signal clients to resnapshot if needed.
 
-- Client streaming loop best practices:
-  - Emit one `MachineDeltas` batch as soon as a non-empty SSE frame arrives, then immediately re-arm the watch (don’t wait for the stream to end).
-  - Canonicalize entity ids consistently. Either:
-    - Have the server emit canonical ids, or
-    - Canonicalize all ids client-side before applying (machine, active/leaves, edge/source/target).
+- Client loop pattern:
+  - For SSE, emit one app-level event as soon as a non-empty frame arrives, then immediately re-arm the watch (don’t wait for the HTTP stream to end).
+  - Apply deltas atomically per batch and request another frame; this minimizes latency and complexity.
 
-- Tolerating one-frame lag:
-  - If a one-frame lag is acceptable, running the active snapshot system strictly after the state machine update also works; however, event-driven observers remove the need for explicit ordering.
+- Identity and normalization:
+  - Ensure entity/record identifiers in streamed deltas match identifiers used by the client model. Either emit canonical ids from the server, or canonicalize client-side before applying.
+
+- Example (state machine editor):
+  - Transitions: append `TransitionEdge { seq, edge }` to a ring when a transition fires; clients stream via +watch using a watermark.
+  - Active states: append a snapshot of the authoritative active/leaves to a ring on `On<Add, Active>` / `On<Remove, Active>` for states; clients stream using a separate watermark. This removes frame-ordering races while keeping updates compact.
+
+- Backpressure and consolidation:
+  - Prefer one consolidated response that may include multiple streams (e.g., transitions + active snapshots) per frame to reduce client wakeups.
+  - Debounce very high-frequency sources if the UI doesn’t need every intermediate step; sequences still preserve order for those delivered.
