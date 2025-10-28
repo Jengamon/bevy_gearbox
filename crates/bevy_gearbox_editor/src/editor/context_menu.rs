@@ -6,6 +6,7 @@ pub enum MenuItemKind {
     MakeLeaf,
     MakeParent,
     MakeParallel,
+    Rename,
     Save,
     Delete,
     /// Parent is the owner of InitialState; this node becomes the new initial
@@ -24,6 +25,7 @@ pub enum MenuSelection {
     MakeLeaf { target: EntityId },
     MakeParent { target: EntityId },
     MakeParallel { target: EntityId },
+    RenameEntity { target: EntityId },
     SaveStateMachine { target: EntityId },
     DeleteEntity { target: EntityId },
     MakeInitial { parent: EntityId, new_initial: EntityId },
@@ -70,6 +72,9 @@ pub fn build_context_menu(graph: &StateMachineGraph, id: EntityId) -> Vec<MenuIt
     if has_state_machine {
         items.push(MenuItem { label: "Save As", kind: MenuItemKind::Save });
     }
+
+    // Rename (always available; inserts/updates Name on write)
+    items.push(MenuItem { label: "Rename", kind: MenuItemKind::Rename });
 
     // Delete (always)
     items.push(MenuItem { label: "Delete", kind: MenuItemKind::Delete });

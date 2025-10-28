@@ -192,14 +192,15 @@ impl ProtocolClient {
     }
 }
 
-pub fn on_rename(rename: On<crate::events::Rename>, client: Res<ProtocolClient>) {
-    // fire-and-forget; watches ensure convergence
+pub fn on_rename(rename: On<crate::events::Rename>, client: Res<ProtocolClient>, rt: Res<TokioRuntime>) {
+    // fire-and-forget via Tokio runtime; watches ensure convergence
     let name = rename.name.clone();
     let id = rename.target.to_bits();
     let client_cloned = client.clone();
-    bevy::tasks::IoTaskPool::get().spawn(async move {
+    let rt = rt.0.clone();
+    rt.spawn(async move {
         let _ = client_cloned.rename(id, &name).await;
-    }).detach();
+    });
 }
 
 pub fn on_despawn(despawn: On<crate::events::Despawn>, client: Res<ProtocolClient>) {
@@ -383,6 +384,8 @@ enum WatchCtl {
     StopDiscovery,
     StartMachine { url: String, id: u64, last_active_seq: u64, last_transition_seq: u64 },
     StopMachine { url: String, id: u64 },
+    StartComponents { url: String, id: u64, components: Vec<String> },
+    StopComponents { url: String, id: u64 },
 }
 
 #[derive(Debug, Clone)]
@@ -393,6 +396,7 @@ enum WatchEvt {
     Discovery(Vec<ProtocolMachineSummary>),
     Machine { id: u64, events: Vec<Value> },
     Error(String),
+    Components { id: u64, components: serde_json::Map<String, Value>, removed: Vec<String> },
 }
 
 fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
@@ -408,6 +412,7 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
         let client = reqwest::Client::new();
         let mut discovery_handle: Option<tokio::task::JoinHandle<()>> = None;
         let mut machine_handles: HashMap<u64, tokio::task::JoinHandle<()>> = HashMap::new();
+        let mut component_handles: HashMap<u64, tokio::task::JoinHandle<()>> = HashMap::new();
         while let Some(cmd) = ctl_rx.recv().await {
             match cmd {
                 WatchCtl::StartDiscovery { url } => {
@@ -538,6 +543,46 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                     let _ = client.post(&url).json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":EDITOR_MACHINE_UNSUBSCRIBE,"params":{"entity":id}})).send().await;
                     if let Some(h) = machine_handles.remove(&id) { h.abort(); }
                 }
+                WatchCtl::StartComponents { url, id, components } => {
+                    if component_handles.contains_key(&id) { continue; }
+                    let tx = evt_tx.clone();
+                    let client_clone = client.clone();
+                    let comps = components.clone();
+                    let handle = tokio::spawn(async move {
+                        loop {
+                            let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"world.get_components+watch","params":{"entity":id,"components": comps}});
+                            let resp = match client_clone.post(&url).json(&req).send().await { Ok(r) => r, Err(e) => { let _ = tx.send(WatchEvt::Error(format!("components watch http: {}", e))); tokio::time::sleep(std::time::Duration::from_millis(300)).await; continue; } };
+                            let mut stream = resp.bytes_stream();
+                            while let Some(chunk) = stream.next().await {
+                                match chunk {
+                                    Ok(bytes) => {
+                                        if let Ok(text) = std::str::from_utf8(&bytes) {
+                                            for line in text.split('\n') {
+                                                let line = line.trim_start();
+                                                if !line.starts_with("data: ") { continue; }
+                                                let json_str = &line[6..];
+                                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                                    let res = v.get("result").cloned().unwrap_or(v.clone());
+                                                    let comps_obj = res.get("components").and_then(|c| c.as_object()).cloned().unwrap_or_default();
+                                                    let removed_arr: Vec<String> = res.get("removed").and_then(|a| a.as_array()).map(|arr| arr.iter().filter_map(|s| s.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+                                                    if !comps_obj.is_empty() || !removed_arr.is_empty() {
+                                                        let _ = tx.send(WatchEvt::Components { id, components: comps_obj, removed: removed_arr });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => { let _ = tx.send(WatchEvt::Error(format!("components watch stream: {}", e))); break; }
+                                }
+                            }
+                            // reconnect
+                        }
+                    });
+                    component_handles.insert(id, handle);
+                }
+                WatchCtl::StopComponents { url: _url, id } => {
+                    if let Some(h) = component_handles.remove(&id) { h.abort(); }
+                }
             }
         }
     });
@@ -547,6 +592,7 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
 pub enum ProtocolNetMessage {
     Discovery(Vec<ProtocolMachineSummary>),
     Machine { id: u64, events: Vec<Value> },
+    Components { id: u64, components: serde_json::Map<String, Value>, removed: Vec<String> },
 }
 
 #[derive(Message)]
@@ -555,6 +601,8 @@ pub enum ProtocolNetCommand {
     StopDiscovery,
     StartMachine { id: u64 },
     StopMachine { id: u64 },
+    StartComponents { id: u64, components: Vec<String> },
+    StopComponents { id: u64 },
 }
 
 fn handle_protocol_net_commands(
@@ -578,6 +626,12 @@ fn handle_protocol_net_commands(
             }
             ProtocolNetCommand::StopMachine { id } => {
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopMachine { url: client.base_url.clone(), id }); }
+            }
+            ProtocolNetCommand::StartComponents { id, ref components } => {
+                if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartComponents { url: client.base_url.clone(), id, components: components.clone() }); }
+            }
+            ProtocolNetCommand::StopComponents { id } => {
+                if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopComponents { url: client.base_url.clone(), id }); }
             }
         }
     }
@@ -625,6 +679,9 @@ fn drain_protocol_watch_events(
                     }
                 }
                 WatchEvt::Error(_e) => { /* TODO: surface diagnostics */ }
+                WatchEvt::Components { id, components, removed } => {
+                    writer.write(ProtocolNetMessage::Components { id, components, removed });
+                }
             }
         }
         if drained > 0 { /* optional log */ }

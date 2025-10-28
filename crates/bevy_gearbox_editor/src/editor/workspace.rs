@@ -9,6 +9,10 @@ pub struct Workspace {
     pub docs: HashMap<ServerEntity, GraphDoc>,
     pub selection: Option<EntityId>,
     pub menu: Option<ContextMenuState>,
+    /// Global inline rename state (only one rename across app at a time)
+    pub rename_inline: Option<RenameInline>,
+    /// One-shot commit captured during draw; consumed by shell
+    pub pending_rename_commit: Option<RenameInline>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,4 +21,5 @@ pub enum ContextTarget { Node(EntityId), Canvas }
 #[derive(Debug, Clone)]
 pub struct ContextMenuState { pub doc: ServerEntity, pub target: ContextTarget, pub pos: egui::Pos2 }
 
-
+#[derive(Debug, Clone)]
+pub struct RenameInline { pub doc: ServerEntity, pub target: EntityId, pub text: String }

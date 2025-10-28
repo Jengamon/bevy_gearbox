@@ -1,6 +1,7 @@
 use super::view_model::{GraphDoc, UiViewKind};
+use super::layout::{NodeLayout, LayoutConfig};
 use super::context_menu::{build_context_menu, MenuItemKind, MenuSelection};
-use crate::editor::workspace::ContextMenuState;
+use crate::editor::workspace::{ContextMenuState, RenameInline, Workspace};
 use crate::types::ServerEntity;
 use bevy_egui::egui;
 
@@ -11,6 +12,7 @@ pub fn draw_doc(
     selection: &mut Option<crate::model::EntityId>,
     doc_id: ServerEntity,
     _menu_state: &mut Option<ContextMenuState>,
+    workspace: &mut Workspace,
 ) -> Option<MenuSelection> {
     let desired = ui.available_size_before_wrap();
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
@@ -23,30 +25,10 @@ pub fn draw_doc(
     let animating = doc.tick_highlights(0.92);
     if animating { ui.ctx().request_repaint(); }
 
-    // Compute dynamic draw order per frame using DFS with per-level subtree ordering
-    let effective_selected = doc.dragging.or(*selection);
-    // Build map: for each ancestor in the selected chain, which child branch is selected
-    let mut selected_by_parent: std::collections::HashMap<crate::model::EntityId, crate::model::EntityId> = std::collections::HashMap::new();
-    if let Some(sel) = effective_selected {
-        if !matches!(doc.views.get(&sel).map(|v| &v.kind), Some(UiViewKind::Edge { .. })) {
-            let mut cur = Some(sel);
-            while let Some(cid) = cur {
-                if let Some(pid) = doc.transform_parent.get(&cid).and_then(|p| *p) {
-                    // record that at parent pid, child cid should be ordered last among siblings
-                    selected_by_parent.insert(pid, cid);
-                    cur = Some(pid);
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-
-    // Build a deterministic global edge order using graph adjacency
+    // Build deterministic edge sequence for stable per-parent pill ordering
     let mut edge_sequence: Vec<crate::model::EntityId> = Vec::new();
     let mut node_rank: std::collections::HashMap<crate::model::EntityId, usize> = std::collections::HashMap::new();
     if let Some(graph) = &doc.graph {
-        // Node order by DFS from root
         let mut stack: Vec<crate::model::EntityId> = Vec::new();
         let mut seen: std::collections::HashSet<crate::model::EntityId> = std::collections::HashSet::new();
         stack.push(graph.root);
@@ -59,13 +41,10 @@ pub fn draw_doc(
             }
         }
         for (i, id) in node_order.iter().enumerate() { node_rank.insert(*id, i); }
-
-        // Edge order prefers adjacency_out per node order
         for nid in node_order.iter() {
             if let Some(out) = graph.adjacency_out.get(nid) {
                 for eid in out { edge_sequence.push(*eid); }
             } else {
-                // Fallback: scan edges from this source and sort by target rank then ID string
                 let mut edges: Vec<&crate::model::Edge> = graph.edges.values().filter(|e| &e.source == nid).collect();
                 edges.sort_by_key(|e| (*node_rank.get(&e.target).unwrap_or(&usize::MAX), format!("{:?}", e.id)));
                 for e in edges { edge_sequence.push(e.id); }
@@ -73,97 +52,91 @@ pub fn draw_doc(
         }
     }
 
-    // Collect overlay edges: if a state is selected, include its (incoming ∪ outgoing);
-    // if an edge is selected/dragging, include that edge itself
+    // Construct NodeLayout with pills as children and containers defined by graph/view kind
+    let mut node_rects: std::collections::HashMap<crate::model::EntityId, egui::Rect> = std::collections::HashMap::new();
+    let mut parent_of: std::collections::HashMap<crate::model::EntityId, Option<crate::model::EntityId>> = std::collections::HashMap::new();
+    let mut children_of: std::collections::HashMap<crate::model::EntityId, Vec<crate::model::EntityId>> = std::collections::HashMap::new();
+    let mut container_nodes: std::collections::HashSet<crate::model::EntityId> = std::collections::HashSet::new();
+    for (id, view) in doc.views.iter() { node_rects.insert(*id, view.rect); }
+    if let Some(graph) = &doc.graph {
+        for (id, node) in graph.nodes.iter() {
+            parent_of.insert(*id, node.parent);
+            // Containers: explicit Parent/Parallel kinds or having graph children
+            if matches!(doc.views.get(id).map(|v| &v.kind), Some(UiViewKind::Parent | UiViewKind::Parallel)) || !node.children.is_empty() {
+                container_nodes.insert(*id);
+            }
+        }
+        // Edges/pills: parent from transform_parent
+        for eid in graph.edges.keys() {
+            if let Some(pid) = doc.transform_parent.get(eid).and_then(|p| *p) { parent_of.insert(*eid, Some(pid)); }
+        }
+    } else {
+        // Fallback: use transform_parent for everything we can
+        for id in doc.views.keys() { parent_of.insert(*id, doc.transform_parent.get(id).and_then(|p| *p)); }
+    }
+    // Build children_of per parent with pills first (edge_sequence order) then graph node children
+    if let Some(graph) = &doc.graph {
+        // Start with empty lists for all potential parents
+        for id in doc.views.keys() { children_of.entry(*id).or_default(); }
+        // Add pills first per parent in deterministic order
+        for eid in edge_sequence.iter() {
+            if let Some(pid) = parent_of.get(eid).and_then(|p| *p) {
+                children_of.entry(pid).or_default().push(*eid);
+            }
+        }
+        // Then append graph child nodes preserving graph order
+        for (pid, node) in graph.nodes.iter() {
+            let list = children_of.entry(*pid).or_default();
+            for &cid in node.children.iter() { list.push(cid); }
+        }
+    } else {
+        // Without a graph, just group by transform parent, pills then others alphabetically
+        for (id, p) in parent_of.iter() {
+            if let Some(pid) = p { children_of.entry(*pid).or_default().push(*id); }
+        }
+    }
+
+    let mut layout = NodeLayout::new(node_rects, parent_of, children_of, container_nodes, doc.graph.as_ref().map(|g| g.root));
+    let cfg = LayoutConfig::default();
+    // Pre-draw layout updates
+    layout.clamp_children_left_top(&cfg);
+    layout.fit_parents_to_children(&cfg, None);
+    // Sync rects back to doc.views
+    for (id, rect) in layout.node_rects.iter() {
+        if let Some(v) = doc.views.get_mut(id) {
+            v.rect = *rect;
+            if let UiViewKind::Edge { .. } = v.kind { if let Some(p) = v.pill.as_mut() { p.center = rect.center(); } }
+        }
+    }
+
+    // Selection-aware draw order from layout (ignore bias when selection is an edge)
+    let effective_selected = doc.dragging.or(*selection);
+    let selected_for_bias = effective_selected.and_then(|sel| match doc.views.get(&sel).map(|v| &v.kind) {
+        Some(UiViewKind::Edge { .. }) => None,
+        _ => Some(sel),
+    });
+    let base_order = layout.compute_draw_order(selected_for_bias).to_vec();
+
+    // Overlay edges: selected state's incoming ∪ outgoing, or the selected edge itself
     let mut overlay_edges: std::collections::HashSet<crate::model::EntityId> = std::collections::HashSet::new();
     if let Some(sel) = effective_selected {
         match doc.views.get(&sel).map(|v| &v.kind) {
             Some(UiViewKind::Edge { .. }) => { overlay_edges.insert(sel); }
             _ => {
                 if let Some(graph) = &doc.graph {
-                    // Outgoing
                     if let Some(out_ids) = graph.adjacency_out.get(&sel) { for e in out_ids { overlay_edges.insert(*e); } }
-                    // Incoming
                     if let Some(in_ids) = graph.adjacency_in.get(&sel) { for e in in_ids { overlay_edges.insert(*e); } }
-                    // Filter to known edge views only
                     overlay_edges.retain(|eid| matches!(doc.views.get(eid).map(|v| &v.kind), Some(UiViewKind::Edge { .. })));
                 }
             }
         }
     }
 
-    // Gather edges for a given parent id in the deterministic global edge order, excluding overlay edges
-    let edges_for_parent = |pid: &crate::model::EntityId, out: &mut Vec<crate::model::EntityId>| {
-        for eid in edge_sequence.iter() {
-            if overlay_edges.contains(eid) { continue; }
-            if doc.transform_parent.get(eid).and_then(|p| *p) == Some(*pid) { out.push(*eid); }
-        }
-    };
-
-    // DFS traversal building a contiguous order per subtree
-    let mut order: Vec<crate::model::EntityId> = Vec::new();
-    let visit = |root_id: crate::model::EntityId, order: &mut Vec<crate::model::EntityId>| {
-        // Use an explicit stack to avoid borrow issues with recursion
-        let mut stack: Vec<crate::model::EntityId> = Vec::new();
-        let mut enter_stack: Vec<bool> = Vec::new(); // false = exit, true = enter
-        stack.push(root_id);
-        enter_stack.push(true);
-
-        while let Some(enter) = enter_stack.pop() {
-            let id = stack.pop().unwrap();
-            if enter {
-                // On enter: emit node and edges according to kind, then schedule children
-                let is_parent_kind = matches!(doc.views.get(&id).map(|v| &v.kind), Some(UiViewKind::Parent | UiViewKind::Parallel));
-
-                if is_parent_kind {
-                    // Parent backgrounds first
-                    order.push(id);
-                    // Edges under children but above parent background
-                    edges_for_parent(&id, order);
-                } else {
-                    // Leaf: edges should be below the leaf itself (nodes over edges)
-                    edges_for_parent(&id, order);
-                    order.push(id);
-                }
-
-                // Determine child node order
-                let mut children_nodes: Vec<crate::model::EntityId> = Vec::new();
-                if let Some(graph) = &doc.graph {
-                    if let Some(node) = graph.nodes.get(&id) {
-                        for &c in node.children.iter() { children_nodes.push(c); }
-                    }
-                }
-                if let Some(sel_child) = selected_by_parent.get(&id) {
-                    if let Some(pos) = children_nodes.iter().position(|c| c == sel_child) {
-                        let v = children_nodes.remove(pos);
-                        children_nodes.push(v);
-                    }
-                }
-
-                // Schedule children in reverse because we push onto stack (LIFO)
-                for child in children_nodes.into_iter().rev() {
-                    stack.push(child);
-                    enter_stack.push(true);
-                }
-            } else {
-                // Currently no exit-time work
-            }
-        }
-    };
-
-    // Start traversal from graph root when available; else keep existing order
-    if let Some(graph) = &doc.graph {
-        visit(graph.root, &mut order);
-        // Append overlay edges in the global deterministic edge order
-        if !overlay_edges.is_empty() {
-            for eid in edge_sequence.iter() {
-                if overlay_edges.contains(eid) { order.push(*eid); }
-            }
-        }
-        doc.draw_order = order.clone();
-    } else {
-        order = doc.draw_order.clone();
+    let mut order: Vec<crate::model::EntityId> = base_order;
+    if !overlay_edges.is_empty() {
+        for eid in edge_sequence.iter() { if overlay_edges.contains(eid) { order.push(*eid); } }
     }
+    doc.draw_order = order.clone();
 
     // Interactions: node/pill dragging vs background pan; hit test in front-to-back order
     let pointer_pos = response.ctx.input(|i| i.pointer.hover_pos());
@@ -185,20 +158,9 @@ pub fn draw_doc(
                         if pill_rect_s.contains(pos) { hovered_entity = Some(*eid); break; }
                     }
                     _ => {
-                        // Only header of containers is interactive; leaves use full rect
-                        let rect = if let Some(graph) = &doc.graph {
-                            let is_container = matches!(view.kind, UiViewKind::Parent | UiViewKind::Parallel) || graph.nodes.get(eid).map(|n| !n.children.is_empty()).unwrap_or(false);
-                            if is_container {
-                                let header_h_world = 24.0;
-                                let header_rect_w = egui::Rect::from_min_max(view.rect.min, egui::pos2(view.rect.max.x, view.rect.min.y + header_h_world));
-                                egui::Rect::from_min_max(doc.transform.to_screen(header_rect_w.min), doc.transform.to_screen(header_rect_w.max))
-                            } else {
-                                egui::Rect::from_min_max(doc.transform.to_screen(view.rect.min), doc.transform.to_screen(view.rect.max))
-                            }
-                        } else {
-                            egui::Rect::from_min_max(doc.transform.to_screen(view.rect.min), doc.transform.to_screen(view.rect.max))
-                        };
-                        if rect.contains(pos) { hovered_entity = Some(*eid); break; }
+                        if let Some(rect) = layout.interactive_rect_screen(eid, &cfg, &doc.transform) {
+                            if rect.contains(pos) { hovered_entity = Some(*eid); break; }
+                        }
                     }
                 }
             }
@@ -226,137 +188,102 @@ pub fn draw_doc(
         *selection = hovered_entity;
     }
 
-    // Right-click context menu: per-node invisible responses with unique ids
+    // Right-click context menu: per-view invisible responses with unique ids
     let mut context_menu_selection: Option<MenuSelection> = None;
     if let Some(graph) = &doc.graph {
         for (eid, view) in doc.views.iter() {
-            // Only nodes (not edges)
-            if !matches!(view.kind, UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel) { continue; }
-            // Compute interactive rect in screen space (header for containers, full rect for leaves)
-            let is_container = matches!(view.kind, UiViewKind::Parent | UiViewKind::Parallel) || graph.nodes.get(eid).map(|n| !n.children.is_empty()).unwrap_or(false);
-            let rect_screen = if is_container {
-                let header_h_world = 24.0;
-                let header_rect_w = egui::Rect::from_min_max(view.rect.min, egui::pos2(view.rect.max.x, view.rect.min.y + header_h_world));
-                egui::Rect::from_min_max(doc.transform.to_screen(header_rect_w.min), doc.transform.to_screen(header_rect_w.max))
-            } else {
-                egui::Rect::from_min_max(doc.transform.to_screen(view.rect.min), doc.transform.to_screen(view.rect.max))
+            // Compute interactive rect in screen space: full rect for nodes, pill rect for edges
+            let rect_screen = match view.kind {
+                UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => {
+                    egui::Rect::from_min_max(doc.transform.to_screen(view.rect.min), doc.transform.to_screen(view.rect.max))
+                }
+                UiViewKind::Edge { .. } => {
+                    egui::Rect::from_min_max(doc.transform.to_screen(view.rect.min), doc.transform.to_screen(view.rect.max))
+                }
             };
             // Create an invisible response covering the interactive area
             let id = egui::Id::new(("node_ctx", format!("{:?}", doc_id), format!("{:?}", eid)));
             let resp = ui.interact(rect_screen, id, egui::Sense::click());
-            // Left-click selects the node immediately
-            if resp.clicked() {
-                *selection = Some(*eid);
-            }
+            if resp.clicked() { *selection = Some(*eid); }
             resp.context_menu(|menu_ui| {
-                // Right-click also selects the node
                 *selection = Some(*eid);
                 menu_ui.set_min_width(160.0);
-                let items = build_context_menu(graph, *eid);
-                if items.is_empty() { menu_ui.close(); return; }
-                for item in items.into_iter() {
-                    if menu_ui.button(item.label).clicked() {
-                        let sel = match item.kind {
-                            MenuItemKind::MakeLeaf => MenuSelection::MakeLeaf { target: *eid },
-                            MenuItemKind::MakeParent => MenuSelection::MakeParent { target: *eid },
-                            MenuItemKind::MakeParallel => MenuSelection::MakeParallel { target: *eid },
-                            MenuItemKind::Save => MenuSelection::SaveStateMachine { target: *eid },
-                            MenuItemKind::Delete => MenuSelection::DeleteEntity { target: *eid },
-                            MenuItemKind::MakeInitial { parent } => MenuSelection::MakeInitial { parent, new_initial: *eid },
-                            MenuItemKind::AddChild => MenuSelection::AddChildStateMachine { target: *eid },
-                        };
-                        context_menu_selection = Some(sel);
-                        menu_ui.close();
+                match view.kind {
+                    UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => {
+                        let items = build_context_menu(graph, *eid);
+                        if items.is_empty() { menu_ui.close(); return; }
+                        for item in items.into_iter() {
+                            if menu_ui.button(item.label).clicked() {
+                                let sel = match item.kind {
+                                    MenuItemKind::MakeLeaf => MenuSelection::MakeLeaf { target: *eid },
+                                    MenuItemKind::MakeParent => MenuSelection::MakeParent { target: *eid },
+                                    MenuItemKind::MakeParallel => MenuSelection::MakeParallel { target: *eid },
+                                    MenuItemKind::Save => MenuSelection::SaveStateMachine { target: *eid },
+                                    MenuItemKind::Rename => MenuSelection::RenameEntity { target: *eid },
+                                    MenuItemKind::Delete => MenuSelection::DeleteEntity { target: *eid },
+                                    MenuItemKind::MakeInitial { parent } => MenuSelection::MakeInitial { parent, new_initial: *eid },
+                                    MenuItemKind::AddChild => MenuSelection::AddChildStateMachine { target: *eid },
+                                };
+                                context_menu_selection = Some(sel);
+                                menu_ui.close();
+                            }
+                        }
+                    }
+                    UiViewKind::Edge { .. } => {
+                        if menu_ui.button("Rename\u{2026}").clicked() {
+                            context_menu_selection = Some(MenuSelection::RenameEntity { target: *eid });
+                            menu_ui.close();
+                        }
+                        if menu_ui.button("Delete").clicked() {
+                            context_menu_selection = Some(MenuSelection::DeleteEntity { target: *eid });
+                            menu_ui.close();
+                        }
                     }
                 }
             });
         }
     }
 
-    // During drag: move draggable in world coords, with clamping to parent content
+    // During drag: move draggable in world coords, with clamping to parent content via NodeLayout
     let delta_screen = response.drag_delta();
     if response.dragged() {
         if let (Some(ent), Some(anchor)) = (doc.dragging, doc.drag_anchor_world) {
             if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
-                // Desired new min from anchored pointer
                 let pointer_world = doc.transform.to_world(cursor);
                 let desired_min = egui::pos2(pointer_world.x - anchor.x, pointer_world.y - anchor.y);
-
-                // If it's a node (non-edge)
-                if matches!(doc.views.get(&ent).map(|v| &v.kind), Some(UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel)) {
-                    // Pre-fetch parent rect and header flag
-                    let mut parent_rect: Option<egui::Rect> = None;
-                    let mut parent_has_header = false;
-                    if let Some(graph) = &doc.graph {
-                        if let Some(parent_id) = graph.nodes.get(&ent).and_then(|n| n.parent) {
-                            parent_rect = doc.views.get(&parent_id).map(|v| v.rect);
-                            parent_has_header = graph.nodes.get(&parent_id).map(|p| !p.children.is_empty()).unwrap_or(false);
-                        }
-                    }
-                    // Compute new rect using a temporary copy of the old rect, then write back
-                    let (old_rect, size) = match doc.views.get(&ent) { Some(v) => (v.rect, v.rect.size()), None => (egui::Rect::NAN, egui::Vec2::ZERO) };
-                    if old_rect.is_finite() {
-                        let mut new_rect = egui::Rect::from_min_size(desired_min, size);
-                        if let Some(p_rect) = parent_rect {
-                            let header_h_world = 24.0;
-                            let pad = egui::vec2(24.0, 24.0);
-                            let content_min = egui::pos2(
-                                p_rect.min.x + pad.x,
-                                p_rect.min.y + pad.y + if parent_has_header { header_h_world } else { 0.0 },
-                            );
-                            if new_rect.min.x < content_min.x { let dx = content_min.x - new_rect.min.x; new_rect = new_rect.translate(egui::vec2(dx, 0.0)); }
-                            if new_rect.min.y < content_min.y { let dy = content_min.y - new_rect.min.y; new_rect = new_rect.translate(egui::vec2(0.0, dy)); }
-                        }
-                        let move_delta = new_rect.min - old_rect.min;
-                        if let Some(v) = doc.views.get_mut(&ent) { v.rect = new_rect; }
-                        if move_delta != egui::vec2(0.0, 0.0) {
-                            // Descendants via transform_children
-                            let mut stack: Vec<crate::model::EntityId> = doc.transform_children.get(&ent).cloned().unwrap_or_default();
-                            while let Some(cid) = stack.pop() {
-                                if let Some(cv) = doc.views.get_mut(&cid) {
-                                    cv.rect = cv.rect.translate(move_delta);
-                                    // Keep pill center coherent for edge views
-                                    if let Some(pill) = cv.pill.as_mut() { pill.center += move_delta; }
-                                }
-                                if let Some(more) = doc.transform_children.get(&cid) { for &g in more { stack.push(g); } }
+                match doc.views.get(&ent).map(|v| &v.kind) {
+                    Some(UiViewKind::Leaf) | Some(UiViewKind::Parent) | Some(UiViewKind::Parallel) => {
+                        let _ = layout.move_node_clamped_and_propagate(ent, desired_min, &cfg);
+                        // Sync rects for all nodes back to views (simple and safe)
+                        for (id, rect) in layout.node_rects.iter() {
+                            if let Some(v) = doc.views.get_mut(id) {
+                                v.rect = *rect;
+                                if let UiViewKind::Edge { .. } = v.kind { if let Some(p) = v.pill.as_mut() { p.center = rect.center(); } }
                             }
                         }
                     }
-                } else if matches!(doc.views.get(&ent).map(|v| &v.kind), Some(UiViewKind::Edge { .. })) {
-                    // Compute rect without holding a mutable borrow; only write at the end
-                    let label = doc.views.get(&ent).map(|v| v.label.clone()).unwrap_or_default();
-                        // Compute pill size in world from cached label size
+                    Some(UiViewKind::Edge { .. }) => {
+                        // Compute pill size in world from cached label size, set desired rect, then clamp via layout
+                        let label = doc.views.get(&ent).map(|v| v.label.clone()).unwrap_or_default();
                         let zoom = doc.transform.zoom;
                         let size_s = doc.cached_label_size_screen(&label, zoom, &painter);
                         let pad_s = egui::vec2(10.0 * zoom, 6.0 * zoom);
                         let size_w = egui::vec2((size_s.x + 2.0 * pad_s.x) / zoom, (size_s.y + 2.0 * pad_s.y) / zoom);
-                        let mut rect = egui::Rect::from_min_size(desired_min, size_w);
-                        // Clamp only to left/top of pill_parent content; allow right/bottom to expand parent
-                        if let Some(pp) = doc.transform_parent.get(&ent).and_then(|p| *p) {
-                        if let Some(parent_view) = doc.views.get(&pp) {
-                            if let Some(graph) = &doc.graph {
-                                let header_h_world = 24.0;
-                                let pad = egui::vec2(24.0, 24.0);
-                                let has_header = graph.nodes.get(&pp).map(|p| !p.children.is_empty()).unwrap_or(false);
-                                let content_min = egui::pos2(
-                                    parent_view.rect.min.x + pad.x,
-                                    parent_view.rect.min.y + pad.y + if has_header { header_h_world } else { 0.0 },
-                                );
-                                if rect.min.x < content_min.x { let dx = content_min.x - rect.min.x; rect = rect.translate(egui::vec2(dx, 0.0)); }
-                                if rect.min.y < content_min.y { let dy = content_min.y - rect.min.y; rect = rect.translate(egui::vec2(0.0, dy)); }
-                                rect.max = rect.min + rect.size();
+                        let rect = egui::Rect::from_min_size(desired_min, size_w);
+                        layout.node_rects.insert(ent, rect);
+                        layout.clamp_children_left_top(&cfg);
+                        // Sync rects back to views
+                        for (id, rect) in layout.node_rects.iter() {
+                            if let Some(v) = doc.views.get_mut(id) {
+                                v.rect = *rect;
+                                if let UiViewKind::Edge { .. } = v.kind { if let Some(p) = v.pill.as_mut() { p.center = rect.center(); } }
                             }
                         }
                     }
-                    if let Some(v) = doc.views.get_mut(&ent) {
-                        // Keep the unified view rect in sync so container sizing includes pills
-                        v.rect = rect;
-                        if let Some(p) = v.pill.as_mut() { p.center = rect.center(); }
-                    }
+                    _ => {}
                 }
             }
         } else {
-            // Dragging with no captured entity → pan background (primary only)
             if delta_screen.length_sq() > 0.0 && response.ctx.input(|i| i.pointer.primary_down()) {
                 doc.transform.pan_screen_delta(delta_screen);
             }
@@ -366,12 +293,8 @@ pub fn draw_doc(
     // Auto-pan canvas while dragging near the viewport edges to keep node under cursor
     if doc.dragging.is_some() {
         if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
-            let margin = 24.0;
-            let step = 10.0; // screen points per frame
-            if cursor.x < rect.min.x + margin { doc.transform.pan_screen_delta(egui::vec2(step, 0.0)); }
-            if cursor.x > rect.max.x - margin { doc.transform.pan_screen_delta(egui::vec2(-step, 0.0)); }
-            if cursor.y < rect.min.y + margin { doc.transform.pan_screen_delta(egui::vec2(0.0, step)); }
-            if cursor.y > rect.max.y - margin { doc.transform.pan_screen_delta(egui::vec2(0.0, -step)); }
+            let pan = NodeLayout::autopan_suggestion(rect, cursor, 24.0, 10.0);
+            if pan != egui::Vec2::ZERO { doc.transform.pan_screen_delta(pan); }
         }
     }
 
@@ -392,76 +315,14 @@ pub fn draw_doc(
     // Draw graph if any
     if doc.graph.is_none() { return context_menu_selection; }
 
-    // Read-only container pass BEFORE drawing: clamp children to parent content left/top, then expand parent right/bottom
-    if let Some(graph) = &doc.graph {
-        let header_h_world = 24.0;
-        let content_padding = egui::vec2(24.0, 24.0);
-
-        // 1) Clamp children to parent's content left/top (no shrinking on right/bottom here)
-        let mut clamped_children: Vec<(super::super::model::EntityId, egui::Rect)> = Vec::new();
-        for (id, node) in graph.nodes.iter() {
-            let Some(parent_id) = node.parent else { continue };
-            let Some(parent_view) = doc.views.get(&parent_id) else { continue };
-            let Some(child_view) = doc.views.get(id) else { continue };
-            let mut rect = child_view.rect;
-            let content_min = egui::pos2(
-                parent_view.rect.min.x + content_padding.x,
-                parent_view.rect.min.y + content_padding.y + if graph.nodes.get(&parent_id).map(|p| !p.children.is_empty()).unwrap_or(false) { header_h_world } else { 0.0 },
-            );
-            if rect.min.x < content_min.x { let dx = content_min.x - rect.min.x; rect = rect.translate(egui::vec2(dx, 0.0)); }
-            if rect.min.y < content_min.y { let dy = content_min.y - rect.min.y; rect = rect.translate(egui::vec2(0.0, dy)); }
-            if rect != child_view.rect { clamped_children.push((*id, rect)); }
-        }
-        for (id, rect) in clamped_children.into_iter() {
-            if let Some(view) = doc.views.get_mut(&id) { view.rect = rect; }
-        }
-
-        // 2) Expand/shrink each parent right/bottom to tightly include its children and pills plus padding
-        let mut new_bounds: Vec<(super::super::model::EntityId, egui::Rect)> = Vec::new();
-        for (id, view) in doc.views.iter() {
-            if !matches!(view.kind, UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel) { continue; }
-            if let Some(node) = graph.nodes.get(id) {
-                if node.children.is_empty() { continue; }
-                let base_min = view.rect.min;
-                // Start with minimum content area (header + padding), then grow by children
-                let mut req_max = egui::pos2(
-                    base_min.x + content_padding.x,
-                    base_min.y + content_padding.y + header_h_world,
-                );
-                for child_id in node.children.iter() {
-                    if let Some(child_view) = doc.views.get(child_id) {
-                        req_max.x = req_max.x.max(child_view.rect.max.x + content_padding.x);
-                        req_max.y = req_max.y.max(child_view.rect.max.y + content_padding.y);
-                    }
-                }
-                // Include any pills whose pill_parent is this container via transform_children
-                if let Some(children) = doc.transform_children.get(id) {
-                    for cid in children.iter() {
-                        if let Some(cv) = doc.views.get(cid) {
-                            if matches!(cv.kind, UiViewKind::Edge { .. }) {
-                                req_max.x = req_max.x.max(cv.rect.max.x + content_padding.x);
-                                req_max.y = req_max.y.max(cv.rect.max.y + content_padding.y);
-                            }
-                        }
-                    }
-                }
-                // Enforce a minimal size
-                req_max.x = req_max.x.max(base_min.x + 140.0);
-                req_max.y = req_max.y.max(base_min.y + 60.0);
-                new_bounds.push((*id, egui::Rect::from_min_max(base_min, req_max)));
-            }
-        }
-        for (id, rect) in new_bounds.into_iter() {
-            if let Some(view) = doc.views.get_mut(&id) { view.rect = rect; }
-        }
-    }
+    // Layout handled via NodeLayout above; legacy pre-draw sizing/clamp pass removed.
 
     // Single-pass layered draw using computed order
     let zoom = doc.transform.zoom;
     let font_px = (14.0 * zoom).clamp(6.0, 64.0);
     let font_id = egui::FontId::proportional(font_px);
     let pad = 8.0 * zoom;
-    let header_h_world = 24.0;
+    // header height is derived from layout.header_rect; keep constant here only for sizing heuristics elsewhere if needed
 
     // Helpers for edge geometry
     let rect_from_inside_toward = |rect: egui::Rect, toward: egui::Pos2| -> egui::Pos2 {
@@ -611,25 +472,10 @@ pub fn draw_doc(
         );
     };
 
-    // Helper: is this view a direct child of a Parallel state (by view kind or by graph components)?
-    let is_direct_substate_of_parallel_fn = |child_id: &crate::model::EntityId| -> bool {
-        let parent_opt = doc.transform_parent.get(child_id).and_then(|p| *p);
-        let by_view = parent_opt
-            .and_then(|pid| doc.views.get(&pid))
-            .map(|pv| matches!(pv.kind, UiViewKind::Parallel))
-            .unwrap_or(false);
-        if by_view { return true; }
-        if let (Some(graph), Some(pid)) = (&doc.graph, parent_opt) {
-            if let Some(parent_node) = graph.nodes.get(&pid) {
-                let has_parallel = parent_node.components.keys().any(|k| k == bevy_gearbox_protocol::components::PARALLEL || k.ends_with("::Parallel") || k.ends_with("::Parallel>"));
-                return has_parallel;
-            }
-        }
-        false
-    };
+    // Helper: see free function `is_direct_substate_of_parallel`
 
     for id in order.iter() {
-        let Some(view) = doc.views.get(id) else { continue };
+        let Some(view) = doc.views.get(id).cloned() else { continue };
         match view.kind {
             UiViewKind::Parent | UiViewKind::Parallel => {
                 let rect_world = view.rect;
@@ -651,9 +497,8 @@ pub fn draw_doc(
                     egui::Color32::from_rgb(cl(r), cl(g), cl(bch))
                 };
                 painter.rect_filled(rect_screen, rounding, base_fill);
-                let header_min = rect_world.min;
-                let header_max = egui::pos2(rect_world.max.x, rect_world.min.y + header_h_world);
-                let header_rect = egui::Rect::from_min_max(doc.transform.to_screen(header_min), doc.transform.to_screen(header_max));
+                let header_rect_world = layout.header_rect(id, &cfg).unwrap_or(rect_world);
+                let header_rect = egui::Rect::from_min_max(doc.transform.to_screen(header_rect_world.min), doc.transform.to_screen(header_rect_world.max));
                 // Header color: active -> yellow family; deactivated fades from yellow -> gray
                 let is_active = doc.active_nodes.contains(id);
                 let flash_t = doc.node_flash.get(id).copied().unwrap_or(0.0);
@@ -679,12 +524,26 @@ pub fn draw_doc(
                     let alpha = 1.0 - fade_t;
                     text_col = lerp_color(egui::Color32::BLACK, egui::Color32::WHITE, alpha);
                 }
-                painter.text(label_pos, egui::Align2::LEFT_TOP, &view.label, font_id.clone(), text_col);
+                // Inline rename for container nodes
+                let edit_rect = egui::Rect::from_min_max(label_pos, egui::pos2(header_rect.max.x - pad, label_pos.y + 20.0 * zoom));
+                draw_label_or_inline_editor(
+                    ui,
+                    workspace,
+                    doc_id,
+                    id,
+                    edit_rect,
+                    &painter,
+                    label_pos,
+                    egui::Align2::LEFT_TOP,
+                    &view.label,
+                    &font_id,
+                    text_col,
+                );
                 // Selection halo (drawn before border so border stays crisp)
                 let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
                 if is_selected { draw_selection_halo(rect_screen, egui::CornerRadius::same(8)); }
                 // Border: dashed if direct child of a Parallel (draw after header so it stays visible)
-                let is_direct_substate_of_parallel = is_direct_substate_of_parallel_fn(id);
+                let is_direct_substate_of_parallel = is_direct_substate_of_parallel(doc, id);
                 if is_direct_substate_of_parallel {
                     let dash = 6.0;
                     let gap = 4.0;
@@ -816,7 +675,21 @@ pub fn draw_doc(
                     egui::Stroke::new(1.0, edge_col),
                     egui::StrokeKind::Outside,
                 );
-                painter.text(pill_rect_s.center(), egui::Align2::CENTER_CENTER, &view.label, font_id.clone(), pill_text_col);
+                // Inline rename for edge pills
+                let edit_rect = pill_rect_s.shrink2(egui::vec2(6.0 * zoom, 4.0 * zoom));
+                draw_label_or_inline_editor(
+                    ui,
+                    workspace,
+                    doc_id,
+                    id,
+                    edit_rect,
+                    &painter,
+                    pill_rect_s.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &view.label,
+                    &font_id,
+                    pill_text_col,
+                );
             }
             UiViewKind::Leaf => {
                 let rect_world = view.rect;
@@ -852,7 +725,7 @@ pub fn draw_doc(
                 let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
                 if is_selected { draw_selection_halo(rect_screen, egui::CornerRadius::same(8)); }
                 // Border: dashed if direct child of a Parallel
-                let is_direct_substate_of_parallel = is_direct_substate_of_parallel_fn(id);
+                let is_direct_substate_of_parallel = is_direct_substate_of_parallel(doc, id);
                 if is_direct_substate_of_parallel {
                     let dash = 6.0;
                     let gap = 4.0;
@@ -873,7 +746,25 @@ pub fn draw_doc(
                     let alpha = 1.0 - fade_t;
                     text_col = lerp_color(egui::Color32::BLACK, egui::Color32::WHITE, alpha);
                 }
-                painter.text(rect_screen.center_top() + egui::vec2(0.0, 12.0 * zoom), egui::Align2::CENTER_TOP, &view.label, font_id.clone(), text_col);
+                // Inline rename for leaf nodes
+                let label_top = rect_screen.center_top() + egui::vec2(0.0, 12.0 * zoom);
+                let edit_rect = egui::Rect::from_min_max(
+                    egui::pos2(rect_screen.min.x + 8.0 * zoom, label_top.y - 2.0 * zoom),
+                    egui::pos2(rect_screen.max.x - 8.0 * zoom, label_top.y + 18.0 * zoom),
+                );
+                draw_label_or_inline_editor(
+                    ui,
+                    workspace,
+                    doc_id,
+                    id,
+                    edit_rect,
+                    &painter,
+                    label_top,
+                    egui::Align2::CENTER_TOP,
+                    &view.label,
+                    &font_id,
+                    text_col,
+                );
                 // Initial indicator for nodes that are the parent's initial child
                 if doc.is_initial_child.contains(id) {
                     draw_initial_indicator(rect_screen);
@@ -885,6 +776,60 @@ pub fn draw_doc(
     // (old extra sizing pass removed; handled above)
     // (old extra sizing pass removed; handled above)
     context_menu_selection
+}
+
+/// Helper: draw a label normally, or an inline text editor if this entity is being renamed.
+/// Commits on Enter (records pending_rename_commit) and cancels on click outside.
+fn draw_label_or_inline_editor(
+    ui: &mut egui::Ui,
+    workspace: &mut Workspace,
+    doc_id: ServerEntity,
+    target_id: &crate::model::EntityId,
+    edit_rect: egui::Rect,
+    painter: &egui::Painter,
+    text_pos: egui::Pos2,
+    align: egui::Align2,
+    label: &str,
+    font_id: &egui::FontId,
+    color: egui::Color32,
+) {
+    let is_renaming = workspace.rename_inline.as_ref().map(|r| r.doc == doc_id && r.target == *target_id).unwrap_or(false);
+    if is_renaming {
+        // Work on a local buffer, then write back depending on commit/cancel
+        let mut buf = workspace.rename_inline.as_ref().map(|r| r.text.clone()).unwrap_or_else(|| label.to_string());
+        let mut edited = false;
+        let mut cancelled = false;
+        let resp_te = ui.put(edit_rect, egui::TextEdit::singleline(&mut buf));
+        if resp_te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) { edited = true; }
+        if ui.input(|i| i.pointer.any_pressed()) && !resp_te.hovered() { cancelled = true; }
+        if edited {
+            workspace.pending_rename_commit = Some(RenameInline { doc: doc_id, target: *target_id, text: buf.clone() });
+            workspace.rename_inline = None;
+        } else if cancelled {
+            workspace.rename_inline = None;
+        } else {
+            // Persist ongoing edit
+            workspace.rename_inline = Some(RenameInline { doc: doc_id, target: *target_id, text: buf });
+        }
+    } else {
+        painter.text(text_pos, align, label, font_id.clone(), color);
+    }
+}
+
+fn is_direct_substate_of_parallel(doc: &GraphDoc, child_id: &crate::model::EntityId) -> bool {
+    let parent_opt = doc.transform_parent.get(child_id).and_then(|p| *p);
+    let by_view = parent_opt
+        .and_then(|pid| doc.views.get(&pid))
+        .map(|pv| matches!(pv.kind, UiViewKind::Parallel))
+        .unwrap_or(false);
+    if by_view { return true; }
+    if let (Some(graph), Some(pid)) = (&doc.graph, parent_opt) {
+        if let Some(parent_node) = graph.nodes.get(&pid) {
+            let has_parallel = parent_node.components.keys().any(|k| k == bevy_gearbox_protocol::components::PARALLEL || k.ends_with("::Parallel") || k.ends_with("::Parallel>"));
+            if has_parallel { return true; }
+        }
+    }
+    false
 }
 
 

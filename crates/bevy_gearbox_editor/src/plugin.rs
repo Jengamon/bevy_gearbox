@@ -46,7 +46,8 @@ impl Plugin for EditorPlugin {
             .add_observer(on_refresh_index_requested)
             .add_observer(on_open_requested)
             .add_observer(crate::editor::actions::on_unsubscribe_requested)
-            .add_observer(crate::editor::actions::on_save_as_requested);
+            .add_observer(crate::editor::actions::on_save_as_requested)
+            .add_observer(crate::editor::actions::on_start_components_watch_requested);
 
         use bevy_egui::EguiPrimaryContextPass;
         app.add_systems(EguiPrimaryContextPass, ui_system);
@@ -82,6 +83,7 @@ fn poll_network(
     mut net_cmd: MessageWriter<ProtocolNetCommand>,
     mut client_cmd: MessageWriter<ProtocolClientCommand>,
     mut store: ResMut<EditorStore>,
+    mut workspace: ResMut<Workspace>,
 ) {
     let mut processed = 0usize;
     const MAX_PER_FRAME: usize = 64;
@@ -168,6 +170,26 @@ fn poll_network(
                 ui.last_active_seq.insert(doc_id, max_a);
                 ui.last_transition_seq.insert(doc_id, max_t);
                 ui.pending_machine_events.entry(doc_id).or_default().extend(events.into_iter());
+                processed += 1;
+            }
+            ProtocolNetMessage::Components { id, components, removed } => {
+                // Apply Name changes to any open doc containing this entity
+                let target = crate::model::EntityId::Server(ServerEntity(id));
+                let name_key = bevy_gearbox_protocol::components::NAME_REFLECT;
+                let name_opt = components.get(name_key).and_then(|v| v.as_str()).map(|s| s.to_string());
+                for (_doc_id, doc) in workspace.docs.iter_mut() {
+                    if let Some(v) = doc.views.get_mut(&target) {
+                        if let Some(ref name) = name_opt { v.label = name.clone(); }
+                    }
+                    if let Some(g) = doc.graph.as_mut() {
+                        if let Some(n) = g.nodes.get_mut(&target) {
+                            if let Some(ref name) = name_opt { n.display_name = Some(name.clone()); }
+                        }
+                        if let Some(e) = g.edges.get_mut(&target) {
+                            if let Some(ref name) = name_opt { e.display_label = Some(name.clone()); }
+                        }
+                    }
+                }
                 processed += 1;
             }
         }

@@ -142,7 +142,12 @@ pub fn on_unsubscribe_requested(evt: On<UnsubscribeRequested>, mut proto_net: Me
 #[derive(Debug, Clone, Event)]
 pub struct SaveAsRequested { pub entity: ServerEntity }
 
-pub fn on_save_as_requested(save_as_requested: On<SaveAsRequested>, workspace: Res<Workspace>) {
+pub fn on_save_as_requested(
+    save_as_requested: On<SaveAsRequested>,
+    workspace: Res<Workspace>,
+    client: Res<bevy_gearbox_protocol::client::ProtocolClient>,
+    rt: Res<bevy_gearbox_protocol::client::TokioRuntime>,
+) {
     // Open native Save dialog for .sm.ron
     let picked = FileDialog::new()
         .add_filter("State Machine Sidecar", &["sm.ron"])
@@ -155,8 +160,39 @@ pub fn on_save_as_requested(save_as_requested: On<SaveAsRequested>, workspace: R
             let _ = save_sidecar(&path, &sc);
         }
         // Derive logical asset base name (without .sm.ron extension and without directories)
-        let _ = path; // Protocol-side Save/SaveAs will be wired once available
+        let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let base = if fname.ends_with(".sm.ron") { &fname[..fname.len()-7] } else { fname };
+        let id_text = base.to_string();
+        let scn_path = format!("{}.scn.ron", id_text);
+        let sm_path = format!("{}.sm.ron", id_text);
+        let entity_bits = save_as_requested.entity.0;
+        let client_cloned = client.clone();
+        rt.0.spawn(async move {
+            // Set StateMachineId("id_text")
+            let _ = client_cloned.set_state_machine_id(entity_bits, &id_text).await;
+            // Save scene and sidecar on server under assets/
+            let _ = client_cloned.save_graph(entity_bits, &scn_path).await;
+            // Best-effort: write sidecar text derived by server-side clients later; here we just re-use scene id
+            // Caller already wrote local sidecar; server copy will be created empty unless a client sends content.
+            // Skip uploading sidecar contents here because the editor already wrote it locally.
+            // If desired, load local contents and send it as well:
+            if let Ok(txt) = std::fs::read_to_string(&path) {
+                let _ = client_cloned.save_sidecar(&sm_path, &txt).await;
+            }
+        });
     }
+}
+
+#[derive(Debug, Clone, Event)]
+pub struct StartComponentsWatchRequested { pub entity_bits: u64 }
+
+pub fn on_start_components_watch_requested(
+    evt: On<StartComponentsWatchRequested>,
+    mut proto_net: MessageWriter<ProtocolNetCommand>,
+) {
+    // Watch Name reflect component for this entity
+    let comps = vec![bevy_gearbox_protocol::components::NAME_REFLECT.to_string()];
+    proto_net.write(ProtocolNetCommand::StartComponents { id: evt.entity_bits, components: comps });
 }
 
 
