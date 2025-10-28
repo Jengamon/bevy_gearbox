@@ -198,12 +198,8 @@ pub fn on_rename(rename: On<crate::events::Rename>, client: Res<ProtocolClient>,
     let id = rename.target.to_bits();
     let client_cloned = client.clone();
     let rt = rt.0.clone();
-    println!("[rename] client observer: sending world.insert_components Name for entity={} name='{}'", id, name);
     rt.spawn(async move {
-        match client_cloned.rename(id, &name).await {
-            Ok(_) => println!("[rename] client RPC ok: entity={} name='{}'", id, name),
-            Err(e) => println!("[rename] client RPC error: entity={} name='{}' err={}", id, name, e),
-        }
+        let _ = client_cloned.rename(id, &name).await;
     });
 }
 
@@ -534,7 +530,6 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                                             }
                                             if !out.is_empty() {
                                                 let name_cnt = out.iter().filter(|ev| ev.get("kind").and_then(|v| v.as_str()) == Some("name_changed")).count();
-                                                if name_cnt > 0 { println!("[rename] client watch: received {} name_changed event(s) for machine {}", name_cnt, id); }
                                             }
                                             if !out.is_empty() { let _ = tx.send(WatchEvt::Machine { id, events: out }); }
                                         }
@@ -688,7 +683,6 @@ fn drain_protocol_watch_events(
                     // Update cursors from filtered
                     mgr.cursors.insert(id, (max_a, max_t, max_n));
                     let name_cnt = filtered.iter().filter(|ev| ev.get("kind").and_then(|v| v.as_str()) == Some("name_changed")).count();
-                    if name_cnt > 0 { println!("[rename] client filter: {} name_changed forwarded (prev_n={} -> max_n={}) for machine {}", name_cnt, prev_n, max_n, id); }
                     if !filtered.is_empty() {
                         writer.write(ProtocolNetMessage::Machine { id, events: filtered });
                     }

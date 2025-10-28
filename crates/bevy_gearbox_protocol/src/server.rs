@@ -624,10 +624,12 @@ fn on_name_changed(
     q_changed: Query<(Entity, &Name), Changed<Name>>,
     q_sub: Query<&gearbox::SubstateOf>,
     q_sm: Query<&gearbox::StateMachine>,
+    q_source: Query<&gearbox::transitions::Source>,
     mut trackers: ResMut<MachineTrackers>,
 ) {
     for (entity, name) in q_changed.iter() {
-        if let Some(root) = find_machine_root(entity, &q_sub, &q_sm) {
+        let state_entity = q_source.get(entity).map(|s| s.0).unwrap_or(entity);
+        if let Some(root) = find_machine_root(state_entity, &q_sub, &q_sm) {
             let tr = trackers.trackers.entry(root).or_default();
             tr.name_seq = tr.name_seq.saturating_add(1);
             let ev = serde_json::json!({
@@ -637,7 +639,6 @@ fn on_name_changed(
                 "name": name.as_str(),
             });
             push_event(tr, ev);
-            println!("[rename] server: name_changed root={} entity={} name='{}' seq={}", entity_to_bits(root), entity_to_bits(entity), name.as_str(), tr.name_seq);
         }
     }
 }

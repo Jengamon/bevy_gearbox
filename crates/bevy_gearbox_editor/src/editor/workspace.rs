@@ -16,10 +16,10 @@ pub struct Workspace {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ContextTarget { Node(EntityId), Canvas }
+pub enum ContextTarget { Node(EntityId), Edge(EntityId), Canvas }
 
 #[derive(Debug, Clone)]
-pub struct ContextMenuState { pub doc: ServerEntity, pub target: ContextTarget, pub pos: egui::Pos2 }
+pub struct ContextMenuState { pub doc: ServerEntity, pub target: ContextTarget, pub pos: egui::Pos2, pub just_opened: bool }
 
 #[derive(Debug, Clone)]
 pub struct RenameInline { pub doc: ServerEntity, pub target: EntityId, pub text: String }

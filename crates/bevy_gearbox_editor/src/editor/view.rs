@@ -109,10 +109,18 @@ pub fn draw_doc(
         }
     }
 
-    // Selection-aware draw order from layout (ignore bias when selection is an edge)
+    // Selection-aware draw order from layout: when selecting an edge, bias to its parent (or source)
     let effective_selected = doc.dragging.or(*selection);
     let selected_for_bias = effective_selected.and_then(|sel| match doc.views.get(&sel).map(|v| &v.kind) {
-        Some(UiViewKind::Edge { .. }) => None,
+        Some(UiViewKind::Edge { source, .. }) => {
+            // Prefer the edge's transform parent so its ancestor containers rise above siblings
+            if let Some(pid) = doc.transform_parent.get(&sel).and_then(|p| *p) {
+                Some(pid)
+            } else {
+                // Fallback: bias to the source node
+                Some(*source)
+            }
+        }
         _ => Some(sel),
     });
     let base_order = layout.compute_draw_order(selected_for_bias).to_vec();
@@ -132,7 +140,11 @@ pub fn draw_doc(
         }
     }
 
-    let mut order: Vec<crate::model::EntityId> = base_order;
+    // Draw each edge only once: remove overlay edges from base order, then append them on top
+    let mut order: Vec<crate::model::EntityId> = base_order
+        .into_iter()
+        .filter(|id| !overlay_edges.contains(id))
+        .collect();
     if !overlay_edges.is_empty() {
         for eid in edge_sequence.iter() { if overlay_edges.contains(eid) { order.push(*eid); } }
     }
@@ -188,21 +200,31 @@ pub fn draw_doc(
         *selection = hovered_entity;
     }
 
-    // Right-click context menu: per-view invisible responses with unique ids
+    // Right-click context menu trigger: only create an interact response for the hovered entity
+    // so topmost widget wins for hit-testing, but keep menu open independently of hover.
     let mut context_menu_selection: Option<MenuSelection> = None;
     if let Some(graph) = &doc.graph {
-        for (eid, view) in doc.views.iter() {
+        for eid in order.iter() {
+            let Some(view) = doc.views.get(eid) else { continue };
             // Compute interactive rect in screen space: full rect for nodes, pill rect for edges
             let rect_screen = match view.kind {
                 UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => {
                     egui::Rect::from_min_max(doc.transform.to_screen(view.rect.min), doc.transform.to_screen(view.rect.max))
                 }
                 UiViewKind::Edge { .. } => {
-                    egui::Rect::from_min_max(doc.transform.to_screen(view.rect.min), doc.transform.to_screen(view.rect.max))
+                    let zoom = doc.transform.zoom;
+                    let text_size_s = doc.cached_label_size_screen(&view.label, zoom, &ui.painter());
+                    let pill_pad_x = 10.0 * zoom;
+                    let pill_pad_y = 6.0 * zoom;
+                    let pill_size_s = egui::vec2(text_size_s.x + 2.0 * pill_pad_x, text_size_s.y + 2.0 * pill_pad_y);
+                    let center_w = view.pill.as_ref().map(|p| p.center).unwrap_or(view.rect.center());
+                    let pill_center_s = doc.transform.to_screen(center_w);
+                    egui::Rect::from_center_size(pill_center_s, pill_size_s)
                 }
             };
-            // Create an invisible response covering the interactive area
-            let id = egui::Id::new(("node_ctx", format!("{:?}", doc_id), format!("{:?}", eid)));
+            // Build a stable, collision-free id per doc, per entity, and per kind (node vs edge)
+            let kind_tag: &str = match view.kind { UiViewKind::Edge { .. } => "edge", _ => "node" };
+            let id = egui::Id::new(("node_ctx", doc_id, kind_tag)).with(*eid);
             let resp = ui.interact(rect_screen, id, egui::Sense::click());
             if resp.clicked() { *selection = Some(*eid); }
             resp.context_menu(|menu_ui| {
@@ -210,27 +232,34 @@ pub fn draw_doc(
                 menu_ui.set_min_width(160.0);
                 match view.kind {
                     UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => {
-                        let items = build_context_menu(graph, *eid);
-                        if items.is_empty() { menu_ui.close(); return; }
-                        for item in items.into_iter() {
-                            if menu_ui.button(item.label).clicked() {
-                                let sel = match item.kind {
-                                    MenuItemKind::MakeLeaf => MenuSelection::MakeLeaf { target: *eid },
-                                    MenuItemKind::MakeParent => MenuSelection::MakeParent { target: *eid },
-                                    MenuItemKind::MakeParallel => MenuSelection::MakeParallel { target: *eid },
-                                    MenuItemKind::Save => MenuSelection::SaveStateMachine { target: *eid },
-                                    MenuItemKind::Rename => MenuSelection::RenameEntity { target: *eid },
-                                    MenuItemKind::Delete => MenuSelection::DeleteEntity { target: *eid },
-                                    MenuItemKind::MakeInitial { parent } => MenuSelection::MakeInitial { parent, new_initial: *eid },
-                                    MenuItemKind::AddChild => MenuSelection::AddChildStateMachine { target: *eid },
-                                };
-                                context_menu_selection = Some(sel);
+                        if let Some(graph) = &doc.graph {
+                            let items = build_context_menu(graph, *eid);
+                            if items.is_empty() {
                                 menu_ui.close();
+                                return;
                             }
+                            for item in items.into_iter() {
+                                if menu_ui.button(item.label).clicked() {
+                                    let sel = match item.kind {
+                                        MenuItemKind::MakeLeaf => MenuSelection::MakeLeaf { target: *eid },
+                                        MenuItemKind::MakeParent => MenuSelection::MakeParent { target: *eid },
+                                        MenuItemKind::MakeParallel => MenuSelection::MakeParallel { target: *eid },
+                                        MenuItemKind::Save => MenuSelection::SaveStateMachine { target: *eid },
+                                        MenuItemKind::Rename => MenuSelection::RenameEntity { target: *eid },
+                                        MenuItemKind::Delete => MenuSelection::DeleteEntity { target: *eid },
+                                        MenuItemKind::MakeInitial { parent } => MenuSelection::MakeInitial { parent, new_initial: *eid },
+                                        MenuItemKind::AddChild => MenuSelection::AddChildStateMachine { target: *eid },
+                                    };
+                                    context_menu_selection = Some(sel);
+                                    menu_ui.close();
+                                }
+                            }
+                        } else {
+                            menu_ui.close();
                         }
                     }
                     UiViewKind::Edge { .. } => {
-                        if menu_ui.button("Rename\u{2026}").clicked() {
+                        if menu_ui.button("Rename").clicked() {
                             context_menu_selection = Some(MenuSelection::RenameEntity { target: *eid });
                             menu_ui.close();
                         }
@@ -242,6 +271,7 @@ pub fn draw_doc(
                 }
             });
         }
+        // Persistent menu rendering handled by egui::Context; nothing to draw here.
     }
 
     // During drag: move draggable in world coords, with clamping to parent content via NodeLayout
@@ -799,9 +829,12 @@ fn draw_label_or_inline_editor(
         let mut buf = workspace.rename_inline.as_ref().map(|r| r.text.clone()).unwrap_or_else(|| label.to_string());
         let mut edited = false;
         let mut cancelled = false;
-        let resp_te = ui.put(edit_rect, egui::TextEdit::singleline(&mut buf));
-        if resp_te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) { edited = true; }
-        if ui.input(|i| i.pointer.any_pressed()) && !resp_te.hovered() { cancelled = true; }
+        let _resp_te = ui.put(edit_rect, egui::TextEdit::singleline(&mut buf));
+        // Commit on Enter while focused
+        if ui.input(|i| i.key_pressed(egui::Key::Enter)) { edited = true; }
+        // Cancel only if user clicks outside the edit rect
+        let clicked_outside = ui.input(|i| i.pointer.any_pressed()) && !ui.rect_contains_pointer(edit_rect);
+        if clicked_outside { cancelled = true; }
         if edited {
             workspace.pending_rename_commit = Some(RenameInline { doc: doc_id, target: *target_id, text: buf.clone() });
             workspace.rename_inline = None;
@@ -831,5 +864,6 @@ fn is_direct_substate_of_parallel(doc: &GraphDoc, child_id: &crate::model::Entit
     }
     false
 }
+
 
 

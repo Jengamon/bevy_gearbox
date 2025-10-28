@@ -260,7 +260,6 @@ fn sync_snapshots_to_workspace(
                         let ent_u = crate::util::canonicalize_entity_u64(ent_u);
                         let eid = EntityId::Server(ServerEntity(ent_u));
                         let name = name_s.to_string();
-                                println!("[rename] editor apply: entity={} name='{}'", ent_u, name);
                         if let Some(v) = doc.views.get_mut(&eid) { v.label = name.clone(); }
                         if let Some(g) = doc.graph.as_mut() {
                             if let Some(n) = g.nodes.get_mut(&eid) { n.display_name = Some(name.clone()); }
