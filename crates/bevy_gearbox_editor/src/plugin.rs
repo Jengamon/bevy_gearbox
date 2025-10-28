@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use std::collections::HashMap;
 
-use crate::net::{NetPlugin, NetCommand, NetEvent, StampedEvent, ActiveSession};
+use bevy_gearbox_protocol::client::{GearboxProtocolClientPlugin, ProtocolNetMessage, ProtocolClientMessage, ProtocolNetCommand};
 use crate::types::ServerEntity;
 use crate::model::StateMachineGraph;
 use crate::editor::workspace::Workspace;
@@ -14,7 +14,7 @@ use crate::editor::adapter::project_graph_into_doc;
 use crate::persistence::{apply_sidecar_to_doc, compute_graph_fingerprint, load_sidecar, parse_sidecar_text};
 use crate::editor::model::types::ConnectionState as EditorConnectionState;
 use crate::editor::model::types::{IndexItem};
-use crate::component as c;
+use bevy_gearbox_protocol::components as c;
 use crate::model::EntityId;
 use serde_json::Value as JsonValue;
 
@@ -22,7 +22,7 @@ pub(crate) struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(NetPlugin)
+        app.add_plugins(GearboxProtocolClientPlugin)
             .insert_resource(UiState {
                 url_edit: String::new(),
                 connecting: false,
@@ -54,7 +54,7 @@ impl Plugin for EditorPlugin {
 }
 
 #[derive(Resource, Clone)]
-struct UiState {
+pub(crate) struct UiState {
     url_edit: String,
     connecting: bool,
     error: Option<String>,
@@ -77,160 +77,96 @@ fn setup_camera(mut commands: Commands) {
 
 fn poll_network(
     mut ui: ResMut<UiState>,
-    mut events: MessageReader<StampedEvent>,
-    mut cmd_writer: MessageWriter<NetCommand>,
-    mut active_session: ResMut<ActiveSession>,
+    mut client_msgs: MessageReader<ProtocolClientMessage>,
+    mut net_msgs: MessageReader<ProtocolNetMessage>,
+    mut net_cmd: MessageWriter<ProtocolNetCommand>,
     mut store: ResMut<EditorStore>,
 ) {
     let mut processed = 0usize;
     const MAX_PER_FRAME: usize = 64;
-    // Keep network session aligned with editor session (placeholder; set on connect)
-    if let EditorConnectionState::Connected { session_id, .. } = store.connection.clone() {
-        if active_session.0 != session_id { active_session.0 = session_id; }
-    }
-    let cur_session = active_session.0;
-    for stamped in events.read() {
+    // Handle client responses (e.g., RefreshMachines)
+    for msg in client_msgs.read() {
         if processed >= MAX_PER_FRAME { break; }
-        // Drop stale results from previous sessions
-        if stamped.session != cur_session { continue; }
-        match &*stamped.event {
-            NetEvent::Connected => {
-                // First: reflect connected state and align session ids so stamped events aren't dropped
-                if let Some(ep) = store.last_endpoint.clone() {
-                    store.session_id = store.session_id.wrapping_add(1);
-                    let sid = store.session_id;
-                    store.connection = crate::editor::model::types::ConnectionState::Connected { session_id: sid, endpoint: ep };
-                    // Ensure network stamps use the new session id before spawning tasks
-                    active_session.0 = sid;
-                }
-                // Then: kick off discovery snapshot + watch
-                cmd_writer.write(NetCommand::Refresh);
-                cmd_writer.write(NetCommand::StartDiscoveryWatch);
-                processed += 1;
-            }
-            NetEvent::RefreshResult(Ok(machines)) => {
-                // Update UI cache and editor index; no autoload
-                ui.machines = machines.iter().map(|m| (m.id, m.name.clone())).collect();
+        match msg {
+            ProtocolClientMessage::RefreshResult(Ok(list)) => {
+                // Update UI cache and editor index
+                ui.machines = list.iter().map(|m| (ServerEntity(m.id), m.name.clone())).collect();
                 ui.connecting = false;
                 ui.error = None;
                 store.index.is_loading = false;
                 store.index.error = None;
-                store.index.items = machines.iter().map(|m| IndexItem { name: m.name.clone(), entity: m.id }).collect();
+                store.index.items = list.iter().map(|m| IndexItem { name: m.name.clone(), entity: ServerEntity(m.id) }).collect();
+                // Mark connected for UI button logic
+                let ep = store.last_endpoint.clone().unwrap_or_else(|| "http://127.0.0.1:15703".to_string());
+                store.connection = EditorConnectionState::Connected { session_id: store.session_id, endpoint: ep };
+                // Now that the refresh succeeded, start discovery watch
+                net_cmd.write(ProtocolNetCommand::StartDiscovery);
                 processed += 1;
             }
-            NetEvent::DiscoveryEvents(Ok(batch)) => {
-                // Merge batch into index (simple replace-by-id for now)
-                for m in batch {
+            ProtocolClientMessage::RefreshResult(Err(e)) => {
+                ui.connecting = false;
+                ui.error = Some(e.clone());
+                store.index.is_loading = false;
+                store.index.error = Some(e.clone());
+                store.connection = EditorConnectionState::Disconnected;
+                processed += 1;
+            }
+            ProtocolClientMessage::GraphResult { id, graph } => {
+                let doc_id = ServerEntity(*id);
+                if let Some(sm_graph) = convert_wire_graph_to_state_machine_graph(graph.clone()) {
+                    ui.graphs.insert(doc_id, sm_graph);
+                }
+                processed += 1;
+            }
+            ProtocolClientMessage::SidecarFound { id, text } => {
+                let doc_id = ServerEntity(*id);
+                ui.sidecar_texts.insert(doc_id, text.clone());
+                processed += 1;
+            }
+            ProtocolClientMessage::SidecarMissing { .. } => {
+                // No-op; fallback to local disk/default layout in sync pass
+                processed += 1;
+            }
+        }
+    }
+    // Handle net watch messages (discovery, machine deltas)
+    for msg in net_msgs.read() {
+        if processed >= MAX_PER_FRAME { break; }
+        match msg.clone() {
+            ProtocolNetMessage::Discovery(batch) => {
+                for m in batch.into_iter() {
                     if let Some(name) = m.name.clone() {
-                        if let Some(ix) = ui.machines.iter_mut().position(|(id, _)| id.0 == m.id.0) {
-                            ui.machines[ix] = (m.id, Some(name));
+                        if let Some(ix) = ui.machines.iter_mut().position(|(id, _)| id.0 == m.id) {
+                            ui.machines[ix] = (ServerEntity(m.id), Some(name));
                         } else {
-                            ui.machines.push((m.id, Some(name)));
+                            ui.machines.push((ServerEntity(m.id), Some(name)));
                         }
                     } else {
-                        ui.machines.retain(|(id, _)| id.0 != m.id.0);
+                        ui.machines.retain(|(id, _)| id.0 != m.id);
                     }
                 }
-                // Rebuild store index list
                 ui.machines.sort_by_key(|(id, _)| id.0);
                 store.index.items = ui.machines.iter().map(|(id, name)| IndexItem { name: name.clone(), entity: *id }).collect();
-                // Re-arm watcher for next batch
-                cmd_writer.write(NetCommand::StartDiscoveryWatch);
                 processed += 1;
             }
-            NetEvent::RefreshResult(Err(e)) => {
-                ui.connecting = false;
-                ui.error = Some(e.to_string());
-                store.index.is_loading = false;
-                store.index.error = Some(e.to_string());
-                processed += 1;
-            }
-            NetEvent::GraphResult { id, result } => {
-                match result {
-                    Ok(graph) => {
-                        // One-shot inbox: store snapshot briefly; projection will drain and clear
-                        ui.graphs.insert(*id, graph.clone());
-                        // Only arm network feeds if this doc is (or will be) active
-                        if let Some(active) = store.active_doc {
-                            if active == *id {
-                                cmd_writer.write(NetCommand::FetchActive { id: *id });
-                                cmd_writer.write(NetCommand::Subscribe { id: *id });
-                                let la = *ui.last_active_seq.get(id).unwrap_or(&0);
-                                let lt = *ui.last_transition_seq.get(id).unwrap_or(&0);
-                                cmd_writer.write(NetCommand::StartMachineWatch { id: *id, last_active_seq: la, last_transition_seq: lt });
-                            }
-                        }
-                        // If the root has a StateMachineId, request its sidecar via RPC (derive path: <id>.sm.ron)
-                        if let Some(id_text) = graph.nodes.get(&graph.root)
-                            .and_then(|n| n.components.get(c::STATE_MACHINE_ID))
-                            .and_then(|e| e.value_json.as_str())
-                        {
-                            let path = format!("{}.sm.ron", id_text);
-                            cmd_writer.write(NetCommand::FetchSidecarByPath { path, doc: *id });
-                        }
-                    }
-                    Err(e) => {}
-                }
-                processed += 1;
-            }
-            NetEvent::ActiveResult { id, result } => {
-                if let Ok((active, leaves)) = result {
-                    ui.pending_active.insert(*id, (active.clone(), leaves.clone()));
-                }
-                processed += 1;
-            }
-            NetEvent::MachineDeltas { id, result } => {
-                if let Ok(events) = result {
-                    // Stash for application in workspace sync
-                    // Update last seqs before re-arming
-                    let mut max_a = ui.last_active_seq.get(id).copied().unwrap_or(0);
-                    let mut max_t = ui.last_transition_seq.get(id).copied().unwrap_or(0);
-                    for ev in events.iter() {
-                        let seq = ev.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
-                        match ev.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
-                            "active_changed" => { if seq > max_a { max_a = seq; } }
-                            "transition_edge" => { if seq > max_t { max_t = seq; } }
-                            _ => {}
-                        }
-                    }
-                    let old_a = ui.last_active_seq.get(id).copied().unwrap_or(0);
-                    let old_t = ui.last_transition_seq.get(id).copied().unwrap_or(0);
-                    ui.last_active_seq.insert(*id, max_a);
-                    ui.last_transition_seq.insert(*id, max_t);
-                    ui.pending_machine_events.entry(*id).or_default().extend(events.iter().cloned());
-                    // Re-arm only if still connected and this is the active doc
-                    if let EditorConnectionState::Connected { .. } = store.connection {
-                        if let Some(active) = store.active_doc { if active == *id { cmd_writer.write(NetCommand::StartMachineWatch { id: *id, last_active_seq: max_a, last_transition_seq: max_t }); } }
+            ProtocolNetMessage::Machine { id, events } => {
+                let doc_id = ServerEntity(id);
+                // Update last seqs and stash events
+                let mut max_a = ui.last_active_seq.get(&doc_id).copied().unwrap_or(0);
+                let mut max_t = ui.last_transition_seq.get(&doc_id).copied().unwrap_or(0);
+                for ev in events.iter() {
+                    let seq = ev.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+                    match ev.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
+                        "active_changed" => { if seq > max_a { max_a = seq; } }
+                        "transition_edge" => { if seq > max_t { max_t = seq; } }
+                        _ => {}
                     }
                 }
+                ui.last_active_seq.insert(doc_id, max_a);
+                ui.last_transition_seq.insert(doc_id, max_t);
+                ui.pending_machine_events.entry(doc_id).or_default().extend(events.into_iter());
                 processed += 1;
             }
-            NetEvent::Disconnected { .. } | NetEvent::ConnectionError(_) => {
-                // Clear UI caches and prevent re-arming by leaving connection Disconnected
-                ui.machines.clear();
-                ui.graphs.clear();
-                ui.sidecar_texts.clear();
-                ui.pending_active.clear();
-                ui.pending_machine_events.clear();
-                ui.last_active_seq.clear();
-                ui.last_transition_seq.clear();
-                processed += 1;
-            }
-            NetEvent::SidecarResult(r) => { let _ = r; processed += 1; }
-            NetEvent::SidecarResultFor { id, result } => {
-                // Cache sidecar text for application during workspace sync
-                if let Ok(Some(text)) = result { ui.sidecar_texts.insert(*id, text.clone()); }
-                processed += 1;
-            }
-            NetEvent::SelectResult(Err(e)) => {
-                ui.error = Some(format!("Select failed: {}", e));
-                processed += 1;
-            }
-            NetEvent::SaveResult(Err(e)) => {
-                ui.error = Some(format!("Save failed: {}", e));
-                processed += 1;
-            }
-            _ => {}
         }
     }
 }
@@ -299,12 +235,10 @@ fn sync_snapshots_to_workspace(
     let mut to_remove: Vec<ServerEntity> = Vec::new();
     for (id, graph) in ui.graphs.iter() {
         // Capture metrics before taking a mutable borrow of workspace.docs entry
-        let docs_len = workspace.docs.len();
         let was_empty = workspace.docs.get(id).and_then(|d| d.graph.as_ref()).is_none();
         let entry = workspace.docs.entry(*id).or_default();
         project_graph_into_doc(entry, graph.clone());
         // After mutation, avoid borrowing workspace again; use the entry we have
-        let graph_present = entry.graph.is_some();
         to_remove.push(*id);
         // Try applying sidecar when: (a) first load, or (b) new sidecar text arrived
         let fp = compute_graph_fingerprint(&graph);
@@ -364,14 +298,58 @@ fn sync_snapshots_to_workspace(
                 let fp = compute_graph_fingerprint(graph);
                 if let Ok(sc) = parse_sidecar_text(text) {
                     let matched = sc.graph_fingerprint.as_deref() == Some(&fp) || sc.graph_fingerprint.is_none();
-                    let mut applied = false;
-                    if matched { apply_sidecar_to_doc(doc, &sc); applied = true; consume_sidecar_for.push(*id); }
+                    if matched { apply_sidecar_to_doc(doc, &sc); consume_sidecar_for.push(*id); }
                 }
             }
         }
     }
     // Now consume fetched sidecar texts
     for id in consume_sidecar_for { ui.sidecar_texts.remove(&id); }
+}
+
+fn convert_wire_graph_to_state_machine_graph(graph: serde_json::Value) -> Option<StateMachineGraph> {
+    use crate::model as m;
+    use crate::types::ServerEntity;
+    let root_s = graph.get("root").and_then(|v| v.as_str())?;
+    let root_u = root_s.parse::<u64>().ok()?;
+    let mut out = m::StateMachineGraph::new(m::StateNode::new(m::EntityId::Server(ServerEntity(root_u))));
+    // Nodes
+    if let Some(nodes) = graph.get("nodes").and_then(|v| v.as_array()) {
+        for n in nodes.iter() {
+            let id_u = n.get("id").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok())?;
+            let id = m::EntityId::Server(ServerEntity(id_u));
+            let mut node = out.nodes.remove(&id).unwrap_or_else(|| m::StateNode::new(id));
+            if let Some(parent_s) = n.get("parent").and_then(|v| v.as_str()) { if let Ok(pu) = parent_s.parse::<u64>() { node.parent = Some(m::EntityId::Server(ServerEntity(pu))); } }
+            if let Some(comps) = n.get("components").and_then(|v| v.as_object()) {
+                for (k, v) in comps.iter() { node.components.insert(m::ComponentEntry::new(k.clone(), v.clone())); }
+                if let Some(name_v) = comps.get("Name") { if let Some(s) = name_v.as_str() { node.display_name = Some(s.to_string()); } }
+                if let Some(children_v) = comps.get("bevy_gearbox::Substates").and_then(|v| v.as_array()) {
+                    node.children = children_v.iter().filter_map(|vv| vv.as_str()).filter_map(|s| s.parse::<u64>().ok()).map(|u| m::EntityId::Server(ServerEntity(u))).collect();
+                }
+            }
+            out.nodes.insert(id, node);
+        }
+    }
+    // Edges
+    if let Some(edges) = graph.get("edges").and_then(|v| v.as_array()) {
+        for e in edges.iter() {
+            let id_u = e.get("id").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok())?;
+            let src_u = e.get("source").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok())?;
+            let tgt_u = e.get("target").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            if tgt_u == 0 { continue; }
+            let id = m::EntityId::Server(ServerEntity(id_u));
+            let src = m::EntityId::Server(ServerEntity(src_u));
+            let tgt = m::EntityId::Server(ServerEntity(tgt_u));
+            let mut edge = m::Edge::new(id, src, tgt);
+            if let Some(comps) = e.get("components").and_then(|v| v.as_object()) {
+                for (k, v) in comps.iter() { edge.components.insert(m::ComponentEntry::new(k.clone(), v.clone())); }
+            }
+            out.adjacency_out.entry(src).or_default().push(id);
+            out.adjacency_in.entry(tgt).or_default().push(id);
+            out.edges.insert(id, edge);
+        }
+    }
+    Some(out)
 }
 
 

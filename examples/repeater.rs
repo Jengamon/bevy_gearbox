@@ -13,7 +13,7 @@ fn main() {
         .add_plugins(GearboxPlugin)
         .add_plugins(EguiPlugin::default())
         .add_plugins(WorldInspectorPlugin::new())
-        .add_plugins(bevy_gearbox::RemoteServerPlugin::new())
+        .add_plugins(bevy_gearbox_protocol::server::GearboxProtocolServerPlugin::default())
         .add_systems(Startup, setup)
         .add_systems(Update, (input_system, repeater_system))
         .add_observer(print_enter_state_messages)

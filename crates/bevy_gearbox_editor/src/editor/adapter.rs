@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 use crate::model::{StateMachineGraph, EntityId};
-use crate::component as c;
+use bevy_gearbox_protocol::components as c;
 use super::view_model::{GraphDoc, UiNode, UiNodeKind, UiEdge, EdgePill, UiView, UiViewKind, PillData};
 
 /// Merge a fresh snapshot into an existing GraphDoc, preserving layout where possible
@@ -40,7 +40,12 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
             egui::pos2((s.x + t.x) * 0.5, (s.y + t.y) * 0.5)
         };
         let pill = if let Some(prev) = preserved.as_ref() { prev.pill.as_ref().map(|p| EdgePill { pos: p.center, offset_from_midpoint: p.offset_from_midpoint, dragging: p.dragging }).unwrap_or(EdgePill { pos: midpoint, offset_from_midpoint: egui::Vec2::ZERO, dragging: false }) } else { EdgePill { pos: midpoint, offset_from_midpoint: egui::Vec2::ZERO, dragging: false } };
-        let label = edge.display_label.clone().unwrap_or_else(|| "Edge".to_string());
+        // Derive label per convention: Name > EventEdge<T> -> T > AlwaysEdge -> "Always" > id
+        let mut label = edge
+            .display_label
+            .clone()
+            .unwrap_or_else(|| crate::model::choose_edge_label_bag(&edge.components));
+        if label == "Edge" { label = format!("{}", eid); }
         // Pill parent: apply parent-child rule for edges between a parent and its child (either direction)
         let pill_parent = compute_pill_parent_for_edge(&snapshot, edge.source, edge.target);
         edge_views.insert(*eid, UiEdge { id: *eid, source: edge.source, target: edge.target, label, pill, pill_parent });

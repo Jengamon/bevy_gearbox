@@ -1,4 +1,4 @@
-use crate::component as c;
+use bevy_gearbox_protocol::components as c;
 use crate::model::{EntityId, StateMachineGraph};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

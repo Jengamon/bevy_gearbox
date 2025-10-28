@@ -1,11 +1,5 @@
 #![feature(associated_type_defaults)]
 
-#[cfg(feature = "editor")]
-pub mod server;
-
-#[cfg(feature = "editor")]
-pub use server::RemoteServerPlugin;
-
 use bevy::{prelude::*, reflect::Reflect};
 use bevy::platform::collections::HashSet;
 

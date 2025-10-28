@@ -349,6 +349,8 @@ pub fn draw_doc(
                         }
                     }
                     if let Some(v) = doc.views.get_mut(&ent) {
+                        // Keep the unified view rect in sync so container sizing includes pills
+                        v.rect = rect;
                         if let Some(p) = v.pill.as_mut() { p.center = rect.center(); }
                     }
                 }
@@ -619,7 +621,7 @@ pub fn draw_doc(
         if by_view { return true; }
         if let (Some(graph), Some(pid)) = (&doc.graph, parent_opt) {
             if let Some(parent_node) = graph.nodes.get(&pid) {
-                let has_parallel = parent_node.components.keys().any(|k| k == crate::component::PARALLEL || k.ends_with("::Parallel") || k.ends_with("::Parallel>"));
+                let has_parallel = parent_node.components.keys().any(|k| k == bevy_gearbox_protocol::components::PARALLEL || k.ends_with("::Parallel") || k.ends_with("::Parallel>"));
                 return has_parallel;
             }
         }

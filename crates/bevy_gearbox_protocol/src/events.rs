@@ -1,0 +1,31 @@
+use bevy::prelude::*;
+
+#[derive(EntityEvent, Debug, Clone)]
+pub struct Rename {
+    #[event_target]
+    pub target: Entity,
+    pub name: String,
+}
+
+#[derive(EntityEvent, Debug, Clone)]
+pub struct Despawn { #[event_target] pub target: Entity }
+
+#[derive(Event, Debug, Clone)]
+pub struct SpawnStateMachine { pub name: Option<String> }
+
+#[derive(Event, Debug, Clone)]
+pub struct SpawnSubstate { pub parent: Entity, pub name: Option<String> }
+
+#[derive(Event, Debug, Clone)]
+pub struct SetInitialState { pub parent: Entity, pub child: Entity }
+
+#[derive(Debug, Clone, Copy)]
+pub enum NodeType { Leaf, Parent, Parallel }
+
+#[derive(EntityEvent, Debug, Clone)]
+pub struct ChangeNodeType { #[event_target] pub target: Entity, pub to: NodeType }
+
+#[derive(EntityEvent, Debug, Clone)]
+pub struct ResetRegion { #[event_target] pub target: Entity }
+
+

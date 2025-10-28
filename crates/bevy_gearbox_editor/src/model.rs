@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use crate::types::ServerEntity;
-use crate::component as c;
+use bevy_gearbox_protocol::components as c;
 
 /// Stable Rust type path of a component (e.g. "bevy_ecs::name::Name").
 pub(crate) type TypePathString = String;
@@ -308,7 +308,7 @@ fn extract_name_from_bag(bag: &ComponentBag) -> Option<String> {
     None
 }
 
-fn choose_edge_label_bag(bag: &ComponentBag) -> String {
+pub(crate) fn choose_edge_label_bag(bag: &ComponentBag) -> String {
     // 1) Prefer explicit Name text if present
     if let Some(name_val) = bag.entries.get(c::NAME).map(|e| e.value_json.clone()) {
         if let Some(s) = name_val.as_str() {
