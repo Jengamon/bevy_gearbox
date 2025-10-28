@@ -19,6 +19,7 @@ pub const EDITOR_SAVE_SIDECAR: &str = "editor.save_sidecar";
 pub const EDITOR_LOAD_SIDECAR: &str = "editor.load_sidecar";
 pub const EDITOR_FIND_SIDECAR_BY_FINGERPRINT: &str = "editor.find_sidecar_by_fingerprint";
 pub const EDITOR_SET_STATE_MACHINE_ID: &str = "editor.set_state_machine_id";
+pub const EDITOR_SIDECAR_FOR_MACHINE: &str = "editor.sidecar_for_machine";
 
 // Graph snapshot convenience RPC
 pub const EDITOR_MACHINE_GRAPH: &str = "editor.machine_graph";

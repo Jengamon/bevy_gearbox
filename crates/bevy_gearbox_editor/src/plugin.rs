@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use std::collections::HashMap;
 
-use bevy_gearbox_protocol::client::{GearboxProtocolClientPlugin, ProtocolNetMessage, ProtocolClientMessage, ProtocolNetCommand};
+use bevy_gearbox_protocol::client::{GearboxProtocolClientPlugin, ProtocolNetMessage, ProtocolClientMessage, ProtocolNetCommand, ProtocolClientCommand};
 use crate::types::ServerEntity;
 use crate::model::StateMachineGraph;
 use crate::editor::workspace::Workspace;
@@ -80,6 +80,7 @@ fn poll_network(
     mut client_msgs: MessageReader<ProtocolClientMessage>,
     mut net_msgs: MessageReader<ProtocolNetMessage>,
     mut net_cmd: MessageWriter<ProtocolNetCommand>,
+    mut client_cmd: MessageWriter<ProtocolClientCommand>,
     mut store: ResMut<EditorStore>,
 ) {
     let mut processed = 0usize;
@@ -112,11 +113,13 @@ fn poll_network(
                 processed += 1;
             }
             ProtocolClientMessage::GraphResult { id, graph } => {
-                let doc_id = ServerEntity(*id);
                 if let Some(sm_graph) = convert_wire_graph_to_state_machine_graph(graph.clone()) {
+                    let fp = compute_graph_fingerprint(&sm_graph);
+                    let doc_id = ServerEntity(*id);
                     ui.graphs.insert(doc_id, sm_graph);
+                    // Prefer server-resolved sidecar lookup by machine
+                    client_cmd.write(ProtocolClientCommand::SidecarForMachine { id: *id });
                 }
-                processed += 1;
             }
             ProtocolClientMessage::SidecarFound { id, text } => {
                 let doc_id = ServerEntity(*id);
@@ -244,9 +247,12 @@ fn sync_snapshots_to_workspace(
         let fp = compute_graph_fingerprint(&graph);
         let mut applied = false;
         if let Some(text) = ui.sidecar_texts.get(id) {
-            if let Ok(sc) = parse_sidecar_text(text) {
-                let matched = sc.graph_fingerprint.as_deref() == Some(&fp) || sc.graph_fingerprint.is_none();
-                if matched { apply_sidecar_to_doc(entry, &sc); applied = true; }
+            match parse_sidecar_text(text) {
+                Ok(sc) => {
+                    apply_sidecar_to_doc(entry, &sc);
+                    applied = true;
+                }
+                Err(e) => (),
             }
             // mark for single-consume once attempted (avoid re-applying every frame)
             consume_sidecar_for.push(*id);
@@ -268,17 +274,6 @@ fn sync_snapshots_to_workspace(
                 }
             }
             if !applied {
-                if let Some(name) = graph.nodes.get(&graph.root).and_then(|n| n.display_name.clone()) {
-                    let stem = name.replace('.', "_");
-                    for p in [std::path::PathBuf::from(format!("{}.sm.ron", stem)), std::path::PathBuf::from("assets").join(format!("{}.sm.ron", stem))] {
-                        if p.exists() {
-                            if let Ok(sc) = load_sidecar(&p) {
-                                if sc.graph_fingerprint.as_deref() == Some(&fp) || sc.graph_fingerprint.is_none() { apply_sidecar_to_doc(entry, &sc); }
-                                break;
-                            }
-                        }
-                    }
-                }
                 // As a final fallback when no sidecar is found anywhere, ensure a derived default layout
                 // is applied so the editor shows states/edges at reasonable default positions.
                 if entry.graph.is_some() && entry.views.is_empty() {
@@ -294,11 +289,13 @@ fn sync_snapshots_to_workspace(
     let extra_sidecars: Vec<(ServerEntity, String)> = ui.sidecar_texts.iter().map(|(k, v)| (*k, v.clone())).collect();
     for (id, text) in extra_sidecars.iter() {
         if let Some(doc) = workspace.docs.get_mut(id) {
-            if let Some(graph) = &doc.graph {
-                let fp = compute_graph_fingerprint(graph);
-                if let Ok(sc) = parse_sidecar_text(text) {
-                    let matched = sc.graph_fingerprint.as_deref() == Some(&fp) || sc.graph_fingerprint.is_none();
-                    if matched { apply_sidecar_to_doc(doc, &sc); consume_sidecar_for.push(*id); }
+            if let Some(_graph) = &doc.graph {
+                match parse_sidecar_text(text) {
+                    Ok(sc) => {
+                        apply_sidecar_to_doc(doc, &sc);
+                        consume_sidecar_for.push(*id);
+                    }
+                    Err(e) => (),
                 }
             }
         }
@@ -343,6 +340,8 @@ fn convert_wire_graph_to_state_machine_graph(graph: serde_json::Value) -> Option
             let mut edge = m::Edge::new(id, src, tgt);
             if let Some(comps) = e.get("components").and_then(|v| v.as_object()) {
                 for (k, v) in comps.iter() { edge.components.insert(m::ComponentEntry::new(k.clone(), v.clone())); }
+                // Derive and store a stable display label so sidecar edge keys can match
+                edge.display_label = Some(crate::model::choose_edge_label_bag(&edge.components));
             }
             out.adjacency_out.entry(src).or_default().push(id);
             out.adjacency_in.entry(tgt).or_default().push(id);

@@ -166,6 +166,14 @@ impl ProtocolClient {
 		Ok(v.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
 	}
 
+	pub async fn sidecar_for_machine(&self, entity: u64) -> Result<Option<String>, ProtocolError> {
+		let params = json!({"entity": entity});
+		let v = self.jsonrpc_call(EDITOR_SIDECAR_FOR_MACHINE, Some(params)).await?;
+		// Accept {result:{text}} or top-level {text}
+		if let Some(s) = v.get("result").and_then(|r| r.get("text")).and_then(|t| t.as_str()) { return Ok(Some(s.to_string())); }
+		Ok(v.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
+	}
+
 	pub async fn set_state_machine_id(&self, entity: u64, path: &str) -> Result<(), ProtocolError> {
 		let params = json!({"entity": entity, "path": path});
 		let _ = self.jsonrpc_call(EDITOR_SET_STATE_MACHINE_ID, Some(params)).await?;
@@ -219,7 +227,8 @@ pub enum ProtocolClientCommand {
     RefreshMachines,
     SetUrl { url: String },
     FetchGraph { id: u64 },
-    FindSidecarByFingerprint { id: u64, fingerprint: String },
+    LoadSidecarByPath { id: u64, path: String },
+    SidecarForMachine { id: u64 },
 }
 
 #[derive(Message, Clone)]
@@ -287,14 +296,24 @@ fn handle_protocol_client_commands(
                     writer.write(ProtocolClientMessage::GraphResult { id, graph: serde_json::json!({"error": e.to_string()}) });
                 }
             }
-            ProtocolClientCommand::FindSidecarByFingerprint { id, ref fingerprint } => {
+            ProtocolClientCommand::LoadSidecarByPath { id, ref path } => {
                 let client_cloned = client.clone();
-                let fp = fingerprint.clone();
-                let r = rt.0.block_on(async move { client_cloned.find_sidecar_by_fingerprint(&fp).await });
+                let path_for_call = path.clone();
+                let path_for_log = path.clone();
+                let r = rt.0.block_on(async move { client_cloned.load_sidecar(&path_for_call).await });
                 match r {
                     Ok(Some(text)) => { let _ = writer.write(ProtocolClientMessage::SidecarFound { id, text }); }
                     Ok(None) => { let _ = writer.write(ProtocolClientMessage::SidecarMissing { id }); }
-                    Err(_e) => { let _ = writer.write(ProtocolClientMessage::SidecarMissing { id }); }
+                    Err(e) => { let _ = writer.write(ProtocolClientMessage::SidecarMissing { id }); }
+                }
+            }
+            ProtocolClientCommand::SidecarForMachine { id } => {
+                let client_cloned = client.clone();
+                let r = rt.0.block_on(async move { client_cloned.sidecar_for_machine(id).await });
+                match r {
+                    Ok(Some(text)) => { let _ = writer.write(ProtocolClientMessage::SidecarFound { id, text }); }
+                    Ok(None) => { let _ = writer.write(ProtocolClientMessage::SidecarMissing { id }); }
+                    Err(e) => { let _ = writer.write(ProtocolClientMessage::SidecarMissing { id }); }
                 }
             }
         }

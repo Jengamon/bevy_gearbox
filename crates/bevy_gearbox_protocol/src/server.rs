@@ -199,6 +199,27 @@ fn set_state_machine_id_handler(In(params): In<Option<Value>>, world: &mut World
     Ok(serde_json::json!({"ok": true}))
 }
 
+#[derive(Deserialize)]
+struct SidecarForMachineParams { entity: Entity }
+
+fn sidecar_for_machine_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: SidecarForMachineParams = serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError { code: error_codes::INVALID_PARAMS, message: format!("invalid params: {e}"), data: None })?;
+    if !world.entities().contains(p.entity) {
+        return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
+    }
+    // Resolve by StateMachineId("id") -> assets/<id>.sm.ron
+    if let Some(id) = world.get::<gearbox::StateMachineId>(p.entity) {
+        let fname = format!("{}.sm.ron", id.0);
+        let mut path = std::path::PathBuf::from(&fname);
+        if !path.is_absolute() { path = std::path::PathBuf::from("assets").join(path); }
+        match std::fs::read_to_string(&path) {
+            Ok(txt) => return Ok(serde_json::json!({"text": txt})),
+            Err(_) => { /* fall through to None */ }
+        }
+    }
+    Ok(serde_json::json!({"text": null}))
+}
+
 fn register_editor_file_rpcs(app: &mut App) {
     if !app.world().contains_resource::<RemoteMethods>() { return; }
     let world = app.main_mut().world_mut();
@@ -207,12 +228,14 @@ fn register_editor_file_rpcs(app: &mut App) {
     let load_sc_id = world.register_system(load_sidecar_handler);
     let find_sc_id = world.register_system(find_sidecar_by_fingerprint_handler);
     let set_state_machine_id = world.register_system(set_state_machine_id_handler);
+    let sidecar_for_machine_id = world.register_system(sidecar_for_machine_handler);
     let mut methods = world.resource_mut::<RemoteMethods>();
     methods.insert("editor.save_graph", RemoteMethodSystemId::Instant(save_id));
     methods.insert("editor.save_sidecar", RemoteMethodSystemId::Instant(save_sc_id));
     methods.insert("editor.load_sidecar", RemoteMethodSystemId::Instant(load_sc_id));
     methods.insert("editor.find_sidecar_by_fingerprint", RemoteMethodSystemId::Instant(find_sc_id));
     methods.insert("editor.set_state_machine_id", RemoteMethodSystemId::Instant(set_state_machine_id));
+    methods.insert(crate::methods::EDITOR_SIDECAR_FOR_MACHINE, RemoteMethodSystemId::Instant(sidecar_for_machine_id));
 }
 
 // =========================
@@ -448,6 +471,10 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
         if let Some(init) = q_initial.get(world, cur).ok().flatten() {
             // InitialState points to a child; serialize as string of entity bits for simplicity
             components.insert("bevy_gearbox::InitialState".to_string(), Value::String(init.0.to_bits().to_string()));
+        }
+        // Include StateMachineId if present to allow clients to resolve sidecar path
+        if let Some(id) = world.get::<gearbox::StateMachineId>(cur) {
+            components.insert("bevy_gearbox::StateMachineId".to_string(), Value::String(id.0.clone()));
         }
         // Children
         let mut children_ids: Vec<String> = Vec::new();
