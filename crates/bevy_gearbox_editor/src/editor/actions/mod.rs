@@ -6,7 +6,7 @@ use bevy_gearbox_protocol::client::{ProtocolClientCommand, ProtocolNetCommand};
 use super::model::store::OpenDocument;
 use super::model::types::{DocMode, DocId, TabId};
 use crate::editor::workspace::Workspace;
-use crate::persistence::{extract_sidecar_from_doc, save_sidecar};
+use crate::persistence::extract_sidecar_from_doc;
 use rfd::FileDialog;
 
 #[derive(Debug, Clone)]
@@ -148,35 +148,42 @@ pub fn on_save_as_requested(
     client: Res<bevy_gearbox_protocol::client::ProtocolClient>,
     rt: Res<bevy_gearbox_protocol::client::TokioRuntime>,
 ) {
-    // Open native Save dialog for .sm.ron
+    // Open native Save dialog for .sm.ron, start in assets/ and suggest a name
     let picked = FileDialog::new()
-        .add_filter("State Machine Sidecar", &["sm.ron"])
-        .set_title("Save State Machine Sidecar (.sm.ron)")
+        .add_filter("State Machine Sidecar", &["sm.ron"])        
+        .set_title("Save State Machine (.sm.ron)")
+        .set_directory("assets")
+        .set_file_name("state_machine.sm.ron")
         .save_file();
+
     if let Some(path) = picked {
-        // Persist current sidecar snapshot to chosen path if we have the doc
-        if let Some(doc) = workspace.docs.get(&save_as_requested.entity) {
-            let sc = extract_sidecar_from_doc(doc);
-            let _ = save_sidecar(&path, &sc);
-        }
         // Derive logical asset base name (without .sm.ron extension and without directories)
         let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
         let base = if fname.ends_with(".sm.ron") { &fname[..fname.len()-7] } else { fname };
         let id_text = base.to_string();
         let scn_path = format!("{}.scn.ron", id_text);
         let sm_path = format!("{}.sm.ron", id_text);
+
+        // Extract and serialize current sidecar snapshot once (to upload only on success)
+        let sidecar_text: Option<String> = workspace
+            .docs
+            .get(&save_as_requested.entity)
+            .map(|doc| {
+                let sc = extract_sidecar_from_doc(doc);
+                let pretty = ron::ser::PrettyConfig::new();
+                ron::ser::to_string_pretty(&sc, pretty).ok()
+            })
+            .flatten();
+
         let entity_bits = save_as_requested.entity.0;
         let client_cloned = client.clone();
         rt.0.spawn(async move {
-            // Set StateMachineId("id_text")
-            let _ = client_cloned.set_state_machine_id(entity_bits, &id_text).await;
-            // Save scene and sidecar on server under assets/
-            let _ = client_cloned.save_graph(entity_bits, &scn_path).await;
-            // Best-effort: write sidecar text derived by server-side clients later; here we just re-use scene id
-            // Caller already wrote local sidecar; server copy will be created empty unless a client sends content.
-            // Skip uploading sidecar contents here because the editor already wrote it locally.
-            // If desired, load local contents and send it as well:
-            if let Ok(txt) = std::fs::read_to_string(&path) {
+            // 1) Insert StateMachineId(name) on the root
+            if client_cloned.set_state_machine_id(entity_bits, &id_text).await.is_err() { return; }
+            // 2) Save scene under assets/<name>.scn.ron
+            if client_cloned.save_graph(entity_bits, &scn_path).await.is_err() { return; }
+            // 3) Only on success, save editor sidecar next to it as assets/<name>.sm.ron
+            if let Some(txt) = sidecar_text {
                 let _ = client_cloned.save_sidecar(&sm_path, &txt).await;
             }
         });
