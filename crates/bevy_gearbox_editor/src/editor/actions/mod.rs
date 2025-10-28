@@ -183,16 +183,5 @@ pub fn on_save_as_requested(
     }
 }
 
-#[derive(Debug, Clone, Event)]
-pub struct StartComponentsWatchRequested { pub entity_bits: u64 }
-
-pub fn on_start_components_watch_requested(
-    evt: On<StartComponentsWatchRequested>,
-    mut proto_net: MessageWriter<ProtocolNetCommand>,
-) {
-    // Watch Name reflect component for this entity
-    let comps = vec![bevy_gearbox_protocol::components::NAME_REFLECT.to_string()];
-    proto_net.write(ProtocolNetCommand::StartComponents { id: evt.entity_bits, components: comps });
-}
 
 

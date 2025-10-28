@@ -67,9 +67,8 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                     if let Some(commit) = workspace.pending_rename_commit.take() {
                         if let crate::model::EntityId::Server(sid) = commit.target {
                             let e = bevy::prelude::Entity::from_bits(sid.0);
+                            println!("[rename] editor commit: entity={} name='{}'", sid.0, commit.text);
                             commands.trigger(bevy_gearbox_protocol::events::Rename { target: e, name: commit.text.clone() });
-                            // Ensure we have a component watch for Name on this entity
-                            commands.trigger(crate::editor::actions::StartComponentsWatchRequested { entity_bits: sid.0 });
                         }
                         // No optimistic UI mutation; wait for watch-driven update
                     }

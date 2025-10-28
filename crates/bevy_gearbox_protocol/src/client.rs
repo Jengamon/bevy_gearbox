@@ -181,7 +181,7 @@ impl ProtocolClient {
 	}
 
     pub async fn rename(&self, entity: u64, name: &str) -> Result<(), ProtocolError> {
-        let params = json!({ "entity": entity, "components": { wire::NAME: name } });
+        let params = json!({ "entity": entity, "components": { wire::NAME_REFLECT: name } });
         let _ = self.jsonrpc_call(WORLD_INSERT_COMPONENTS, Some(params)).await?;
         Ok(())
     }
@@ -198,8 +198,12 @@ pub fn on_rename(rename: On<crate::events::Rename>, client: Res<ProtocolClient>,
     let id = rename.target.to_bits();
     let client_cloned = client.clone();
     let rt = rt.0.clone();
+    println!("[rename] client observer: sending world.insert_components Name for entity={} name='{}'", id, name);
     rt.spawn(async move {
-        let _ = client_cloned.rename(id, &name).await;
+        match client_cloned.rename(id, &name).await {
+            Ok(_) => println!("[rename] client RPC ok: entity={} name='{}'", id, name),
+            Err(e) => println!("[rename] client RPC error: entity={} name='{}' err={}", id, name, e),
+        }
     });
 }
 
@@ -300,7 +304,6 @@ fn handle_protocol_client_commands(
             ProtocolClientCommand::LoadSidecarByPath { id, ref path } => {
                 let client_cloned = client.clone();
                 let path_for_call = path.clone();
-                let path_for_log = path.clone();
                 let r = rt.0.block_on(async move { client_cloned.load_sidecar(&path_for_call).await });
                 match r {
                     Ok(Some(text)) => { let _ = writer.write(ProtocolClientMessage::SidecarFound { id, text }); }
@@ -375,7 +378,7 @@ pub struct ProtocolConnectionState {
 pub struct WatchManager {
     ctl_tx: Option<tokio::sync::mpsc::UnboundedSender<WatchCtl>>,
     evt_rx: Option<tokio::sync::mpsc::UnboundedReceiver<WatchEvt>>,
-    cursors: std::collections::HashMap<u64, (u64, u64)>,
+    cursors: std::collections::HashMap<u64, (u64, u64, u64)>,
 }
 
 #[derive(Debug)]
@@ -494,11 +497,12 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                     if machine_handles.contains_key(&id) { continue; }
                     let tx = evt_tx.clone();
                     let client_clone = client.clone();
+                    let mut last_name_seq: u64 = 0;
                     let handle = tokio::spawn(async move {
                         // Subscribe once before starting stream
                         let _ = client_clone.post(&url).json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":EDITOR_MACHINE_SUBSCRIBE,"params":{"entity":id}})).send().await;
                         loop {
-                            let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"editor.machine+watch","params":{"entity":id,"last_active_seq":last_active_seq,"last_transition_seq":last_transition_seq}});
+                            let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"editor.machine+watch","params":{"entity":id,"last_active_seq":last_active_seq,"last_transition_seq":last_transition_seq, "last_name_seq": last_name_seq}});
                             let resp = match client_clone.post(&url).json(&req).send().await { Ok(r) => r, Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch http: {}", e))); tokio::time::sleep(std::time::Duration::from_millis(300)).await; continue; } };
                             let mut stream = resp.bytes_stream();
                             while let Some(chunk) = stream.next().await {
@@ -518,6 +522,7 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                                                                     match ev.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
                                                                         "active_changed" => if seq > last_active_seq { last_active_seq = seq; },
                                                                         "transition_edge" => if seq > last_transition_seq { last_transition_seq = seq; },
+                                                                        "name_changed" => if seq > last_name_seq { last_name_seq = seq; },
                                                                         _ => {}
                                                                     }
                                                                 }
@@ -526,6 +531,10 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                                                         }
                                                     }
                                                 }
+                                            }
+                                            if !out.is_empty() {
+                                                let name_cnt = out.iter().filter(|ev| ev.get("kind").and_then(|v| v.as_str()) == Some("name_changed")).count();
+                                                if name_cnt > 0 { println!("[rename] client watch: received {} name_changed event(s) for machine {}", name_cnt, id); }
                                             }
                                             if !out.is_empty() { let _ = tx.send(WatchEvt::Machine { id, events: out }); }
                                         }
@@ -621,7 +630,7 @@ fn handle_protocol_net_commands(
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopDiscovery); }
             }
             ProtocolNetCommand::StartMachine { id } => {
-                let (la, lt) = mgr.cursors.get(&id).copied().unwrap_or((0, 0));
+                let (la, lt, _ln) = mgr.cursors.get(&id).copied().unwrap_or((0, 0, 0));
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartMachine { url: client.base_url.clone(), id, last_active_seq: la, last_transition_seq: lt }); }
             }
             ProtocolNetCommand::StopMachine { id } => {
@@ -652,9 +661,10 @@ fn drain_protocol_watch_events(
                 }
                 WatchEvt::Machine { id, events } => {
                     // Filter duplicates using stored cursors
-                    let (prev_a, prev_t) = mgr.cursors.get(&id).copied().unwrap_or((0, 0));
+                    let (prev_a, prev_t, prev_n) = mgr.cursors.get(&id).copied().unwrap_or((0, 0, 0));
                     let mut max_a = prev_a;
                     let mut max_t = prev_t;
+                    let mut max_n = prev_n;
                     let mut filtered: Vec<serde_json::Value> = Vec::with_capacity(events.len());
                     for ev in events.into_iter() {
                         let kind = ev.get("kind").and_then(|v| v.as_str()).unwrap_or("");
@@ -666,6 +676,9 @@ fn drain_protocol_watch_events(
                             "transition_edge" => {
                                 if seq > prev_t { filtered.push(ev.clone()); if seq > max_t { max_t = seq; } }
                             }
+                            "name_changed" => {
+                                if seq > prev_n { filtered.push(ev.clone()); if seq > max_n { max_n = seq; } }
+                            }
                             _ => {
                                 // pass through unknown kinds
                                 filtered.push(ev.clone());
@@ -673,7 +686,9 @@ fn drain_protocol_watch_events(
                         }
                     }
                     // Update cursors from filtered
-                    mgr.cursors.insert(id, (max_a, max_t));
+                    mgr.cursors.insert(id, (max_a, max_t, max_n));
+                    let name_cnt = filtered.iter().filter(|ev| ev.get("kind").and_then(|v| v.as_str()) == Some("name_changed")).count();
+                    if name_cnt > 0 { println!("[rename] client filter: {} name_changed forwarded (prev_n={} -> max_n={}) for machine {}", name_cnt, prev_n, max_n, id); }
                     if !filtered.is_empty() {
                         writer.write(ProtocolNetMessage::Machine { id, events: filtered });
                     }

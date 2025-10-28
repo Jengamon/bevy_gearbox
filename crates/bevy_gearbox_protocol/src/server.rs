@@ -51,7 +51,8 @@ impl Plugin for GearboxProtocolServerPlugin {
         app.init_resource::<MachineTrackers>()
             .add_observer(on_active_added)
             .add_observer(on_active_removed)
-            .add_observer(on_transition_edge);
+            .add_observer(on_transition_edge)
+            .add_systems(Update, on_name_changed);
 
         // Register RPCs (+watch and convenience endpoints). Start minimal; extend as needed.
         register_editor_subscription_rpcs(app);
@@ -248,6 +249,8 @@ struct MachineWatchParams {
     last_active_seq: u64,
     #[serde(default)]
     last_transition_seq: u64,
+    #[serde(default)]
+    last_name_seq: u64,
 }
 
 fn entity_to_bits(e: Entity) -> u64 { e.to_bits() }
@@ -298,6 +301,7 @@ fn machine_watch_handler(In(_params): In<Option<Value>>, _world: &World) -> BrpR
                 match kind {
                     "active_changed" if seq > p.last_active_seq => out.push(ev.clone()),
                     "transition_edge" if seq > p.last_transition_seq => out.push(ev.clone()),
+                    "name_changed" if seq > p.last_name_seq => out.push(ev.clone()),
                     _ => {}
                 }
             }
@@ -535,6 +539,7 @@ fn register_editor_machine_graph_rpc(app: &mut App) {
 struct MachineTracker {
     active_seq: u64,
     transition_seq: u64,
+    name_seq: u64,
     events: VecDeque<Value>,
 }
 
@@ -612,6 +617,29 @@ fn on_transition_edge(
         "edge": entity_to_bits(edge),
     });
     push_event(tr, ev);
+}
+
+// Track Name changes across the machine subtree and emit name_changed events
+fn on_name_changed(
+    q_changed: Query<(Entity, &Name), Changed<Name>>,
+    q_sub: Query<&gearbox::SubstateOf>,
+    q_sm: Query<&gearbox::StateMachine>,
+    mut trackers: ResMut<MachineTrackers>,
+) {
+    for (entity, name) in q_changed.iter() {
+        if let Some(root) = find_machine_root(entity, &q_sub, &q_sm) {
+            let tr = trackers.trackers.entry(root).or_default();
+            tr.name_seq = tr.name_seq.saturating_add(1);
+            let ev = serde_json::json!({
+                "kind": "name_changed",
+                "seq": tr.name_seq,
+                "entity": entity_to_bits(entity),
+                "name": name.as_str(),
+            });
+            push_event(tr, ev);
+            println!("[rename] server: name_changed root={} entity={} name='{}' seq={}", entity_to_bits(root), entity_to_bits(entity), name.as_str(), tr.name_seq);
+        }
+    }
 }
 
 

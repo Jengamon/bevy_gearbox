@@ -47,7 +47,7 @@ impl Plugin for EditorPlugin {
             .add_observer(on_open_requested)
             .add_observer(crate::editor::actions::on_unsubscribe_requested)
             .add_observer(crate::editor::actions::on_save_as_requested)
-            .add_observer(crate::editor::actions::on_start_components_watch_requested);
+            ;
 
         use bevy_egui::EguiPrimaryContextPass;
         app.add_systems(EguiPrimaryContextPass, ui_system);
@@ -250,6 +250,22 @@ fn sync_snapshots_to_workspace(
                         let edge = crate::util::canonicalize_entity_u64(edge);
                         let eid = EntityId::Server(ServerEntity(edge));
                         doc.flash_edge(eid);
+                    }
+                }
+                "name_changed" => {
+                    if let (Some(ent_u), Some(name_s)) = (
+                        ev.get("entity").and_then(|v| v.as_u64()),
+                        ev.get("name").and_then(|v| v.as_str()),
+                    ) {
+                        let ent_u = crate::util::canonicalize_entity_u64(ent_u);
+                        let eid = EntityId::Server(ServerEntity(ent_u));
+                        let name = name_s.to_string();
+                                println!("[rename] editor apply: entity={} name='{}'", ent_u, name);
+                        if let Some(v) = doc.views.get_mut(&eid) { v.label = name.clone(); }
+                        if let Some(g) = doc.graph.as_mut() {
+                            if let Some(n) = g.nodes.get_mut(&eid) { n.display_name = Some(name.clone()); }
+                            if let Some(e) = g.edges.get_mut(&eid) { e.display_label = Some(name.clone()); }
+                        }
                     }
                 }
                 _ => {}
