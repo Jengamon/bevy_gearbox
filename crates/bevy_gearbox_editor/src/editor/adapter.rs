@@ -12,8 +12,8 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
     // Rebuild nodes with preserved rects where available
     let mut node_views = std::collections::HashMap::new();
     for (id, node) in snapshot.nodes.iter() {
-        let rect = preserved_views
-            .remove(id)
+        let prev_view_opt = preserved_views.get(id);
+        let mut rect = prev_view_opt
             .map(|v| v.rect)
             .unwrap_or_else(|| egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(140.0, 60.0)));
         let label = node
@@ -24,6 +24,14 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
         let has_parallel = node.components.keys().any(|k| k == c::PARALLEL || k.ends_with("::Parallel") || k.ends_with("::Parallel>"));
         let is_container = !node.children.is_empty();
         let kind = if has_parallel { UiNodeKind::Parallel } else if is_container { UiNodeKind::Parent } else { UiNodeKind::Leaf };
+        // If this node was previously a container view and is now a leaf with no children,
+        // shrink its rect back to the default leaf size, anchored at the existing min.
+        if matches!(prev_view_opt.map(|v| &v.kind), Some(UiViewKind::Parent | UiViewKind::Parallel))
+            && matches!(kind, UiNodeKind::Leaf)
+        {
+            let default_size = egui::vec2(140.0, 60.0);
+            rect = egui::Rect::from_min_size(rect.min, default_size);
+        }
         node_views.insert(*id, UiNode { id: *id, rect, kind, label, is_container });
     }
 

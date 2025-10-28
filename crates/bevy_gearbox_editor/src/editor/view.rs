@@ -203,7 +203,7 @@ pub fn draw_doc(
     // Right-click context menu trigger: only create an interact response for the hovered entity
     // so topmost widget wins for hit-testing, but keep menu open independently of hover.
     let mut context_menu_selection: Option<MenuSelection> = None;
-    if let Some(graph) = &doc.graph {
+    if doc.graph.is_some() {
         for eid in order.iter() {
             let Some(view) = doc.views.get(eid) else { continue };
             // Compute interactive rect in screen space: full rect for nodes, pill rect for edges
