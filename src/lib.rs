@@ -56,6 +56,7 @@ impl Plugin for GearboxPlugin {
             .register_type::<transitions::AlwaysEdge>()
             .register_type::<transitions::EdgeKind>()
             .register_type::<transitions::NoEvent>()
+            .register_type::<transitions::AcceptAll>()
             .register_type::<transitions::ResetEdge>()
             .register_type::<transitions::ResetScope>()
             .register_type::<state_component::Reset>();

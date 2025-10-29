@@ -142,14 +142,30 @@ fn cleanup_edge_timer_and_pending<E: EntityEvent + Clone + 'static>(
 /// Trait implemented by events that can provide phase-specific payloads
 /// for the transition lifecycle. All associated types default to NoEvent,
 /// and all getters default to None.
-pub trait TransitionEvent: EntityEvent + Clone {
+pub trait TransitionEvent: EntityEvent + Clone + 'static {
     type ExitEvent: EntityEvent + Clone = NoEvent;
     type EffectEvent: EntityEvent + Clone = NoEvent;
     type EntryEvent: EntityEvent + Clone = NoEvent;
+    type Validator: EventValidator<Self> + Reflect + Default + Clone = AcceptAll;
 
     fn to_exit_event(&self) -> Option<Self::ExitEvent> { None }
     fn to_effect_event(&self) -> Option<Self::EffectEvent> { None }
     fn to_entry_event(&self) -> Option<Self::EntryEvent> { None }
+}
+
+/// Validator for event E used to accept/reject an event for a specific edge
+pub trait EventValidator<E>: Send + Sync + 'static + Reflect {
+    fn matches(&self, event: &E) -> bool;
+}
+
+/// Default validator that accepts all events
+#[derive(Reflect, Default, Clone)]
+#[reflect(Default)]
+pub struct AcceptAll;
+
+impl<E> EventValidator<E> for AcceptAll {
+    #[inline]
+    fn matches(&self, _event: &E) -> bool { true }
 }
 
 /// A typed phase payload holder built from a TransitionEvent
@@ -272,10 +288,15 @@ fn try_fire_first_matching_edge_generic<E: TransitionEvent + RegisteredTransitio
     let Ok(transitions) = q_transitions.get(source) else { return false; };
 
     for edge in transitions.into_iter().copied() {
-        if q_listener.get(edge).is_err() { continue; }
+        let Ok(listener) = q_listener.get(edge) else { continue; };
 
         // Validate edge (guards and target) - skip if invalid
         if !validate_edge_basic(edge, q_guards, q_edge_target, q_substate_of) { continue; }
+
+        // If validator present on the edge, require match
+        if let Some(v) = &listener.validator {
+            if !v.matches(event) { continue; }
+        }
 
         // If edge is delayed, schedule timer and store pending event
         if let Ok(after) = q_after.get(edge) {
@@ -307,14 +328,16 @@ fn try_fire_first_matching_edge_generic<E: TransitionEvent + RegisteredTransitio
 #[derive(Reflect, Component)]
 #[reflect(Component, Default)]
 #[require(EdgeKind)]
-pub struct EventEdge<E: EntityEvent + RegisteredTransitionEvent> {
+pub struct EventEdge<E: RegisteredTransitionEvent + TransitionEvent> {
     #[reflect(ignore)]
     _marker: PhantomData<E>,
+    /// Optional per-edge validator; when None, all events of type E are accepted
+    pub validator: Option<<E as TransitionEvent>::Validator>,
 }
 
-impl<E: EntityEvent + RegisteredTransitionEvent> Default for EventEdge<E> {
+impl<E: RegisteredTransitionEvent + TransitionEvent> Default for EventEdge<E> {
     fn default() -> Self {
-        Self { _marker: PhantomData }
+        Self { _marker: PhantomData, validator: None }
     }
 }
 
@@ -707,7 +730,7 @@ where
 /// Timer system for event edges with After; fire when due
 pub fn tick_after_event_timers<E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static>(
     time: Res<Time>,
-    mut q_timer: Query<(Entity, &mut EdgeTimer, &PendingEvent<E>), With<EventEdge<E>>>,
+    mut q_timer: Query<(Entity, &mut EdgeTimer, &PendingEvent<E>, &EventEdge<E>)>,
     q_after: Query<&After>,
     q_guards: Query<&Guards>,
     q_edge_target: Query<&Target>,
@@ -716,7 +739,7 @@ pub fn tick_after_event_timers<E: TransitionEvent + RegisteredTransitionEvent + 
     q_active: Query<(), With<Active>>,
     mut commands: Commands,
 ) {
-    for (edge, mut timer, pending) in q_timer.iter_mut() {
+    for (edge, mut timer, pending, listener) in q_timer.iter_mut() {
         // Only consider edges that still have After
         if q_after.get(edge).is_err() { continue; }
 
@@ -735,6 +758,14 @@ pub fn tick_after_event_timers<E: TransitionEvent + RegisteredTransitionEvent + 
             // Cancel invalid timer/pending
             cleanup_edge_timer_and_pending::<E>(&mut commands, edge);
             continue;
+        }
+
+        // If validator present on the edge, require match against pending event
+        if let Some(v) = &listener.validator {
+            if !v.matches(&pending.event) {
+                cleanup_edge_timer_and_pending::<E>(&mut commands, edge);
+                continue;
+            }
         }
 
         let payload = PhaseEvents {
