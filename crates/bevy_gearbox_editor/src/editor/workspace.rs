@@ -21,6 +21,10 @@ pub struct Workspace {
     pub available_event_edges: Vec<String>,
     /// Persisted UI-only previews of edges committed via the chooser
     pub preview_edges: Vec<PreviewEdge>,
+    /// One-shot commit for creating a transition edge (doc-local)
+    pub pending_edge_create: Option<PendingEdgeCreate>,
+    /// Pending machine graph refreshes to request over the network
+    pub pending_fetch_docs: Vec<ServerEntity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,3 +44,6 @@ pub struct EdgeMenuState { pub doc: ServerEntity, pub source: EntityId, pub targ
 
 #[derive(Debug, Clone)]
 pub struct PreviewEdge { pub doc: ServerEntity, pub source: EntityId, pub target: EntityId }
+
+#[derive(Debug, Clone)]
+pub struct PendingEdgeCreate { pub doc: ServerEntity, pub source: EntityId, pub target: EntityId, pub kind: String }

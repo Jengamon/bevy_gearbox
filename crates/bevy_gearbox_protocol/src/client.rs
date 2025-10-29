@@ -185,6 +185,14 @@ impl ProtocolClient {
 		Ok(())
 	}
 
+    pub async fn create_transition(&self, source: u64, target: u64, kind: &str) -> Result<u64, ProtocolError> {
+        let params = json!({"source": source, "target": target, "kind": kind});
+        let v = self.jsonrpc_call(crate::methods::EDITOR_CREATE_TRANSITION, Some(params)).await?;
+        if let Some(id) = v.get("result").and_then(|r| r.get("entity")).and_then(|n| n.as_u64()) { return Ok(id); }
+        if let Some(id) = v.get("entity").and_then(|n| n.as_u64()) { return Ok(id); }
+        Err(ProtocolError::Rpc { code: -32603, message: "unexpected response for editor.create_transition".to_string(), data: Some(v) })
+    }
+
     pub async fn rename(&self, entity: u64, name: &str) -> Result<(), ProtocolError> {
         let params = json!({ "entity": entity, "components": { wire::NAME_REFLECT: name } });
         let _ = self.jsonrpc_call(WORLD_INSERT_COMPONENTS, Some(params)).await?;
@@ -222,6 +230,25 @@ pub fn on_reset_region(reset_region: On<crate::events::ResetRegion>, client: Res
 	bevy::tasks::IoTaskPool::get().spawn(async move {
 		let _ = client_cloned.reset_region(root).await;
 	}).detach();
+}
+
+pub fn on_create_transition(
+    ev: On<crate::events::CreateTransition>,
+    client: Res<ProtocolClient>,
+    rt: Res<TokioRuntime>,
+    mut writer: MessageWriter<ProtocolClientCommand>,
+) {
+    let machine = ev.machine.to_bits();
+    let source = ev.source.to_bits();
+    let target = ev.target.to_bits();
+    let kind = ev.kind.clone();
+    let client_cloned = client.clone();
+    let rt = rt.0.clone();
+    // Fire RPC then request a graph refresh for the machine root
+    rt.spawn(async move {
+        let _ = client_cloned.create_transition(source, target, &kind).await;
+    });
+    writer.write(ProtocolClientCommand::FetchGraph { id: machine });
 }
 
 // =========================
@@ -359,6 +386,7 @@ impl Plugin for GearboxProtocolClientPlugin {
         app.add_message::<ProtocolClientCommand>();
         app.add_message::<ProtocolClientMessage>();
         app.add_observer(on_rename);
+        app.add_observer(on_create_transition);
 		app.add_observer(on_despawn);
 		app.add_observer(on_reset_region);
         app.add_systems(Startup, protocol_version_check_startup);

@@ -71,6 +71,18 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                         }
                         // No optimistic UI mutation; wait for watch-driven update
                     }
+                    // Edge creation commit handler
+                    if let Some(req) = workspace.pending_edge_create.take() {
+                        // Convert to server entities only
+                        if let (crate::model::EntityId::Server(src), crate::model::EntityId::Server(tgt)) = (req.source, req.target) {
+                            let m = bevy::prelude::Entity::from_bits(req.doc.0);
+                            let s = bevy::prelude::Entity::from_bits(src.0);
+                            let t = bevy::prelude::Entity::from_bits(tgt.0);
+                            commands.trigger(bevy_gearbox_protocol::events::CreateTransition { machine: m, source: s, target: t, kind: req.kind.clone() });
+                            // Ask for a graph refresh; the client observer will also request it, but keep this as a backup coupling
+                            workspace.pending_fetch_docs.push(req.doc);
+                        }
+                    }
                     workspace.selection = sel_local;
                     workspace.menu = menu_local;
                 } else {

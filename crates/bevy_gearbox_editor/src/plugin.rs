@@ -198,6 +198,11 @@ fn poll_network(
             }
         }
     }
+    // Drain any pending explicit fetch requests enqueued by UI actions
+    if !workspace.pending_fetch_docs.is_empty() {
+        let docs: Vec<ServerEntity> = std::mem::take(&mut workspace.pending_fetch_docs);
+        for d in docs.into_iter() { client_cmd.write(ProtocolClientCommand::FetchGraph { id: d.0 }); }
+    }
 }
 
 fn ui_system(

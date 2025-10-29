@@ -32,3 +32,8 @@ pub struct ResetRegion { #[event_target] pub target: Entity }
 pub struct MachineSubscribed { #[event_target] pub target: Entity }
 
 
+// Editor → client request: create a transition edge on the server
+#[derive(Event, Debug, Clone)]
+pub struct CreateTransition { pub machine: Entity, pub source: Entity, pub target: Entity, pub kind: String }
+
+

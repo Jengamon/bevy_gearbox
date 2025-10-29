@@ -234,7 +234,7 @@ pub fn draw_doc(
                 if let Some(edge_menu) = workspace.edge_menu.clone() {
                     if edge_menu.doc == doc_id && edge_menu.target == *eid {
                         if menu_ui.button("Always").clicked() {
-                            println!("Connecting {:?} to {:?} via event {}", edge_menu.source, edge_menu.target, "Always");
+                            workspace.pending_edge_create = Some(crate::editor::workspace::PendingEdgeCreate { doc: doc_id, source: edge_menu.source, target: edge_menu.target, kind: "Always".to_string() });
                             workspace.preview_edges.retain(|pe| !(pe.doc == doc_id && pe.source == edge_menu.source && pe.target == edge_menu.target));
                             workspace.edge_menu = None;
                             workspace.edge_build = None;
@@ -242,7 +242,7 @@ pub fn draw_doc(
                         }
                         for label in workspace.available_event_edges.clone().into_iter() {
                             if menu_ui.button(&label).clicked() {
-                                println!("Connecting {:?} to {:?} via event {}", edge_menu.source, edge_menu.target, label);
+                                workspace.pending_edge_create = Some(crate::editor::workspace::PendingEdgeCreate { doc: doc_id, source: edge_menu.source, target: edge_menu.target, kind: label.clone() });
                                 workspace.preview_edges.retain(|pe| !(pe.doc == doc_id && pe.source == edge_menu.source && pe.target == edge_menu.target));
                                 workspace.edge_menu = None;
                                 workspace.edge_build = None;
@@ -967,14 +967,11 @@ pub fn draw_doc(
                             menu_ui.with_layout(egui::Layout::top_down(egui::Align::Center), |menu_ui| {
                                 menu_ui.set_min_width(w);
                                 if menu_ui.add_sized(egui::vec2(w, 24.0), egui::Button::new("Always")).clicked() {
-                        println!(
-                            "Connecting {:?} to {:?} via event {}",
-                            menu.source, menu.target, "Always"
-                        );
-                        workspace
-                            .preview_edges
-                            .retain(|pe| !(pe.doc == doc_id && pe.source == menu.source && pe.target == menu.target));
-                        workspace.edge_menu = None;
+                                    workspace.pending_edge_create = Some(crate::editor::workspace::PendingEdgeCreate { doc: doc_id, source: menu.source, target: menu.target, kind: "Always".to_string() });
+                                    workspace
+                                        .preview_edges
+                                        .retain(|pe| !(pe.doc == doc_id && pe.source == menu.source && pe.target == menu.target));
+                                    workspace.edge_menu = None;
                                     return;
                                 }
                                 menu_ui.separator();
@@ -993,10 +990,7 @@ pub fn draw_doc(
                                         }
                                         for label in items.into_iter() {
                                             if menu_ui.add_sized(egui::vec2(w, 24.0), egui::Button::new(&label)).clicked() {
-                                                println!(
-                                                    "Connecting {:?} to {:?} via event {}",
-                                                    menu.source, menu.target, label
-                                                );
+                                                workspace.pending_edge_create = Some(crate::editor::workspace::PendingEdgeCreate { doc: doc_id, source: menu.source, target: menu.target, kind: label.clone() });
                                                 workspace
                                                     .preview_edges
                                                     .retain(|pe| !(pe.doc == doc_id && pe.source == menu.source && pe.target == menu.target));
