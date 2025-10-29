@@ -258,6 +258,8 @@ fn transition_observer<T: transitions::PhasePayload>(
         current_state.active_leaves.extend(new_leaf_states);
         // Derive full active set from leaves
         current_state.active = compute_active_from_leaves(&current_state.active_leaves, &q_substate_of);
+        // Ensure the root state machine entity is always considered active
+        current_state.active.insert(state_machine);
         return;
     }
 
@@ -457,6 +459,8 @@ fn transition_observer<T: transitions::PhasePayload>(
     transition.event().payload.on_entry(&mut commands, new_super_state, &q_children, &current_state);
     // Derive full active set from leaves
     current_state.active = compute_active_from_leaves(&current_state.active_leaves, &q_substate_of);
+    // Ensure the root state machine entity is always considered active
+    current_state.active.insert(state_machine);
 }
 
 fn get_path_to_root(start_entity: Entity, q_substate_of: &Query<&SubstateOf>) -> Vec<Entity> {
@@ -476,7 +480,6 @@ pub fn get_all_leaf_states(
     q_substate_of: &Query<&SubstateOf>,
     commands: &mut Commands,
 ) -> HashSet<Entity> {
-
     let mut leaves = HashSet::new();
     let mut stack = vec![start_node];
 

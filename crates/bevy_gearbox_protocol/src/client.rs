@@ -381,7 +381,7 @@ pub struct WatchManager {
 enum WatchCtl {
     StartDiscovery { url: String },
     StopDiscovery,
-    StartMachine { url: String, id: u64, last_active_seq: u64, last_transition_seq: u64 },
+    StartMachine { url: String, id: u64, last_active_seq: u64, last_transition_seq: u64, last_name_seq: u64 },
     StopMachine { url: String, id: u64 },
     StartComponents { url: String, id: u64, components: Vec<String> },
     StopComponents { url: String, id: u64 },
@@ -488,15 +488,15 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                     }
                 }
                 WatchCtl::StopDiscovery => { if let Some(h) = discovery_handle.take() { h.abort(); } }
-                WatchCtl::StartMachine { url, id, mut last_active_seq, mut last_transition_seq } => {
+                WatchCtl::StartMachine { url, id, mut last_active_seq, mut last_transition_seq, mut last_name_seq } => {
                     // Idempotent: if this machine watch is already running, do nothing
                     if machine_handles.contains_key(&id) { continue; }
                     let tx = evt_tx.clone();
                     let client_clone = client.clone();
-                    let mut last_name_seq: u64 = 0;
                     let handle = tokio::spawn(async move {
                         // Subscribe once before starting stream
                         let _ = client_clone.post(&url).json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":EDITOR_MACHINE_SUBSCRIBE,"params":{"entity":id}})).send().await;
+                        println!("[dbg] client: subscribe sent for machine {}", id);
                         loop {
                             let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"editor.machine+watch","params":{"entity":id,"last_active_seq":last_active_seq,"last_transition_seq":last_transition_seq, "last_name_seq": last_name_seq}});
                             let resp = match client_clone.post(&url).json(&req).send().await { Ok(r) => r, Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch http: {}", e))); tokio::time::sleep(std::time::Duration::from_millis(300)).await; continue; } };
@@ -529,15 +529,28 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                                                 }
                                             }
                                             if !out.is_empty() {
-                                                let name_cnt = out.iter().filter(|ev| ev.get("kind").and_then(|v| v.as_str()) == Some("name_changed")).count();
+                                                let mut ac = 0usize; let mut tc = 0usize; let mut nc = 0usize; let total = out.len();
+                                                for ev in out.iter() {
+                                                    match ev.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
+                                                        "active_changed" => ac += 1,
+                                                        "transition_edge" => tc += 1,
+                                                        "name_changed" => nc += 1,
+                                                        _ => {}
+                                                    }
+                                                }
+                                                println!(
+                                                    "[dbg] client: stream batch id={} total={} active_changed={} transition_edge={} name_changed={} (cursors a/t/n: {}/{}/{})",
+                                                    id, total, ac, tc, nc, last_active_seq, last_transition_seq, last_name_seq
+                                                );
                                             }
                                             if !out.is_empty() { let _ = tx.send(WatchEvt::Machine { id, events: out }); }
                                         }
                                     }
-                                    Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch stream: {}", e))); break; }
+                                    Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch stream: {}", e))); println!("[dbg] client: watch stream error for id {}: {}", id, e); break; }
                                 }
                             }
                             // reconnect
+                            println!("[dbg] client: reconnecting watch stream id={}", id);
                         }
                     });
                     machine_handles.insert(id, handle);
@@ -619,22 +632,31 @@ fn handle_protocol_net_commands(
     for cmd in reader.read() {
         match *cmd {
             ProtocolNetCommand::StartDiscovery => {
+                println!("[dbg] client: start discovery");
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartDiscovery { url: client.base_url.clone() }); }
             }
             ProtocolNetCommand::StopDiscovery => {
+                println!("[dbg] client: stop discovery");
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopDiscovery); }
             }
             ProtocolNetCommand::StartMachine { id } => {
-                let (la, lt, _ln) = mgr.cursors.get(&id).copied().unwrap_or((0, 0, 0));
-                if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartMachine { url: client.base_url.clone(), id, last_active_seq: la, last_transition_seq: lt }); }
+                let (la, lt, ln) = mgr.cursors.get(&id).copied().unwrap_or((0, 0, 0));
+                println!(
+                    "[dbg] client: start machine watch id={} (last_active_seq={}, last_transition_seq={})",
+                    id, la, lt
+                );
+                if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartMachine { url: client.base_url.clone(), id, last_active_seq: la, last_transition_seq: lt, last_name_seq: ln }); }
             }
             ProtocolNetCommand::StopMachine { id } => {
+                println!("[dbg] client: stop machine watch id={}", id);
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopMachine { url: client.base_url.clone(), id }); }
             }
             ProtocolNetCommand::StartComponents { id, ref components } => {
+                println!("[dbg] client: start components watch id={} keys={}", id, components.len());
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartComponents { url: client.base_url.clone(), id, components: components.clone() }); }
             }
             ProtocolNetCommand::StopComponents { id } => {
+                println!("[dbg] client: stop components watch id={}", id);
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopComponents { url: client.base_url.clone(), id }); }
             }
         }
@@ -652,6 +674,7 @@ fn drain_protocol_watch_events(
             drained += 1;
             match evt {
                 WatchEvt::Discovery(batch) => {
+                    if !batch.is_empty() { println!("[dbg] client: discovery batch size={}", batch.len()); }
                     writer.write(ProtocolNetMessage::Discovery(batch));
                 }
                 WatchEvt::Machine { id, events } => {
@@ -682,13 +705,31 @@ fn drain_protocol_watch_events(
                     }
                     // Update cursors from filtered
                     mgr.cursors.insert(id, (max_a, max_t, max_n));
-                    let name_cnt = filtered.iter().filter(|ev| ev.get("kind").and_then(|v| v.as_str()) == Some("name_changed")).count();
                     if !filtered.is_empty() {
+                        let mut ac = 0usize; let mut tc = 0usize; let mut nc = 0usize; let total = filtered.len();
+                        for ev in filtered.iter() {
+                            match ev.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
+                                "active_changed" => ac += 1,
+                                "transition_edge" => tc += 1,
+                                "name_changed" => nc += 1,
+                                _ => {}
+                            }
+                        }
+                        println!(
+                            "[dbg] client: dispatch id={} total={} active_changed={} transition_edge={} name_changed={} (cursors a {}->{} t {}->{} n {}->{})",
+                            id, total, ac, tc, nc, prev_a, max_a, prev_t, max_t, prev_n, max_n
+                        );
                         writer.write(ProtocolNetMessage::Machine { id, events: filtered });
                     }
                 }
-                WatchEvt::Error(_e) => { /* TODO: surface diagnostics */ }
+                WatchEvt::Error(e) => { println!("[dbg] client: watch error: {}", e); }
                 WatchEvt::Components { id, components, removed } => {
+                    if !components.is_empty() || !removed.is_empty() {
+                        println!(
+                            "[dbg] client: components id={} updated={} removed={}",
+                            id, components.len(), removed.len()
+                        );
+                    }
                     writer.write(ProtocolNetMessage::Components { id, components, removed });
                 }
             }

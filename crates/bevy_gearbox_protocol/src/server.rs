@@ -52,7 +52,8 @@ impl Plugin for GearboxProtocolServerPlugin {
             .add_observer(on_active_added)
             .add_observer(on_active_removed)
             .add_observer(on_transition_edge)
-            .add_systems(Update, on_name_changed);
+            .add_observer(send_active_states_on_subscribe)
+            .add_systems(Update, (on_name_changed, on_state_machine_changed));
 
         // Register RPCs (+watch and convenience endpoints). Start minimal; extend as needed.
         register_editor_subscription_rpcs(app);
@@ -288,7 +289,10 @@ fn machine_watch_handler(In(_params): In<Option<Value>>, _world: &World) -> BrpR
     // Gate by subscription counts if present
     if let Some(subs) = _world.get_resource::<Subscriptions>() {
         let count = subs.counts.get(&p.entity).copied().unwrap_or(0);
-        if count == 0 { return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "not subscribed".to_string(), data: None }); }
+        if count == 0 {
+            println!("[dbg] server: machine watch denied (not subscribed) entity={:?}", p.entity);
+            return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "not subscribed".to_string(), data: None });
+        }
     }
 
     // If we have trackers, flush events newer than cursors
@@ -305,6 +309,23 @@ fn machine_watch_handler(In(_params): In<Option<Value>>, _world: &World) -> BrpR
                     _ => {}
                 }
             }
+            // Guarantee baseline: if client hasn't seen any active yet and flush has none, append snapshot
+            let has_active = out.iter().any(|e| e.get("kind").and_then(|v| v.as_str()) == Some("active_changed"));
+            if p.last_active_seq == 0 && !has_active {
+                if let Some(sm) = _world.get::<gearbox::StateMachine>(p.entity) {
+                    let active: Vec<u64> = sm.active.iter().copied().map(entity_to_bits).collect();
+                    let ev = serde_json::json!({
+                        "kind": "active_changed",
+                        "seq": p.last_active_seq.saturating_add(1),
+                        "active": active,
+                    });
+                    out.push(ev);
+                    println!(
+                        "{:?}\n{:?}\n",
+                        sm.active, active
+                    );
+                }
+            }
             return Ok(Some(serde_json::json!({"events": out})));
         }
     }
@@ -312,13 +333,15 @@ fn machine_watch_handler(In(_params): In<Option<Value>>, _world: &World) -> BrpR
     // Seed with a minimal snapshot event for active states
     if let Some(sm) = _world.get::<gearbox::StateMachine>(p.entity) {
         let active: Vec<u64> = sm.active.iter().copied().map(entity_to_bits).collect();
-        let leaves: Vec<u64> = sm.active_leaves.iter().copied().map(entity_to_bits).collect();
         let ev = serde_json::json!({
             "kind": "active_changed",
             "seq": p.last_active_seq.saturating_add(1),
             "active": active,
-            "leaves": leaves,
         });
+        println!(
+            "{:?}\n{:?}\n",
+            sm.active, active
+        );
         return Ok(Some(serde_json::json!({"events": [ev]})));
     }
 
@@ -333,6 +356,30 @@ fn register_editor_watch_rpcs(app: &mut App) {
     let mut methods = world.resource_mut::<RemoteMethods>();
     methods.insert("editor.discovery+watch", RemoteMethodSystemId::Watching(discovery_watch));
     methods.insert("editor.machine+watch", RemoteMethodSystemId::Watching(machine_watch));
+}
+
+// =========================
+// Reconciliation on StateMachine changes
+// =========================
+fn on_state_machine_changed(
+    q_changed: Query<(Entity, &gearbox::StateMachine), Changed<gearbox::StateMachine>>,
+    mut trackers: ResMut<MachineTrackers>,
+) {
+    for (entity, sm) in q_changed.iter() {
+        let tr = trackers.trackers.entry(entity).or_default();
+        tr.active_seq = tr.active_seq.saturating_add(1);
+        let active: Vec<u64> = sm.active.iter().copied().map(entity_to_bits).collect();
+        let ev = serde_json::json!({
+            "kind": "active_changed",
+            "seq": tr.active_seq,
+            "active": active,
+        });
+        println!(
+            "{:?}\n{:?}\n",
+            sm.active, active
+        );
+        push_event(tr, ev);
+    }
 }
 
 // =========================
@@ -376,6 +423,11 @@ fn subscribe_machine_handler(In(params): In<Option<Value>>, world: &mut World) -
     let mut counts = world.resource_mut::<Subscriptions>();
     let c = counts.counts.entry(p.entity).or_insert(0);
     *c = c.saturating_add(1);
+    println!("[dbg] server: subscribe entity={:?} count={}", p.entity, *c);
+    
+    // Trigger MachineSubscribed event
+    world.commands().trigger(crate::events::MachineSubscribed { target: p.entity });
+    
     Ok(serde_json::json!({"ok": true}))
 }
 
@@ -385,7 +437,12 @@ fn unsubscribe_machine_handler(In(params): In<Option<Value>>, world: &mut World)
         return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
     }
     let mut counts = world.resource_mut::<Subscriptions>();
-    if let Some(c) = counts.counts.get_mut(&p.entity) { *c = c.saturating_sub(1); if *c == 0 { counts.counts.remove(&p.entity); } }
+    if let Some(c) = counts.counts.get_mut(&p.entity) {
+        *c = c.saturating_sub(1);
+        let new_c = *c;
+        if *c == 0 { counts.counts.remove(&p.entity); }
+        println!("[dbg] server: unsubscribe entity={:?} count={}", p.entity, new_c);
+    }
     Ok(serde_json::json!({"ok": true}))
 }
 
@@ -403,7 +460,7 @@ fn register_editor_subscription_rpcs(app: &mut App) {
 // =========================
 // Trackers and observers
 // =========================
-const RING_CAPACITY: usize = 1024;
+const RING_CAPACITY: usize = 4096;
 
 #[derive(Default, Resource)]
 struct MachineTrackers {
@@ -566,13 +623,15 @@ fn on_active_added(
     tr.active_seq = tr.active_seq.saturating_add(1);
     if let Ok(sm) = q_sm.get(root) {
         let active: Vec<u64> = sm.active.iter().copied().map(entity_to_bits).collect();
-        let leaves: Vec<u64> = sm.active_leaves.iter().copied().map(entity_to_bits).collect();
         let ev = serde_json::json!({
             "kind": "active_changed",
             "seq": tr.active_seq,
             "active": active,
-            "leaves": leaves,
         });
+        println!(
+            "{:?}\n{:?}\n",
+            sm.active, active
+        );
         push_event(tr, ev);
     }
 }
@@ -589,13 +648,15 @@ fn on_active_removed(
     tr.active_seq = tr.active_seq.saturating_add(1);
     if let Ok(sm) = q_sm.get(root) {
         let active: Vec<u64> = sm.active.iter().copied().map(entity_to_bits).collect();
-        let leaves: Vec<u64> = sm.active_leaves.iter().copied().map(entity_to_bits).collect();
         let ev = serde_json::json!({
             "kind": "active_changed",
             "seq": tr.active_seq,
             "active": active,
-            "leaves": leaves,
         });
+        println!(
+            "{:?}\n{:?}\n",
+            sm.active, active
+        );
         push_event(tr, ev);
     }
 }
@@ -643,4 +704,28 @@ fn on_name_changed(
     }
 }
 
-
+// Send active states snapshot when a client subscribes to a machine.
+// This seeds the subscriber regardless of tracker state or load order.
+fn send_active_states_on_subscribe(
+    sub: On<crate::events::MachineSubscribed>,
+    q_sm: Query<&gearbox::StateMachine>,
+    mut trackers: ResMut<MachineTrackers>,
+) {
+    let entity = sub.target;
+    let Ok(sm) = q_sm.get(entity) else { return; };
+    
+    let tr = trackers.trackers.entry(entity).or_default();
+    tr.active_seq = tr.active_seq.saturating_add(1);
+    let active: Vec<u64> = sm.active.iter().copied().map(entity_to_bits).collect();
+    let ev = serde_json::json!({
+        "kind": "active_changed",
+        "seq": tr.active_seq,
+        "active": active,
+    });
+    println!("{:?}\n{:?}\n", sm.active, active);
+    println!(
+        "[dbg] server: seeding subscriber with active snapshot entity={:?} seq={} active={:?}",
+        entity, tr.active_seq, active
+    );
+    push_event(tr, ev);
+}
