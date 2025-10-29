@@ -392,11 +392,19 @@ fn find_parallel_region_root(
     state: Entity,
     q_substate_of: &Query<&SubstateOf>,
     q_initial_state: &Query<&InitialState>,
+    q_children: &Query<&Substates>,
 ) -> Entity {
     // Walk up the hierarchy to find if we're under a parallel state
     let mut previous_ancestor = state;
     for ancestor in q_substate_of.iter_ancestors(state) {
-        if !q_initial_state.contains(ancestor) {
+        // Implicit parallel: ancestor has children and lacks InitialState
+        let has_direct_child = q_children
+            .get(ancestor)
+            .ok()
+            .map(|c| c.into_iter().next().is_some())
+            .unwrap_or(false);
+        let is_parallel = !q_initial_state.contains(ancestor) && has_direct_child;
+        if is_parallel {
             return previous_ancestor;
         }
         previous_ancestor = ancestor;
@@ -418,6 +426,7 @@ pub(crate) fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent
     mut q_defer: Query<&mut DeferEvent<E>>,
     q_active: Query<(), With<Active>>,
     q_initial_state: Query<&InitialState>,
+    q_children: Query<&Substates>,
     q_after: Query<&After>,
     mut q_timer: Query<&mut EdgeTimer>,
     mut commands: Commands,
@@ -432,7 +441,7 @@ pub(crate) fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent
 
         // Leaves-first: attempt to fire along each active branch (one per parallel region)
         for &leaf in current.active_leaves.iter() {
-            let region_root = find_parallel_region_root(leaf, &q_substate_of, &q_initial_state);
+            let region_root = find_parallel_region_root(leaf, &q_substate_of, &q_initial_state, &q_children);
             if fired_regions.contains(&region_root) { continue; }
 
             if try_fire_first_matching_edge_on_branch(

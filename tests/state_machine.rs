@@ -156,7 +156,7 @@ fn events_root_propagation_one_per_parallel_region() {
 
     // Build root -> P(parallel)
     let root = app.world_mut().spawn_empty().id();
-    let p = app.world_mut().spawn((Parallel,)).id();
+    let p = app.world_mut().spawn_empty().id();
     app.world_mut().entity_mut(p).insert(SubstateOf(root));
 
     // Two regions under P
@@ -209,7 +209,7 @@ fn history_shallow_saves_immediate_children_under_parallel_and_restores() {
 
     // root -> P(parallel, shallow history) -> regions R1,R2 with leaves A,B
     let root = app.world_mut().spawn_empty().id();
-    let p = app.world_mut().spawn((Parallel, History::Shallow)).id();
+    let p = app.world_mut().spawn((History::Shallow,)).id();
     app.world_mut().entity_mut(p).insert(SubstateOf(root));
     let r1 = app.world_mut().spawn_empty().id();
     let r2 = app.world_mut().spawn_empty().id();
@@ -564,7 +564,7 @@ fn transitioning_parent_with_parallel_child_exits_all_descendant_leaves() {
     let in_game = app.world_mut().spawn_empty().id();
     app.world_mut().entity_mut(in_game).insert(SubstateOf(root));
 
-    let panels = app.world_mut().spawn((Parallel,)).id();
+    let panels = app.world_mut().spawn_empty().id();
     app.world_mut().entity_mut(panels).insert(SubstateOf(in_game));
     let talents = app.world_mut().spawn_empty().id();
     app.world_mut().entity_mut(talents).insert(SubstateOf(in_game));

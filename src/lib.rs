@@ -254,8 +254,8 @@ fn transition_observer<T: transitions::PhasePayload>(
         return;
     }
 
-    // Determine whether the source is a parallel parent (transition defined on a parallel state)
-    let source_is_parallel = q_initial_state.get(source_state).is_err();
+    // Determine whether the source is a parallel parent (implicit: has children and lacks InitialState)
+    let source_is_parallel = q_initial_state.get(source_state).is_err() && q_children.get(source_state).is_ok();
 
     // Exit/enter computation diverges for parallel parents
     let (states_to_exit_vec, states_to_enter_vec) = if source_is_parallel {
