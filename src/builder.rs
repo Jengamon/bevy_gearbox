@@ -65,12 +65,12 @@ pub struct EdgeConfig {
 }
 
 impl EdgeConfig {
-    pub fn named(&mut self, name: impl Into<String>) { self.name = Some(name.into()); }
-    pub fn internal(&mut self) { self.kind = EdgeKind::Internal; }
-    pub fn external(&mut self) { self.kind = EdgeKind::External; }
-    pub fn after(&mut self, duration: Duration) { self.after = Some(duration); }
-    pub fn after_secs(&mut self, secs: f32) { self.after(Duration::from_secs_f32(secs)); }
-    pub fn commands(&mut self, f: impl Fn(&mut EntityCommands) + Send + Sync + 'static) { self.extras.push(Box::new(f)); }
+    pub fn named(&mut self, name: impl Into<String>) -> &mut Self { self.name = Some(name.into()); self }
+    pub fn internal(&mut self) -> &mut Self { self.kind = EdgeKind::Internal; self }
+    pub fn external(&mut self) -> &mut Self { self.kind = EdgeKind::External; self }
+    pub fn after(&mut self, duration: Duration) -> &mut Self { self.after = Some(duration); self }
+    pub fn after_secs(&mut self, secs: f32) -> &mut Self { self.after(Duration::from_secs_f32(secs)); self }
+    pub fn commands(&mut self, f: impl Fn(&mut EntityCommands) + Send + Sync + 'static) -> &mut Self { self.extras.push(Box::new(f)); self }
 }
 
 /// Typed event-edge configuration that also allows specifying a validator
@@ -80,24 +80,22 @@ pub struct EventEdgeConfig<E: crate::TransitionEvent> {
 }
 
 impl<E: crate::TransitionEvent> EventEdgeConfig<E> {
-    #[inline] pub fn named(&mut self, name: impl Into<String>) { self.base.named(name); }
-    #[inline] pub fn internal(&mut self) { self.base.internal(); }
-    #[inline] pub fn external(&mut self) { self.base.external(); }
-    #[inline] pub fn after(&mut self, duration: Duration) { self.base.after(duration); }
-    #[inline] pub fn after_secs(&mut self, secs: f32) { self.base.after_secs(secs); }
-    #[inline] pub fn commands(&mut self, f: impl Fn(&mut EntityCommands) + Send + Sync + 'static) { self.base.commands(f); }
+    #[inline] pub fn named(&mut self, name: impl Into<String>) -> &mut Self { self.base.named(name); self }
+    #[inline] pub fn internal(&mut self) -> &mut Self { self.base.internal(); self }
+    #[inline] pub fn external(&mut self) -> &mut Self { self.base.external(); self }
+    #[inline] pub fn after(&mut self, duration: Duration) -> &mut Self { self.base.after(duration); self }
+    #[inline] pub fn after_secs(&mut self, secs: f32) -> &mut Self { self.base.after_secs(secs); self }
+    #[inline] pub fn commands(&mut self) -> EdgeEntityCommands<'_> { EdgeEntityCommands { base: &mut self.base } }
 
     /// Set a per-edge validator that must accept events of this type for the edge to fire
     #[inline]
-    pub fn validator(&mut self, validator: <E as crate::TransitionEvent>::Validator) {
-        self.validator = Some(validator);
-    }
+    pub fn validator(&mut self, validator: <E as crate::TransitionEvent>::Validator) -> &mut Self { self.validator = Some(validator); self }
 }
 
 impl StateMachineBuilder {
     pub fn new<F>(root_name: impl Into<String>, f: F) -> Self
     where
-        F: FnOnce(&mut StateNodeBuilder),
+        F: for<'b> FnOnce(&'b mut StateNodeBuilder<'b>),
     {
         let mut s = Self {
             root_name: root_name.into(),
@@ -216,12 +214,10 @@ impl<'a> StateNodeBuilder<'a> {
         }
     }
 
-    fn finish(self) {}
-
     /// Add a child state under this node.
-    pub fn with_substate<F>(&mut self, name: impl Into<String>, f: F) -> &mut Self
+    pub fn substate<F>(&mut self, name: impl Into<String>, f: F) -> &mut Self
     where
-        F: FnOnce(&mut StateNodeBuilder),
+        F: for<'b> FnOnce(&'b mut StateNodeBuilder<'b>),
     {
         let name = name.into();
         let mut child = StateNodeBuilder {
@@ -234,18 +230,15 @@ impl<'a> StateNodeBuilder<'a> {
         };
         child.push_node_here();
         f(&mut child);
-        child.finish();
         self
     }
 
-    /// Customize this state's entity with direct access to EntityCommands
-    pub fn commands(&mut self, f: impl Fn(&mut EntityCommands) + Send + Sync + 'static) -> &mut Self {
-        self.inner.state_customizers.push((self.current_path.clone(), Box::new(f)));
-        self
+    pub fn commands(&mut self) -> StateEntityCommands<'_> {
+        StateEntityCommands { inner: self.inner, path: self.current_path.clone() }
     }
 
     /// Mark one of this node's direct children as its initial substate by name.
-    pub fn with_initial(&mut self, child_name: impl Into<String>) -> &mut Self {
+    pub fn initial(&mut self, child_name: impl Into<String>) -> &mut Self {
         let child_name = child_name.into();
         self.inner.initials.push(InitialDef {
             parent_path: self.current_path.clone(),
@@ -264,7 +257,7 @@ impl<'a> StateNodeBuilder<'a> {
     }
 
     /// Add an Event edge from this node to a target by name/path with optional validator.
-    pub fn on_event<E>(&mut self, to: impl AsRef<str>, configure: impl FnOnce(&mut EventEdgeConfig<E>)) -> &mut Self
+    pub fn edge<E>(&mut self, to: impl AsRef<str>, configure: impl FnOnce(&mut EventEdgeConfig<E>)) -> &mut Self
     where
         E: crate::registration::RegisteredTransitionEvent + crate::TransitionEvent + 'static,
     {
@@ -381,4 +374,53 @@ fn resolve_target_path(source_path: &[String], raw: &str, all_paths: &HashSet<Ve
     panic!("Could not resolve target '{}'", raw);
 }
 
+
+// --------------- command-like customizers ---------------
+
+/// A lightweight, deferred wrapper that records `EntityCommands` operations
+/// to be applied to the state's entity when the machine is built.
+pub struct StateEntityCommands<'a> {
+    inner: &'a mut StateMachineBuilder,
+    path: Vec<String>,
+}
+
+impl<'a> StateEntityCommands<'a> {
+    /// Queue an `insert` on the target entity.
+    pub fn insert<T>(&mut self, bundle: T) -> &mut Self
+    where
+        T: Bundle + Send + Sync + 'static,
+    {
+        let path = self.path.clone();
+        let cell = std::sync::Mutex::new(Some(bundle));
+        self.inner.state_customizers.push((path, Box::new(move |ec| {
+            let mut guard = cell.lock().unwrap();
+            let value = guard.take().expect("StateEntityCommands.insert called more than once");
+            ec.insert(value);
+        })));
+        self
+    }
+}
+
+
+/// A lightweight, deferred wrapper that records `EntityCommands` operations
+/// to be applied to the edge's entity when the machine is built.
+pub struct EdgeEntityCommands<'a> {
+    base: &'a mut EdgeConfig,
+}
+
+impl<'a> EdgeEntityCommands<'a> {
+    /// Queue an `insert` on the edge entity.
+    pub fn insert<T>(&mut self, bundle: T) -> &mut Self
+    where
+        T: Bundle + Send + Sync + 'static,
+    {
+        let cell = std::sync::Mutex::new(Some(bundle));
+        self.base.extras.push(Box::new(move |ec| {
+            let mut guard = cell.lock().unwrap();
+            let value = guard.take().expect("EdgeEntityCommands.insert called more than once");
+            ec.insert(value);
+        }));
+        self
+    }
+}
 
