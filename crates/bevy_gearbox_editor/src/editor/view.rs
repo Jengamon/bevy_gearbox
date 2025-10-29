@@ -1,7 +1,7 @@
 use super::view_model::{GraphDoc, UiViewKind};
 use super::layout::{NodeLayout, LayoutConfig};
 use super::context_menu::{build_context_menu, MenuItemKind, MenuSelection};
-use crate::editor::workspace::{ContextMenuState, RenameInline, Workspace};
+use crate::editor::workspace::{ContextMenuState, RenameInline, Workspace, EdgeBuildState, EdgeMenuState};
 use crate::types::ServerEntity;
 use bevy_egui::egui;
 
@@ -203,7 +203,7 @@ pub fn draw_doc(
     // Right-click context menu trigger: only create an interact response for the hovered entity
     // so topmost widget wins for hit-testing, but keep menu open independently of hover.
     let mut context_menu_selection: Option<MenuSelection> = None;
-    if doc.graph.is_some() {
+    if doc.graph.is_some() && workspace.edge_build.is_none() {
         for eid in order.iter() {
             let Some(view) = doc.views.get(eid) else { continue };
             // Compute interactive rect in screen space: full rect for nodes, pill rect for edges
@@ -230,6 +230,34 @@ pub fn draw_doc(
             resp.context_menu(|menu_ui| {
                 *selection = Some(*eid);
                 menu_ui.set_min_width(160.0);
+                // If we're in edge-kind selection for this node, override with edge-kind menu
+                if let Some(edge_menu) = workspace.edge_menu.clone() {
+                    if edge_menu.doc == doc_id && edge_menu.target == *eid {
+                        if menu_ui.button("Always").clicked() {
+                            println!("Connecting {:?} to {:?} via event {}", edge_menu.source, edge_menu.target, "Always");
+                            workspace.preview_edges.retain(|pe| !(pe.doc == doc_id && pe.source == edge_menu.source && pe.target == edge_menu.target));
+                            workspace.edge_menu = None;
+                            workspace.edge_build = None;
+                            menu_ui.close();
+                        }
+                        for label in workspace.available_event_edges.clone().into_iter() {
+                            if menu_ui.button(&label).clicked() {
+                                println!("Connecting {:?} to {:?} via event {}", edge_menu.source, edge_menu.target, label);
+                                workspace.preview_edges.retain(|pe| !(pe.doc == doc_id && pe.source == edge_menu.source && pe.target == edge_menu.target));
+                                workspace.edge_menu = None;
+                                workspace.edge_build = None;
+                                menu_ui.close();
+                            }
+                        }
+                        menu_ui.separator();
+                        if menu_ui.button("Cancel").clicked() {
+                            workspace.edge_menu = None;
+                            workspace.edge_build = None;
+                            menu_ui.close();
+                        }
+                        return;
+                    }
+                }
                 match view.kind {
                     UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => {
                         if let Some(graph) = &doc.graph {
@@ -329,18 +357,6 @@ pub fn draw_doc(
     }
 
     if response.drag_stopped() { doc.dragging = None; doc.drag_anchor_world = None; }
-
-    // Zoom at cursor with scroll
-    let scroll_y = response.ctx.input(|i| i.smooth_scroll_delta.y);
-    if scroll_y != 0.0 {
-        let scroll: f32 = scroll_y;
-        if scroll.abs() > 0.0 {
-            let factor = 1.0 + (-scroll * 0.001);
-            let cursor = response.ctx.input(|i| i.pointer.hover_pos()).unwrap_or(rect.center());
-            let cursor = cursor.clamp(rect.min, rect.max);
-            doc.transform.zoom_around_screen_point(factor, cursor);
-        }
-    }
 
     // Draw graph if any
     if doc.graph.is_none() { return context_menu_selection; }
@@ -572,6 +588,21 @@ pub fn draw_doc(
                 // Selection halo (drawn before border so border stays crisp)
                 let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
                 if is_selected { draw_selection_halo(rect_screen, egui::CornerRadius::same(8)); }
+                // Arrow-handle to start edge building when selected and not already building
+                if is_selected && workspace.edge_build.is_none() {
+                    let handle_r = 6.0 * zoom;
+                    let handle_center = egui::pos2(rect_screen.max.x + handle_r + 2.0 * zoom, rect_screen.center().y);
+                    let handle_rect = egui::Rect::from_center_size(handle_center, egui::vec2(handle_r * 2.0, handle_r * 2.0));
+                    let hid = egui::Id::new(("edge_handle", doc_id, "node")).with(*id);
+                    let hresp = ui.interact(handle_rect, hid, egui::Sense::click());
+                    painter.circle_filled(handle_center, handle_r, egui::Color32::from_rgb(110, 190, 255));
+                    painter.circle_stroke(handle_center, handle_r, egui::Stroke::new(1.0, egui::Color32::from_gray(240)));
+                    if hresp.clicked() {
+                        println!("Edge handle clicked for node {:?}", id);
+                        workspace.edge_build = Some(EdgeBuildState { doc: doc_id, source: *id, just_started: true });
+                        println!("Started edge-build: source={:?} doc={:?}", id, doc_id);
+                    }
+                }
                 // Border: dashed if direct child of a Parallel (draw after header so it stays visible)
                 let is_direct_substate_of_parallel = is_direct_substate_of_parallel(doc, id);
                 if is_direct_substate_of_parallel {
@@ -754,6 +785,21 @@ pub fn draw_doc(
                 // Selection halo (drawn before border so border stays crisp)
                 let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
                 if is_selected { draw_selection_halo(rect_screen, egui::CornerRadius::same(8)); }
+                // Arrow-handle to start edge building when selected and not already building
+                if is_selected && workspace.edge_build.is_none() {
+                    let handle_r = 6.0 * zoom;
+                    let handle_center = egui::pos2(rect_screen.max.x + handle_r + 2.0 * zoom, rect_screen.center().y);
+                    let handle_rect = egui::Rect::from_center_size(handle_center, egui::vec2(handle_r * 2.0, handle_r * 2.0));
+                    let hid = egui::Id::new(("edge_handle", doc_id, "node")).with(*id);
+                    let hresp = ui.interact(handle_rect, hid, egui::Sense::click());
+                    painter.circle_filled(handle_center, handle_r, egui::Color32::from_rgb(110, 190, 255));
+                    painter.circle_stroke(handle_center, handle_r, egui::Stroke::new(1.0, egui::Color32::from_gray(240)));
+                    if hresp.clicked() {
+                        println!("Edge handle clicked for node {:?}", id);
+                        workspace.edge_build = Some(EdgeBuildState { doc: doc_id, source: *id, just_started: true });
+                        println!("Started edge-build: source={:?} doc={:?}", id, doc_id);
+                    }
+                }
                 // Border: dashed if direct child of a Parallel
                 let is_direct_substate_of_parallel = is_direct_substate_of_parallel(doc, id);
                 if is_direct_substate_of_parallel {
@@ -805,6 +851,222 @@ pub fn draw_doc(
 
     // (old extra sizing pass removed; handled above)
     // (old extra sizing pass removed; handled above)
+    // Edge-build interaction and preview rendering
+    let mut _edge_cancel = false;
+    let mut _open_edge_menu: Option<EdgeMenuState> = None;
+    let mut _stop_dashed_build = false;
+    if let Some(build) = workspace.edge_build.as_mut() {
+        if build.doc == doc_id {
+            // Determine preview end point: hovered node center (if valid) or cursor
+            let cursor_opt = ui.ctx().input(|i| i.pointer.hover_pos());
+            let end_screen = cursor_opt.unwrap_or(rect.center());
+            let mut snap_to_target: Option<crate::model::EntityId> = None;
+            if let Some(hid) = hovered_entity {
+                if let Some(view) = doc.views.get(&hid) {
+                    if !matches!(view.kind, UiViewKind::Edge { .. }) && hid != build.source {
+                        // Do not snap the preview; only record a valid target for click commit
+                        snap_to_target = Some(hid);
+                        println!("Edge-build hover target: {:?}", hid);
+                    }
+                }
+            }
+            // Draw line from source rect toward end
+            if let Some(src_view) = doc.views.get(&build.source) {
+                let src_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(src_view.rect.min), doc.transform.to_screen(src_view.rect.max));
+                let a_start = rect_from_inside_toward(src_rect_s, end_screen);
+                let color = egui::Color32::from_rgb(110, 190, 255);
+                // Dashed preview line
+                let total: f32 = (end_screen - a_start).length();
+                if total > 0.0 {
+                    let dir = (end_screen - a_start) / total;
+                    let dash: f32 = 8.0;
+                    let gap: f32 = 6.0;
+                    let mut t: f32 = 0.0;
+                    while t < total {
+                        let seg_len = dash.min(total - t);
+                        let p0 = a_start + dir * t;
+                        let p1 = a_start + dir * (t + seg_len);
+                        ui.painter().line_segment([p0, p1], egui::Stroke::new(2.0, color));
+                        t += dash + gap;
+                    }
+                    // Arrowhead at cursor end
+                    let arrow_len = 10.0 * zoom;
+                    let arrow_w = 8.0 * zoom;
+                    let tip = end_screen;
+                    let base = tip - dir * arrow_len;
+                    let perp = egui::pos2(-dir.y, dir.x);
+                    let left = base + perp.to_vec2() * (arrow_w * 0.5);
+                    let right = base - perp.to_vec2() * (arrow_w * 0.5);
+                    ui.painter().add(egui::Shape::convex_polygon(
+                        vec![tip, left, right],
+                        color,
+                        egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
+                    ));
+                }
+            }
+            // Cancel on right-click or Esc
+            let cancel = ui.input(|i| i.pointer.secondary_clicked() || i.key_pressed(egui::Key::Escape));
+            if cancel {
+                println!("Edge-build cancelled (right-click/Esc). source={:?}", build.source);
+                _edge_cancel = true;
+            }
+            // On primary click: open menu if snapped to a valid target, else cancel
+            let suppress_primary = if build.just_started { build.just_started = false; true } else { false };
+            if !suppress_primary && ui.input(|i| i.pointer.primary_clicked()) {
+                if let (Some(cursor), Some(target)) = (cursor_opt, snap_to_target) {
+                    println!("Opening edge menu: source={:?} target={:?} pos={:?}", build.source, target, cursor);
+                    _open_edge_menu = Some(EdgeMenuState { doc: doc_id, source: build.source, target, pos: cursor, just_opened: true, filter: String::new() });
+                    _stop_dashed_build = true;
+                } else {
+                    println!("Edge-build primary click without valid target; cancelling.");
+                    _edge_cancel = true;
+                }
+            }
+        }
+    }
+    if _edge_cancel { workspace.edge_build = None; workspace.edge_menu = None; }
+    if let Some(m) = _open_edge_menu.take() { workspace.edge_menu = Some(m); }
+    if _stop_dashed_build { workspace.edge_build = None; }
+    // When an edge-target is chosen but menu not necessarily open, draw solid preview until selection
+    if let Some(menu) = workspace.edge_menu.clone() {
+        if menu.doc == doc_id {
+            if let (Some(src_view), Some(dst_view)) = (doc.views.get(&menu.source), doc.views.get(&menu.target)) {
+                let src_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(src_view.rect.min), doc.transform.to_screen(src_view.rect.max));
+                let dst_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(dst_view.rect.min), doc.transform.to_screen(dst_view.rect.max));
+                let start = rect_from_inside_toward(src_rect_s, dst_rect_s.center());
+                let end = rect_from_inside_toward(dst_rect_s, src_rect_s.center());
+                let color = egui::Color32::from_rgb(160, 220, 255);
+                ui.painter().line_segment([start, end], egui::Stroke::new(2.0, color));
+                let dir = (end - start).normalized();
+                let arrow_len = 10.0 * zoom;
+                let arrow_w = 8.0 * zoom;
+                let tip = end;
+                let base = tip - dir * arrow_len;
+                let perp = egui::pos2(-dir.y, dir.x);
+                let left = base + perp.to_vec2() * (arrow_w * 0.5);
+                let right = base - perp.to_vec2() * (arrow_w * 0.5);
+                ui.painter().add(egui::Shape::convex_polygon(
+                    vec![tip, left, right],
+                    color,
+                    egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
+                ));
+            }
+            // Popup edge-kind chooser at the cursor position on left-click
+            let popup_id = egui::Id::new(("edge_kind_menu", doc_id)).with(menu.target);
+            let mut filter_buf: String = menu.filter.clone();
+            let popup = egui::Area::new(popup_id)
+                .order(egui::Order::Foreground)
+                .fixed_pos(menu.pos)
+                .show(ui.ctx(), |menu_ui| {
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgba_premultiplied(30, 30, 35, 230))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(80)))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .show(menu_ui, |menu_ui| {
+                            let w = 220.0;
+                            menu_ui.with_layout(egui::Layout::top_down(egui::Align::Center), |menu_ui| {
+                                menu_ui.set_min_width(w);
+                                if menu_ui.add_sized(egui::vec2(w, 24.0), egui::Button::new("Always")).clicked() {
+                        println!(
+                            "Connecting {:?} to {:?} via event {}",
+                            menu.source, menu.target, "Always"
+                        );
+                        workspace
+                            .preview_edges
+                            .retain(|pe| !(pe.doc == doc_id && pe.source == menu.source && pe.target == menu.target));
+                        workspace.edge_menu = None;
+                                    return;
+                                }
+                                menu_ui.separator();
+                                // Search bar
+                                let te = egui::TextEdit::singleline(&mut filter_buf).hint_text("Search events...");
+                                let _ = menu_ui.add_sized(egui::vec2(w, 24.0), te);
+                                menu_ui.add_space(4.0);
+                                // Scrollable list of variants with max height
+                                egui::ScrollArea::vertical()
+                                    .max_height(220.0)
+                                    .show(menu_ui, |menu_ui| {
+                                        let mut items: Vec<String> = workspace.available_event_edges.clone();
+                                        if !filter_buf.trim().is_empty() {
+                                            let q = filter_buf.to_lowercase();
+                                            items.retain(|s| s.to_lowercase().contains(&q));
+                                        }
+                                        for label in items.into_iter() {
+                                            if menu_ui.add_sized(egui::vec2(w, 24.0), egui::Button::new(&label)).clicked() {
+                                                println!(
+                                                    "Connecting {:?} to {:?} via event {}",
+                                                    menu.source, menu.target, label
+                                                );
+                                                workspace
+                                                    .preview_edges
+                                                    .retain(|pe| !(pe.doc == doc_id && pe.source == menu.source && pe.target == menu.target));
+                                                workspace.edge_menu = None;
+                                                return;
+                                            }
+                                        }
+                                    });
+                                menu_ui.separator();
+                                if menu_ui.add_sized(egui::vec2(w, 24.0), egui::Button::new("Cancel")).clicked() {
+                                    workspace.edge_menu = None;
+                                    return;
+                                }
+                            });
+                        });
+                });
+            // Persist search filter across frames
+            if let Some(m) = workspace.edge_menu.as_mut() { if m.doc == doc_id && m.target == menu.target { m.filter = filter_buf; } }
+            // Close the popup on outside click, with one-frame suppression right after opening
+            if ui.input(|i| i.pointer.any_pressed()) {
+                if menu.just_opened {
+                    if let Some(m) = workspace.edge_menu.as_mut() { m.just_opened = false; }
+                } else {
+                    let pos_opt = ui.ctx().input(|i| i.pointer.hover_pos());
+                    let inside = pos_opt.map(|p| popup.response.rect.contains(p)).unwrap_or(false);
+                    if !inside { workspace.edge_menu = None; }
+                }
+            }
+        }
+    }
+
+    // Draw persisted preview edges (solid line with arrowhead)
+    if doc.graph.is_some() {
+        for pe in workspace.preview_edges.iter().filter(|pe| pe.doc == doc_id) {
+            let Some(src_view) = doc.views.get(&pe.source) else { continue };
+            let Some(dst_view) = doc.views.get(&pe.target) else { continue };
+            let src_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(src_view.rect.min), doc.transform.to_screen(src_view.rect.max));
+            let dst_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(dst_view.rect.min), doc.transform.to_screen(dst_view.rect.max));
+            let start = rect_from_inside_toward(src_rect_s, dst_rect_s.center());
+            let end = rect_from_inside_toward(dst_rect_s, src_rect_s.center());
+            let color = egui::Color32::from_rgb(160, 220, 255);
+            ui.painter().line_segment([start, end], egui::Stroke::new(2.0, color));
+            let dir = (end - start).normalized();
+            let arrow_len = 10.0 * zoom;
+            let arrow_w = 8.0 * zoom;
+            let tip = end;
+            let base = tip - dir * arrow_len;
+            let perp = egui::pos2(-dir.y, dir.x);
+            let left = base + perp.to_vec2() * (arrow_w * 0.5);
+            let right = base - perp.to_vec2() * (arrow_w * 0.5);
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![tip, left, right],
+                color,
+                egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
+            ));
+        }
+    }
+
+    // Zoom at cursor with scroll, but suppress when UI is consuming pointer input (e.g., scrolling menus)
+    let scroll_y = ui.ctx().input(|i| i.smooth_scroll_delta.y);
+    if scroll_y != 0.0 && !ui.ctx().wants_pointer_input() {
+        let scroll: f32 = scroll_y;
+        if scroll.abs() > 0.0 {
+            let factor = 1.0 + (-scroll * 0.001);
+            let cursor = ui.ctx().input(|i| i.pointer.hover_pos()).unwrap_or(rect.center());
+            let cursor = cursor.clamp(rect.min, rect.max);
+            doc.transform.zoom_around_screen_point(factor, cursor);
+        }
+    }
+
     context_menu_selection
 }
 

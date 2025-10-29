@@ -42,6 +42,11 @@ impl ProtocolClient {
         Self { base_url, http: reqwest::Client::new() }
     }
 
+    pub async fn registry_schema(&self) -> Result<Value, ProtocolError> {
+        let v = self.jsonrpc_call(crate::methods::REGISTRY_SCHEMA, None).await?;
+        Ok(v.get("result").cloned().unwrap_or(v))
+    }
+
     async fn jsonrpc_call(&self, method: &str, params: Option<Value>) -> Result<Value, ProtocolError> {
         let id = 1u64;
         let body = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
@@ -238,6 +243,7 @@ pub enum ProtocolClientMessage {
     GraphResult { id: u64, graph: serde_json::Value },
     SidecarFound { id: u64, text: String },
     SidecarMissing { id: u64 },
+    EventEdgeVariants { variants: Vec<String> },
 }
 
 async fn list_state_machines(client: &ProtocolClient) -> Result<Vec<ProtocolMachineSummary>, String> {
@@ -281,7 +287,15 @@ fn handle_protocol_client_commands(
                 let client_cloned = client.clone();
                 let ver = rt.0.block_on(async move { client_cloned.protocol_version().await });
                 match ver {
-                    Ok(_) => { conn.state = ProtocolConnectionPhase::Connected; }
+                    Ok(_) => {
+                        conn.state = ProtocolConnectionPhase::Connected;
+                        // Fetch registry schema and publish discovered EventEdge<T> variants
+                        let client_cloned2 = client.clone();
+                        if let Ok(schema) = rt.0.block_on(async move { client_cloned2.registry_schema().await }) {
+                            let variants = extract_event_edge_variants(&schema);
+                            if !variants.is_empty() { writer.write(ProtocolClientMessage::EventEdgeVariants { variants }); }
+                        }
+                    }
                     Err(_) => { conn.state = ProtocolConnectionPhase::Disconnected; }
                 }
             }
@@ -496,7 +510,6 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                     let handle = tokio::spawn(async move {
                         // Subscribe once before starting stream
                         let _ = client_clone.post(&url).json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":EDITOR_MACHINE_SUBSCRIBE,"params":{"entity":id}})).send().await;
-                        println!("[dbg] client: subscribe sent for machine {}", id);
                         loop {
                             let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"editor.machine+watch","params":{"entity":id,"last_active_seq":last_active_seq,"last_transition_seq":last_transition_seq, "last_name_seq": last_name_seq}});
                             let resp = match client_clone.post(&url).json(&req).send().await { Ok(r) => r, Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch http: {}", e))); tokio::time::sleep(std::time::Duration::from_millis(300)).await; continue; } };
@@ -538,19 +551,13 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                                                         _ => {}
                                                     }
                                                 }
-                                                println!(
-                                                    "[dbg] client: stream batch id={} total={} active_changed={} transition_edge={} name_changed={} (cursors a/t/n: {}/{}/{})",
-                                                    id, total, ac, tc, nc, last_active_seq, last_transition_seq, last_name_seq
-                                                );
                                             }
                                             if !out.is_empty() { let _ = tx.send(WatchEvt::Machine { id, events: out }); }
                                         }
                                     }
-                                    Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch stream: {}", e))); println!("[dbg] client: watch stream error for id {}: {}", id, e); break; }
+                                    Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch stream: {}", e))); break; }
                                 }
                             }
-                            // reconnect
-                            println!("[dbg] client: reconnecting watch stream id={}", id);
                         }
                     });
                     machine_handles.insert(id, handle);
@@ -632,31 +639,22 @@ fn handle_protocol_net_commands(
     for cmd in reader.read() {
         match *cmd {
             ProtocolNetCommand::StartDiscovery => {
-                println!("[dbg] client: start discovery");
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartDiscovery { url: client.base_url.clone() }); }
             }
             ProtocolNetCommand::StopDiscovery => {
-                println!("[dbg] client: stop discovery");
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopDiscovery); }
             }
             ProtocolNetCommand::StartMachine { id } => {
                 let (la, lt, ln) = mgr.cursors.get(&id).copied().unwrap_or((0, 0, 0));
-                println!(
-                    "[dbg] client: start machine watch id={} (last_active_seq={}, last_transition_seq={})",
-                    id, la, lt
-                );
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartMachine { url: client.base_url.clone(), id, last_active_seq: la, last_transition_seq: lt, last_name_seq: ln }); }
             }
             ProtocolNetCommand::StopMachine { id } => {
-                println!("[dbg] client: stop machine watch id={}", id);
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopMachine { url: client.base_url.clone(), id }); }
             }
             ProtocolNetCommand::StartComponents { id, ref components } => {
-                println!("[dbg] client: start components watch id={} keys={}", id, components.len());
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartComponents { url: client.base_url.clone(), id, components: components.clone() }); }
             }
             ProtocolNetCommand::StopComponents { id } => {
-                println!("[dbg] client: stop components watch id={}", id);
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopComponents { url: client.base_url.clone(), id }); }
             }
         }
@@ -674,7 +672,6 @@ fn drain_protocol_watch_events(
             drained += 1;
             match evt {
                 WatchEvt::Discovery(batch) => {
-                    if !batch.is_empty() { println!("[dbg] client: discovery batch size={}", batch.len()); }
                     writer.write(ProtocolNetMessage::Discovery(batch));
                 }
                 WatchEvt::Machine { id, events } => {
@@ -715,21 +712,11 @@ fn drain_protocol_watch_events(
                                 _ => {}
                             }
                         }
-                        println!(
-                            "[dbg] client: dispatch id={} total={} active_changed={} transition_edge={} name_changed={} (cursors a {}->{} t {}->{} n {}->{})",
-                            id, total, ac, tc, nc, prev_a, max_a, prev_t, max_t, prev_n, max_n
-                        );
                         writer.write(ProtocolNetMessage::Machine { id, events: filtered });
                     }
                 }
                 WatchEvt::Error(e) => { println!("[dbg] client: watch error: {}", e); }
                 WatchEvt::Components { id, components, removed } => {
-                    if !components.is_empty() || !removed.is_empty() {
-                        println!(
-                            "[dbg] client: components id={} updated={} removed={}",
-                            id, components.len(), removed.len()
-                        );
-                    }
                     writer.write(ProtocolNetMessage::Components { id, components, removed });
                 }
             }
@@ -780,4 +767,40 @@ fn protocol_version_check_startup(
     }
 }
 
+
+// =========================
+// Helper: extract EventEdge<T> variants from registry.schema
+// =========================
+fn extract_event_edge_variants(schema: &serde_json::Value) -> Vec<String> {
+    fn collect_strings(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Array(arr) => { for x in arr { collect_strings(x, out); } }
+            serde_json::Value::Object(map) => { for (_k, vv) in map { collect_strings(vv, out); } }
+            _ => {}
+        }
+    }
+    fn inner_generic(name: &str) -> Option<String> {
+        let lb = name.find('<')?;
+        let rb = name.rfind('>')?;
+        if rb > lb + 1 {
+            return Some(name[lb + 1..rb].to_string());
+        }
+        None
+    }
+    fn simple_type(name: &str) -> String {
+        name.rsplit("::").next().unwrap_or(name).to_string()
+    }
+    let mut strings: Vec<String> = Vec::new();
+    collect_strings(schema, &mut strings);
+    let mut out: Vec<String> = Vec::new();
+    for s in strings.into_iter() {
+        if s.contains(crate::components::EVENT_EDGE_SUBSTR) {
+            if let Some(inner) = inner_generic(&s) { out.push(simple_type(&inner)); }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
 

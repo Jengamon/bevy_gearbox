@@ -8,6 +8,7 @@ pub const WORLD_DESPAWN: &str = "world.despawn";
 pub const WORLD_QUERY: &str = "world.query";
 
 pub const PROTOCOL_VERSION: &str = "protocol.version";
+pub const REGISTRY_SCHEMA: &str = "registry.schema";
 
 pub const EDITOR_DISCOVERY_WATCH: &str = "editor.discovery+watch";
 pub const EDITOR_MACHINE_WATCH: &str = "editor.machine+watch";
@@ -30,5 +31,8 @@ pub const EDITOR_SPAWN_STATE_MACHINE: &str = "editor.spawn_state_machine";
 pub const EDITOR_SPAWN_SUBSTATE: &str = "editor.spawn_substate";
 pub const EDITOR_DELETE_SUBTREE: &str = "editor.delete_subtree";
 pub const EDITOR_RESET_REGION: &str = "editor.reset_region";
+
+// Transition building
+pub const EDITOR_CREATE_TRANSITION: &str = "editor.create_transition";
 
 

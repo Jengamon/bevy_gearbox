@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use bevy_gearbox as gearbox;
 use crate::methods::{PROTOCOL_VERSION, EDITOR_MACHINE_GRAPH};
 use crate::methods::EDITOR_RESET_REGION;
+use crate::methods::EDITOR_CREATE_TRANSITION;
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Default)]
@@ -49,8 +50,6 @@ impl Plugin for GearboxProtocolServerPlugin {
 
         // Trackers and observers for +watch ring buffers
         app.init_resource::<MachineTrackers>()
-            .add_observer(on_active_added)
-            .add_observer(on_active_removed)
             .add_observer(on_transition_edge)
             .add_observer(send_active_states_on_subscribe)
             .add_systems(Update, (on_name_changed, on_state_machine_changed));
@@ -60,6 +59,7 @@ impl Plugin for GearboxProtocolServerPlugin {
         register_editor_watch_rpcs(app);
         register_editor_file_rpcs(app);
         register_editor_convenience_rpcs(app);
+        register_editor_transition_rpcs(app);
         register_editor_machine_graph_rpc(app);
         register_protocol_version_rpc(app);
     }
@@ -290,7 +290,6 @@ fn machine_watch_handler(In(_params): In<Option<Value>>, _world: &World) -> BrpR
     if let Some(subs) = _world.get_resource::<Subscriptions>() {
         let count = subs.counts.get(&p.entity).copied().unwrap_or(0);
         if count == 0 {
-            println!("[dbg] server: machine watch denied (not subscribed) entity={:?}", p.entity);
             return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "not subscribed".to_string(), data: None });
         }
     }
@@ -320,10 +319,6 @@ fn machine_watch_handler(In(_params): In<Option<Value>>, _world: &World) -> BrpR
                         "active": active,
                     });
                     out.push(ev);
-                    println!(
-                        "{:?}\n{:?}\n",
-                        sm.active, active
-                    );
                 }
             }
             return Ok(Some(serde_json::json!({"events": out})));
@@ -338,10 +333,6 @@ fn machine_watch_handler(In(_params): In<Option<Value>>, _world: &World) -> BrpR
             "seq": p.last_active_seq.saturating_add(1),
             "active": active,
         });
-        println!(
-            "{:?}\n{:?}\n",
-            sm.active, active
-        );
         return Ok(Some(serde_json::json!({"events": [ev]})));
     }
 
@@ -374,10 +365,6 @@ fn on_state_machine_changed(
             "seq": tr.active_seq,
             "active": active,
         });
-        println!(
-            "{:?}\n{:?}\n",
-            sm.active, active
-        );
         push_event(tr, ev);
     }
 }
@@ -423,7 +410,6 @@ fn subscribe_machine_handler(In(params): In<Option<Value>>, world: &mut World) -
     let mut counts = world.resource_mut::<Subscriptions>();
     let c = counts.counts.entry(p.entity).or_insert(0);
     *c = c.saturating_add(1);
-    println!("[dbg] server: subscribe entity={:?} count={}", p.entity, *c);
     
     // Trigger MachineSubscribed event
     world.commands().trigger(crate::events::MachineSubscribed { target: p.entity });
@@ -439,9 +425,7 @@ fn unsubscribe_machine_handler(In(params): In<Option<Value>>, world: &mut World)
     let mut counts = world.resource_mut::<Subscriptions>();
     if let Some(c) = counts.counts.get_mut(&p.entity) {
         *c = c.saturating_sub(1);
-        let new_c = *c;
         if *c == 0 { counts.counts.remove(&p.entity); }
-        println!("[dbg] server: unsubscribe entity={:?} count={}", p.entity, new_c);
     }
     Ok(serde_json::json!({"ok": true}))
 }
@@ -474,13 +458,15 @@ struct MachineTrackers {
 struct ResetRegionParams { root: Entity }
 
 fn reset_region_handler(In(params): In<Option<Value>>, _world: &mut World) -> BrpResult {
-    // Minimal placeholder: accept the call and return ok. Apps may override with real logic.
-    // Keep the signature stable for clients.
-    let _p: ResetRegionParams = serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError {
+    let p: ResetRegionParams = serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError {
         code: error_codes::INVALID_PARAMS,
         message: format!("invalid params: {e}"),
         data: None,
     })?;
+    if !_world.entities().contains(p.root) {
+        return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
+    }
+    _world.commands().trigger(crate::events::ResetRegion { target: p.root });
     Ok(serde_json::json!({"ok": true}))
 }
 
@@ -490,6 +476,105 @@ fn register_editor_convenience_rpcs(app: &mut App) {
     let reset_id = world.register_system(reset_region_handler);
     let mut methods = world.resource_mut::<RemoteMethods>();
     methods.insert(EDITOR_RESET_REGION, RemoteMethodSystemId::Instant(reset_id));
+}
+
+// =========================
+// Transition creation RPCs
+// =========================
+
+#[derive(Deserialize)]
+struct CreateTransitionParams { source: Entity, target: Entity, kind: String }
+
+fn simple_type_name(name: &str) -> &str {
+    name.rsplit("::").next().unwrap_or(name)
+}
+
+fn inner_generic(name: &str) -> Option<&str> {
+    let lb = name.find('<')?;
+    let rb = name.rfind('>')?;
+    if rb > lb + 1 { Some(&name[lb + 1..rb]) } else { None }
+}
+
+fn create_transition_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: CreateTransitionParams = serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError {
+        code: error_codes::INVALID_PARAMS,
+        message: format!("invalid params: {e}"),
+        data: None,
+    })?;
+
+    if !world.entities().contains(p.source) || !world.entities().contains(p.target) {
+        return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
+    }
+
+    // Spawn the edge entity and attach Source/Target and edge kind marker
+    let entity = {
+        let mut e = world.spawn_empty();
+        let entity = e.id();
+        e.insert(gearbox::transitions::Source(p.source))
+            .insert(gearbox::transitions::Target(p.target))
+            .insert(gearbox::transitions::EdgeKind::External);
+        entity
+    };
+
+    // Determine marker and display name
+    let mut edge_label = String::new();
+    if p.kind == "Always" {
+        // Insert AlwaysEdge outside the spawn scope
+        world.entity_mut(entity).insert(gearbox::transitions::AlwaysEdge);
+        edge_label = "Always".to_string();
+    } else {
+        // Find a reflected component registration for EventEdge<T> whose inner T simple name matches p.kind
+        use bevy::reflect::TypeRegistration;
+        let reg_arc = world.resource::<AppTypeRegistry>().0.clone();
+        let reg_read = reg_arc.read();
+        let mut found: Option<&TypeRegistration> = None;
+        for registration in reg_read.iter() {
+            let ty_path = registration.type_info().type_path();
+            if !ty_path.contains(crate::components::EVENT_EDGE_SUBSTR) { continue; }
+            if let Some(inner) = inner_generic(ty_path) {
+                if simple_type_name(inner) == p.kind {
+                    found = Some(registration);
+                    break;
+                }
+            }
+        }
+        let Some(registration) = found else {
+            // Clean up the spawned placeholder to avoid leaks
+            let _ = world.despawn(entity);
+            return Err(BrpError { code: error_codes::INVALID_PARAMS, message: format!("unknown event edge kind: {}", p.kind), data: None });
+        };
+
+        // Insert the reflected EventEdge<T> component via ReflectComponent.
+        // Use an empty DynamicStruct so from_reflect_with_fallback uses the reflected Default.
+        if let Some(refl_comp) = registration.data::<bevy::ecs::reflect::ReflectComponent>() {
+            let refl_comp_cloned = refl_comp.clone();
+            drop(reg_read);
+            let mut ew = world.entity_mut(entity);
+            let empty = bevy::reflect::DynamicStruct::default();
+            let reg_read_again = reg_arc.read();
+            refl_comp_cloned.insert(&mut ew, &empty, &*reg_read_again);
+        } else {
+            let _ = world.despawn(entity);
+            return Err(BrpError { code: error_codes::INTERNAL_ERROR, message: "not a ReflectComponent".to_string(), data: None });
+        }
+
+        edge_label = p.kind.clone();
+    }
+
+    // Auto-name edge for editor labeling
+    if !edge_label.is_empty() {
+        world.entity_mut(entity).insert(Name::new(edge_label));
+    }
+
+    Ok(serde_json::json!({"entity": entity.to_bits()}))
+}
+
+fn register_editor_transition_rpcs(app: &mut App) {
+    if !app.world().contains_resource::<RemoteMethods>() { return; }
+    let world = app.main_mut().world_mut();
+    let create_id = world.register_system(create_transition_handler);
+    let mut methods = world.resource_mut::<RemoteMethods>();
+    methods.insert(EDITOR_CREATE_TRANSITION, RemoteMethodSystemId::Instant(create_id));
 }
 
 // =========================
@@ -611,56 +696,6 @@ fn find_machine_root(e: Entity, q_sub: &Query<&gearbox::SubstateOf>, q_sm: &Quer
     None
 }
 
-fn on_active_added(
-    add: On<Add, gearbox::active::Active>,
-    q_sub: Query<&gearbox::SubstateOf>,
-    q_sm: Query<&gearbox::StateMachine>,
-    mut trackers: ResMut<MachineTrackers>,
-) {
-    let entity = add.event().entity;
-    let Some(root) = find_machine_root(entity, &q_sub, &q_sm) else { return; };
-    let tr = trackers.trackers.entry(root).or_default();
-    tr.active_seq = tr.active_seq.saturating_add(1);
-    if let Ok(sm) = q_sm.get(root) {
-        let active: Vec<u64> = sm.active.iter().copied().map(entity_to_bits).collect();
-        let ev = serde_json::json!({
-            "kind": "active_changed",
-            "seq": tr.active_seq,
-            "active": active,
-        });
-        println!(
-            "{:?}\n{:?}\n",
-            sm.active, active
-        );
-        push_event(tr, ev);
-    }
-}
-
-fn on_active_removed(
-    rem: On<Remove, gearbox::active::Active>,
-    q_sub: Query<&gearbox::SubstateOf>,
-    q_sm: Query<&gearbox::StateMachine>,
-    mut trackers: ResMut<MachineTrackers>,
-) {
-    let entity = rem.event().entity;
-    let Some(root) = find_machine_root(entity, &q_sub, &q_sm) else { return; };
-    let tr = trackers.trackers.entry(root).or_default();
-    tr.active_seq = tr.active_seq.saturating_add(1);
-    if let Ok(sm) = q_sm.get(root) {
-        let active: Vec<u64> = sm.active.iter().copied().map(entity_to_bits).collect();
-        let ev = serde_json::json!({
-            "kind": "active_changed",
-            "seq": tr.active_seq,
-            "active": active,
-        });
-        println!(
-            "{:?}\n{:?}\n",
-            sm.active, active
-        );
-        push_event(tr, ev);
-    }
-}
-
 fn on_transition_edge(
     transition: On<gearbox::TransitionActions>,
     q_source: Query<&gearbox::transitions::Source>,
@@ -722,10 +757,5 @@ fn send_active_states_on_subscribe(
         "seq": tr.active_seq,
         "active": active,
     });
-    println!("{:?}\n{:?}\n", sm.active, active);
-    println!(
-        "[dbg] server: seeding subscriber with active snapshot entity={:?} seq={} active={:?}",
-        entity, tr.active_seq, active
-    );
     push_event(tr, ev);
 }

@@ -132,6 +132,10 @@ fn poll_network(
                 // No-op; fallback to local disk/default layout in sync pass
                 processed += 1;
             }
+            ProtocolClientMessage::EventEdgeVariants { variants } => {
+                workspace.available_event_edges = variants.clone();
+                processed += 1;
+            }
         }
     }
     // Handle net watch messages (discovery, machine deltas)

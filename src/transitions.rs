@@ -60,7 +60,7 @@ pub enum EdgeKind {
 
 /// Marker for a transition that should fire on entering the source state (no event).
 #[derive(Component, Reflect, Default, Debug)]
-#[reflect(Component)]
+#[reflect(Component, Default)]
 #[require(EdgeKind)]
 pub struct AlwaysEdge;
 
@@ -267,7 +267,7 @@ fn try_fire_first_matching_edge_generic<E: TransitionEvent + RegisteredTransitio
 
 /// Attach this to a transition entity to react to a specific event `E`.
 #[derive(Reflect, Component)]
-#[reflect(Component)]
+#[reflect(Component, Default)]
 #[require(EdgeKind)]
 pub struct EventEdge<E: EntityEvent + RegisteredTransitionEvent> {
     #[reflect(ignore)]
