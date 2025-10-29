@@ -20,10 +20,10 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
             .display_name
             .clone()
             .unwrap_or_else(|| format!("{}", id));
-        // Derive kind from components; Parallel is a parent as well
-        let has_parallel = node.components.keys().any(|k| k == c::PARALLEL || k.ends_with("::Parallel") || k.ends_with("::Parallel>"));
         let is_container = !node.children.is_empty();
-        let kind = if has_parallel { UiNodeKind::Parallel } else if is_container { UiNodeKind::Parent } else { UiNodeKind::Leaf };
+        let has_initial = snapshot.nodes.get(id).and_then(|n| n.components.get(c::INITIAL_STATE)).is_some();
+        let is_parallel = is_container && !has_initial;
+        let kind = if is_parallel { UiNodeKind::Parallel } else if is_container { UiNodeKind::Parent } else { UiNodeKind::Leaf };
         // If this node was previously a container view and is now a leaf with no children,
         // shrink its rect back to the default leaf size, anchored at the existing min.
         if matches!(prev_view_opt.map(|v| &v.kind), Some(UiViewKind::Parent | UiViewKind::Parallel))

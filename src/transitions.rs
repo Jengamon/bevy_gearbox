@@ -4,8 +4,8 @@ use std::time::Duration;
 use bevy::prelude::*;
 use bevy::platform::collections::HashSet;
 
-use crate::Substates;
-use crate::{guards::Guards, EnterState, Transition, active::Active, SubstateOf, StateMachine, ExitState, Parallel};
+use crate::{InitialState, Substates};
+use crate::{guards::Guards, EnterState, Transition, active::Active, SubstateOf, StateMachine, ExitState};
 use crate::state_component::Reset;
 use crate::registration::RegisteredTransitionEvent;
 
@@ -391,12 +391,12 @@ pub fn always_edge_listener(
 fn find_parallel_region_root(
     state: Entity,
     q_substate_of: &Query<&SubstateOf>,
-    q_parallel: &Query<&Parallel>,
+    q_initial_state: &Query<&InitialState>,
 ) -> Entity {
     // Walk up the hierarchy to find if we're under a parallel state
     let mut previous_ancestor = state;
     for ancestor in q_substate_of.iter_ancestors(state) {
-        if q_parallel.contains(ancestor) {
+        if !q_initial_state.contains(ancestor) {
             return previous_ancestor;
         }
         previous_ancestor = ancestor;
@@ -417,7 +417,7 @@ pub(crate) fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent
     q_sm: Query<&StateMachine>,
     mut q_defer: Query<&mut DeferEvent<E>>,
     q_active: Query<(), With<Active>>,
-    q_parallel: Query<&Parallel>,
+    q_initial_state: Query<&InitialState>,
     q_after: Query<&After>,
     mut q_timer: Query<&mut EdgeTimer>,
     mut commands: Commands,
@@ -432,7 +432,7 @@ pub(crate) fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent
 
         // Leaves-first: attempt to fire along each active branch (one per parallel region)
         for &leaf in current.active_leaves.iter() {
-            let region_root = find_parallel_region_root(leaf, &q_substate_of, &q_parallel);
+            let region_root = find_parallel_region_root(leaf, &q_substate_of, &q_initial_state);
             if fired_regions.contains(&region_root) { continue; }
 
             if try_fire_first_matching_edge_on_branch(

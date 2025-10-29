@@ -1106,8 +1106,9 @@ fn is_direct_substate_of_parallel(doc: &GraphDoc, child_id: &crate::model::Entit
     if by_view { return true; }
     if let (Some(graph), Some(pid)) = (&doc.graph, parent_opt) {
         if let Some(parent_node) = graph.nodes.get(&pid) {
-            let has_parallel = parent_node.components.keys().any(|k| k == bevy_gearbox_protocol::components::PARALLEL || k.ends_with("::Parallel") || k.ends_with("::Parallel>"));
-            if has_parallel { return true; }
+            let has_initial = parent_node.components.contains(bevy_gearbox_protocol::components::INITIAL_STATE);
+            let has_children = !parent_node.children.is_empty();
+            if has_children && !has_initial { return true; }
         }
     }
     false

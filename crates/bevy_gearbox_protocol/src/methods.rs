@@ -10,8 +10,6 @@ pub const WORLD_QUERY: &str = "world.query";
 pub const PROTOCOL_VERSION: &str = "protocol.version";
 pub const REGISTRY_SCHEMA: &str = "registry.schema";
 
-pub const EDITOR_DISCOVERY_WATCH: &str = "editor.discovery+watch";
-pub const EDITOR_MACHINE_WATCH: &str = "editor.machine+watch";
 pub const EDITOR_MACHINE_SUBSCRIBE: &str = "editor.machine_subscribe";
 pub const EDITOR_MACHINE_UNSUBSCRIBE: &str = "editor.machine_unsubscribe";
 

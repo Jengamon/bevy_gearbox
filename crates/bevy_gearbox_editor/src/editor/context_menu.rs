@@ -41,7 +41,7 @@ pub fn build_context_menu(graph: &StateMachineGraph, id: EntityId) -> Vec<MenuIt
 
     let has_children = !node.children.is_empty();
     let has_initial_state = node.components.contains(c::INITIAL_STATE);
-    let has_parallel = node.components.contains(c::PARALLEL);
+    let is_parallel = has_children && !has_initial_state;
     // Root node detection: server does not include an explicit bevy_gearbox::StateMachine marker
     // in the graph snapshot, so treat the graph root as the state machine owner.
     let is_root_state_machine = id == graph.root;
@@ -65,8 +65,8 @@ pub fn build_context_menu(graph: &StateMachineGraph, id: EntityId) -> Vec<MenuIt
         items.push(MenuItem { label: "Make Parent", kind: MenuItemKind::MakeParent });
     }
 
-    // Make Parallel (when this node does not have Parallel)
-    if !has_parallel {
+    // Make Parallel (only when it has children and is not already parallel)
+    if has_children && !is_parallel {
         items.push(MenuItem { label: "Make Parallel", kind: MenuItemKind::MakeParallel });
     }
 

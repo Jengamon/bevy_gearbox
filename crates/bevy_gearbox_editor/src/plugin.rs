@@ -406,26 +406,8 @@ fn convert_wire_graph_to_state_machine_graph(graph: serde_json::Value) -> Option
                 // Derive and store a stable display label so sidecar edge keys can match
                 edge.display_label = Some(crate::model::choose_edge_label_bag(&edge.components));
             }
-            // Only append to adjacency if this node didn't already supply it via relationships
-            if !out.adjacency_out.contains_key(&src) { out.adjacency_out.entry(src).or_default().push(id); }
-            if !out.adjacency_in.contains_key(&tgt) { out.adjacency_in.entry(tgt).or_default().push(id); }
             out.edges.insert(id, edge);
         }
-    }
-    // Deduplicate adjacency lists in case both relationships and edges populated them
-    fn eid_key(id: &m::EntityId) -> (u8, u64) {
-        match id {
-            m::EntityId::Server(ServerEntity(u)) => (0, *u),
-            m::EntityId::Local(m::LocalId(u)) => (1, *u),
-        }
-    }
-    for v in out.adjacency_out.values_mut() {
-        v.sort_unstable_by_key(|id| eid_key(id));
-        v.dedup();
-    }
-    for v in out.adjacency_in.values_mut() {
-        v.sort_unstable_by_key(|id| eid_key(id));
-        v.dedup();
     }
     Some(out)
 }

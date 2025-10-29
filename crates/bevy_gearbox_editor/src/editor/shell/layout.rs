@@ -61,11 +61,9 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                             crate::editor::context_menu::MenuSelection::DeleteEntity { target } => {
                                 // Only support deleting server-backed entities
                                 if let crate::model::EntityId::Server(sid) = target {
-                                    println!("[editor] Delete requested: target={} doc={}", sid.0, active.0);
                                     let e = bevy::prelude::Entity::from_bits(sid.0);
                                     commands.trigger(bevy_gearbox_protocol::events::Despawn { target: e });
                                     // Request a fresh graph snapshot for the active document
-                                    println!("[editor] Queue fetch after delete for doc={}", active.0);
                                     workspace.pending_fetch_docs.push(active);
                                 }
                             }

@@ -36,8 +36,7 @@ impl Plugin for GearboxPlugin {
             .add_observer(transitions::cancel_after_on_exit)
             .add_observer(transitions::reset_on_transition_actions);
 
-        app.register_type::<Parallel>()
-            .register_type::<InitialState>()
+        app.register_type::<InitialState>()
             .register_type::<StateMachine>()
             .register_type::<History>()
             .register_type::<HistoryState>()
@@ -125,13 +124,6 @@ pub struct Transition<T = ()> where T: Clone + Send + Sync + 'static {
 #[derive(EntityEvent, Reflect)]
 pub struct TransitionActions { #[event_target] pub target: Entity }
 
-/// A marker component for a state that has parallel (orthogonal) regions.
-/// When a state with this component is entered, the machine will simultaneously enter
-/// the initial state of each of its direct children.
-#[derive(Component, Reflect, Default)]
-#[reflect(Component)]
-pub struct Parallel;
-
 /// A component that specifies the initial substate for a state.
 /// When a state is entered, the machine will recursively drill down through `InitialState`
 /// components to find the leaf state(s) to activate.
@@ -207,7 +199,6 @@ impl ResetRegion {
 fn transition_observer<T: transitions::PhasePayload>(
     transition: On<Transition<T>>,
     mut q_sm: Query<&mut StateMachine>,
-    q_parallel: Query<&Parallel>,
     q_children: Query<&Substates>,
     q_initial_state: Query<&InitialState>,
     q_history: Query<&History>,
@@ -250,7 +241,6 @@ fn transition_observer<T: transitions::PhasePayload>(
             state_machine,
             &q_initial_state,
             &q_children,
-            &q_parallel,
             &q_history,
             &q_history_state,
             &q_substate_of,
@@ -265,7 +255,7 @@ fn transition_observer<T: transitions::PhasePayload>(
     }
 
     // Determine whether the source is a parallel parent (transition defined on a parallel state)
-    let source_is_parallel = q_parallel.get(source_state).is_ok();
+    let source_is_parallel = q_initial_state.get(source_state).is_err();
 
     // Exit/enter computation diverges for parallel parents
     let (states_to_exit_vec, states_to_enter_vec) = if source_is_parallel {
@@ -449,7 +439,6 @@ fn transition_observer<T: transitions::PhasePayload>(
         state_machine,
         &q_initial_state,
         &q_children,
-        &q_parallel,
         &q_history,
         &q_history_state,
         &q_substate_of,
@@ -475,7 +464,6 @@ pub fn get_all_leaf_states(
     state_machine: Entity,
     q_initial_state: &Query<&InitialState>,
     q_children: &Query<&Substates>,
-    q_parallel: &Query<&Parallel>,
     q_history: &Query<&History>,
     q_history_state: &Query<&mut HistoryState>,
     q_substate_of: &Query<&SubstateOf>,
@@ -515,7 +503,7 @@ pub fn get_all_leaf_states(
             }
         }
         // 2) If it's a parallel state (without history), explore all children regions.
-        else if q_parallel.get(entity).is_ok() {
+        else if q_initial_state.get(entity).is_err() {
             if let Ok(children) = q_children.get(entity) {
                 found_next = true;
                 for &child in children {

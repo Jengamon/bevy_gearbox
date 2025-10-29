@@ -27,7 +27,6 @@ impl Plugin for GearboxProtocolServerPlugin {
             .register_type::<gearbox::Substates>()
             .register_type::<gearbox::StateMachine>()
             .register_type::<gearbox::InitialState>()
-            .register_type::<gearbox::Parallel>()
             .register_type::<gearbox::transitions::Source>()
             .register_type::<gearbox::transitions::Target>()
             .register_type::<gearbox::transitions::EdgeKind>()
@@ -599,7 +598,6 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
     let mut visited: HashSet<Entity> = HashSet::new();
     let mut q_children = world.query::<&gearbox::Substates>();
     let mut q_name = world.query::<&Name>();
-    let mut q_parallel = world.query::<Option<&gearbox::Parallel>>();
     let mut q_initial = world.query::<Option<&gearbox::InitialState>>();
     let mut q_transitions = world.query::<Option<&gearbox::transitions::Transitions>>();
     let mut q_targeted_by = world.query::<Option<&gearbox::transitions::TargetedBy>>();
@@ -614,7 +612,6 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
         // Collect node fields (string-centric)
         let mut components: BTreeMap<String, Value> = BTreeMap::new();
         if let Some(name) = q_name.get(world, cur).ok() { components.insert("Name".to_string(), Value::String(name.as_str().to_string())); }
-        if q_parallel.get(world, cur).ok().flatten().is_some() { components.insert("bevy_gearbox::Parallel".to_string(), Value::String("true".to_string())); }
         if let Some(init) = q_initial.get(world, cur).ok().flatten() {
             // InitialState points to a child; serialize as string of entity bits for simplicity
             components.insert("bevy_gearbox::InitialState".to_string(), Value::String(init.0.to_bits().to_string()));
