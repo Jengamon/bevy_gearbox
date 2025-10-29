@@ -6,6 +6,7 @@ use bevy::platform::collections::HashSet;
 use crate::{active::{Active, Inactive}, guards::Guards, history::{History, HistoryState}};
 
 pub mod active;
+pub mod builder;
 pub mod guards;
 pub mod history;
 pub mod prelude;
@@ -20,6 +21,7 @@ pub use bevy_gearbox_macros::SimpleTransition;
 pub use transitions::{TransitionEvent, NoEvent};
 pub use inventory;
 pub use bevy_gearbox_macros::register_transition;
+pub use builder::StateMachineBuilder;
 
 /// The main plugin for `bevy_gearbox`. Registers events and adds the core systems.
 pub struct GearboxPlugin;
