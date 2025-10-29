@@ -90,6 +90,20 @@ impl<E: crate::TransitionEvent> EventEdgeConfig<E> {
     /// Set a per-edge validator that must accept events of this type for the edge to fire
     #[inline]
     pub fn validator(&mut self, validator: <E as crate::TransitionEvent>::Validator) -> &mut Self { self.validator = Some(validator); self }
+
+    /// Set both the name and validator from a single value that can convert into both.
+    /// Useful when the validator and display name are the same conceptual value.
+    #[inline]
+    pub fn nv<V>(&mut self, v: V) -> &mut Self
+    where
+        V: Into<<E as crate::TransitionEvent>::Validator> + Into<String> + Clone,
+    {
+        let name: String = v.clone().into();
+        let validator: <E as crate::TransitionEvent>::Validator = v.into();
+        self.base.named(name);
+        self.validator = Some(validator);
+        self
+    }
 }
 
 impl StateMachineBuilder {
@@ -248,7 +262,7 @@ impl<'a> StateNodeBuilder<'a> {
     }
 
     /// Add an Always edge from this node to a target by name/path.
-    pub fn on_always(
+    pub fn always(
         &mut self,
         to: impl AsRef<str>,
         configure: impl FnOnce(&mut EdgeConfig),
@@ -279,6 +293,17 @@ impl<'a> StateNodeBuilder<'a> {
             })),
             extras: cfg.base.extras,
         });
+        self
+    }
+
+    /// Sugar: add an Event edge and set both its name and validator from a single value
+    /// that can convert into both a `String` (for the name) and `E::Validator`.
+    pub fn edge_from<E, V>(&mut self, to: impl AsRef<str>, v: V) -> &mut Self
+    where
+        E: crate::registration::RegisteredTransitionEvent + crate::TransitionEvent + 'static,
+        V: Into<<E as crate::TransitionEvent>::Validator> + Into<String> + Clone,
+    {
+        self.edge::<E>(to, move |e| { e.nv(v); });
         self
     }
 
