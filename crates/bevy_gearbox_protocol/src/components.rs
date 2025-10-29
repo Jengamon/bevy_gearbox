@@ -10,6 +10,7 @@ pub const STATE_MACHINE: &str = "bevy_gearbox::StateMachine";
 pub const STATE_CHILDREN: &str = "bevy_gearbox::Substates";
 pub const TRANSITIONS: &str = "bevy_gearbox::transitions::Transitions";
 pub const TARGET: &str = "bevy_gearbox::transitions::Target";
+pub const TARGETED_BY: &str = "bevy_gearbox::transitions::TargetedBy";
 pub const ALWAYS_EDGE: &str = "bevy_gearbox::transitions::AlwaysEdge";
 pub const AFTER: &str = "bevy_gearbox::transitions::After";
 pub const PARALLEL: &str = "bevy_gearbox::Parallel";

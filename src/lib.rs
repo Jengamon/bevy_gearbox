@@ -53,6 +53,7 @@ impl Plugin for GearboxPlugin {
             .register_type::<transitions::Source>()
             .register_type::<transitions::Transitions>()
             .register_type::<transitions::Target>()
+            .register_type::<transitions::TargetedBy>()
             .register_type::<transitions::AlwaysEdge>()
             .register_type::<transitions::EdgeKind>()
             .register_type::<transitions::NoEvent>()

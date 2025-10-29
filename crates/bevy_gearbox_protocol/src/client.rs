@@ -216,20 +216,22 @@ pub fn on_rename(rename: On<crate::events::Rename>, client: Res<ProtocolClient>,
     });
 }
 
-pub fn on_despawn(despawn: On<crate::events::Despawn>, client: Res<ProtocolClient>) {
-	let id = despawn.target.to_bits();
-	let client_cloned = client.clone();
-	bevy::tasks::IoTaskPool::get().spawn(async move {
-		let _ = client_cloned.despawn(id).await;
-	}).detach();
+pub fn on_despawn(despawn: On<crate::events::Despawn>, client: Res<ProtocolClient>, rt: Res<TokioRuntime>) {
+    let id = despawn.target.to_bits();
+    let client_cloned = client.clone();
+    let rt = rt.0.clone();
+    rt.spawn(async move {
+        let _ =client_cloned.despawn(id).await;
+    });
 }
 
-pub fn on_reset_region(reset_region: On<crate::events::ResetRegion>, client: Res<ProtocolClient>) {
-	let root = reset_region.target.to_bits();
-	let client_cloned = client.clone();
-	bevy::tasks::IoTaskPool::get().spawn(async move {
-		let _ = client_cloned.reset_region(root).await;
-	}).detach();
+pub fn on_reset_region(reset_region: On<crate::events::ResetRegion>, client: Res<ProtocolClient>, rt: Res<TokioRuntime>) {
+    let root = reset_region.target.to_bits();
+    let client_cloned = client.clone();
+    let rt = rt.0.clone();
+    rt.spawn(async move {
+        let _ = client_cloned.reset_region(root).await;
+    });
 }
 
 pub fn on_create_transition(

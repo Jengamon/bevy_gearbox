@@ -201,7 +201,9 @@ fn poll_network(
     // Drain any pending explicit fetch requests enqueued by UI actions
     if !workspace.pending_fetch_docs.is_empty() {
         let docs: Vec<ServerEntity> = std::mem::take(&mut workspace.pending_fetch_docs);
-        for d in docs.into_iter() { client_cmd.write(ProtocolClientCommand::FetchGraph { id: d.0 }); }
+        for d in docs.into_iter() {
+            client_cmd.write(ProtocolClientCommand::FetchGraph { id: d.0 });
+        }
     }
 }
 
@@ -369,6 +371,21 @@ fn convert_wire_graph_to_state_machine_graph(graph: serde_json::Value) -> Option
                 if let Some(children_v) = comps.get("bevy_gearbox::Substates").and_then(|v| v.as_array()) {
                     node.children = children_v.iter().filter_map(|vv| vv.as_str()).filter_map(|s| s.parse::<u64>().ok()).map(|u| m::EntityId::Server(ServerEntity(u))).collect();
                 }
+                // Build adjacency from relationships if provided
+                if let Some(out_v) = comps.get(bevy_gearbox_protocol::components::TRANSITIONS).and_then(|v| v.as_array()) {
+                    let mut outs: Vec<m::EntityId> = Vec::new();
+                    for s in out_v.iter().filter_map(|vv| vv.as_str()) {
+                        if let Ok(u) = s.parse::<u64>() { outs.push(m::EntityId::Server(ServerEntity(u))); }
+                    }
+                    if !outs.is_empty() { out.adjacency_out.insert(id, outs); }
+                }
+                if let Some(in_v) = comps.get(bevy_gearbox_protocol::components::TARGETED_BY).and_then(|v| v.as_array()) {
+                    let mut ins: Vec<m::EntityId> = Vec::new();
+                    for s in in_v.iter().filter_map(|vv| vv.as_str()) {
+                        if let Ok(u) = s.parse::<u64>() { ins.push(m::EntityId::Server(ServerEntity(u))); }
+                    }
+                    if !ins.is_empty() { out.adjacency_in.insert(id, ins); }
+                }
             }
             out.nodes.insert(id, node);
         }
@@ -389,10 +406,26 @@ fn convert_wire_graph_to_state_machine_graph(graph: serde_json::Value) -> Option
                 // Derive and store a stable display label so sidecar edge keys can match
                 edge.display_label = Some(crate::model::choose_edge_label_bag(&edge.components));
             }
-            out.adjacency_out.entry(src).or_default().push(id);
-            out.adjacency_in.entry(tgt).or_default().push(id);
+            // Only append to adjacency if this node didn't already supply it via relationships
+            if !out.adjacency_out.contains_key(&src) { out.adjacency_out.entry(src).or_default().push(id); }
+            if !out.adjacency_in.contains_key(&tgt) { out.adjacency_in.entry(tgt).or_default().push(id); }
             out.edges.insert(id, edge);
         }
+    }
+    // Deduplicate adjacency lists in case both relationships and edges populated them
+    fn eid_key(id: &m::EntityId) -> (u8, u64) {
+        match id {
+            m::EntityId::Server(ServerEntity(u)) => (0, *u),
+            m::EntityId::Local(m::LocalId(u)) => (1, *u),
+        }
+    }
+    for v in out.adjacency_out.values_mut() {
+        v.sort_unstable_by_key(|id| eid_key(id));
+        v.dedup();
+    }
+    for v in out.adjacency_in.values_mut() {
+        v.sort_unstable_by_key(|id| eid_key(id));
+        v.dedup();
     }
     Some(out)
 }

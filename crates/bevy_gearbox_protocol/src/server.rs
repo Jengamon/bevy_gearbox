@@ -602,6 +602,7 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
     let mut q_parallel = world.query::<Option<&gearbox::Parallel>>();
     let mut q_initial = world.query::<Option<&gearbox::InitialState>>();
     let mut q_transitions = world.query::<Option<&gearbox::transitions::Transitions>>();
+    let mut q_targeted_by = world.query::<Option<&gearbox::transitions::TargetedBy>>();
 
     let mut nodes: Vec<Value> = Vec::new();
     let mut edges: Vec<Value> = Vec::new();
@@ -629,6 +630,28 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
         }
         if !children_ids.is_empty() {
             components.insert("bevy_gearbox::Substates".to_string(), Value::Array(children_ids.into_iter().map(|s| Value::String(s)).collect()));
+        }
+
+        // Relationships for edges (provide adjacency directly on nodes)
+        if let Some(transitions) = q_transitions.get(world, cur).ok().flatten() {
+            let ids: Vec<Value> = transitions
+                .into_iter()
+                .copied()
+                .map(|e| Value::String(e.to_bits().to_string()))
+                .collect();
+            if !ids.is_empty() {
+                components.insert(crate::components::TRANSITIONS.to_string(), Value::Array(ids));
+            }
+        }
+        if let Some(incoming) = q_targeted_by.get(world, cur).ok().flatten() {
+            let ids: Vec<Value> = incoming
+                .into_iter()
+                .copied()
+                .map(|e| Value::String(e.to_bits().to_string()))
+                .collect();
+            if !ids.is_empty() {
+                components.insert(crate::components::TARGETED_BY.to_string(), Value::Array(ids));
+            }
         }
 
         nodes.push(serde_json::json!({

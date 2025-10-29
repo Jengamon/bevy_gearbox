@@ -4,7 +4,7 @@ pub const WORLD_GET_COMPONENTS: &str = "world.get_components";
 pub const WORLD_INSERT_COMPONENTS: &str = "world.insert_components";
 pub const WORLD_REMOVE_COMPONENTS: &str = "world.remove_components";
 pub const WORLD_SPAWN: &str = "world.spawn";
-pub const WORLD_DESPAWN: &str = "world.despawn";
+pub const WORLD_DESPAWN: &str = "world.despawn_entity";
 pub const WORLD_QUERY: &str = "world.query";
 
 pub const PROTOCOL_VERSION: &str = "protocol.version";
@@ -22,17 +22,13 @@ pub const EDITOR_FIND_SIDECAR_BY_FINGERPRINT: &str = "editor.find_sidecar_by_fin
 pub const EDITOR_SET_STATE_MACHINE_ID: &str = "editor.set_state_machine_id";
 pub const EDITOR_SIDECAR_FOR_MACHINE: &str = "editor.sidecar_for_machine";
 
-// Graph snapshot convenience RPC
+// Graph snapshot
 pub const EDITOR_MACHINE_GRAPH: &str = "editor.machine_graph";
-
-// Convenience graph mutations (server convenience endpoints)
-pub const EDITOR_RENAME: &str = "editor.rename"; // optional; rename can also use world.insert_components
+pub const EDITOR_RENAME: &str = "editor.rename";
 pub const EDITOR_SPAWN_STATE_MACHINE: &str = "editor.spawn_state_machine";
 pub const EDITOR_SPAWN_SUBSTATE: &str = "editor.spawn_substate";
 pub const EDITOR_DELETE_SUBTREE: &str = "editor.delete_subtree";
 pub const EDITOR_RESET_REGION: &str = "editor.reset_region";
-
-// Transition building
 pub const EDITOR_CREATE_TRANSITION: &str = "editor.create_transition";
 
 

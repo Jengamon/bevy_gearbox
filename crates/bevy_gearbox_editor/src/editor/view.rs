@@ -598,9 +598,7 @@ pub fn draw_doc(
                     painter.circle_filled(handle_center, handle_r, egui::Color32::from_rgb(110, 190, 255));
                     painter.circle_stroke(handle_center, handle_r, egui::Stroke::new(1.0, egui::Color32::from_gray(240)));
                     if hresp.clicked() {
-                        println!("Edge handle clicked for node {:?}", id);
                         workspace.edge_build = Some(EdgeBuildState { doc: doc_id, source: *id, just_started: true });
-                        println!("Started edge-build: source={:?} doc={:?}", id, doc_id);
                     }
                 }
                 // Border: dashed if direct child of a Parallel (draw after header so it stays visible)
@@ -795,9 +793,7 @@ pub fn draw_doc(
                     painter.circle_filled(handle_center, handle_r, egui::Color32::from_rgb(110, 190, 255));
                     painter.circle_stroke(handle_center, handle_r, egui::Stroke::new(1.0, egui::Color32::from_gray(240)));
                     if hresp.clicked() {
-                        println!("Edge handle clicked for node {:?}", id);
                         workspace.edge_build = Some(EdgeBuildState { doc: doc_id, source: *id, just_started: true });
-                        println!("Started edge-build: source={:?} doc={:?}", id, doc_id);
                     }
                 }
                 // Border: dashed if direct child of a Parallel
@@ -866,7 +862,6 @@ pub fn draw_doc(
                     if !matches!(view.kind, UiViewKind::Edge { .. }) && hid != build.source {
                         // Do not snap the preview; only record a valid target for click commit
                         snap_to_target = Some(hid);
-                        println!("Edge-build hover target: {:?}", hid);
                     }
                 }
             }
@@ -907,18 +902,15 @@ pub fn draw_doc(
             // Cancel on right-click or Esc
             let cancel = ui.input(|i| i.pointer.secondary_clicked() || i.key_pressed(egui::Key::Escape));
             if cancel {
-                println!("Edge-build cancelled (right-click/Esc). source={:?}", build.source);
                 _edge_cancel = true;
             }
             // On primary click: open menu if snapped to a valid target, else cancel
             let suppress_primary = if build.just_started { build.just_started = false; true } else { false };
             if !suppress_primary && ui.input(|i| i.pointer.primary_clicked()) {
                 if let (Some(cursor), Some(target)) = (cursor_opt, snap_to_target) {
-                    println!("Opening edge menu: source={:?} target={:?} pos={:?}", build.source, target, cursor);
                     _open_edge_menu = Some(EdgeMenuState { doc: doc_id, source: build.source, target, pos: cursor, just_opened: true, filter: String::new() });
                     _stop_dashed_build = true;
                 } else {
-                    println!("Edge-build primary click without valid target; cancelling.");
                     _edge_cancel = true;
                 }
             }

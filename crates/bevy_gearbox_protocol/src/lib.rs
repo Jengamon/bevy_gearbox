@@ -1,5 +1,3 @@
-use bevy::prelude::*;
-
 pub mod components;
 pub mod events;
 pub mod methods;

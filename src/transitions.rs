@@ -44,10 +44,41 @@ impl FromWorld for Source {
     }
 }
 
+/// Incoming edge list for a target state (inverse of `Target`).
+#[derive(Component, Default, Debug, PartialEq, Eq, Reflect)]
+#[relationship_target(relationship = Target, linked_spawn)]
+#[reflect(Component, FromWorld, Default)]
+pub struct TargetedBy(Vec<Entity>);
+
+impl<'a> IntoIterator for &'a TargetedBy {
+    type Item = <Self::IntoIter as Iterator>::Item;
+
+    type IntoIter = std::slice::Iter<'a, Entity>;
+
+    #[inline(always)]
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl TargetedBy {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+}
+
 /// Target for an edge transition.
-#[derive(Component, Reflect, Debug)]
-#[reflect(Component)]
+#[derive(Component, Clone, PartialEq, Eq, Debug, Reflect)]
+#[relationship(relationship_target = TargetedBy)]
+#[reflect(Component, PartialEq, Debug, FromWorld, Clone)]
 pub struct Target(#[entities] pub Entity);
+
+impl FromWorld for Target {
+    #[inline(always)]
+    fn from_world(_world: &mut World) -> Self {
+        Target(Entity::PLACEHOLDER)
+    }
+}
 
 /// Whether the transition should be treated as External (default) or Internal.
 #[derive(Component, Reflect, Default, Clone, Copy, Debug)]
@@ -199,13 +230,20 @@ fn validate_edge_basic(
     edge: Entity,
     q_guards: &Query<&Guards>,
     q_target: &Query<&Target>,
+    q_substate_of: &Query<&SubstateOf>,
 ) -> bool {
     // Check guards if present
     if let Ok(guards) = q_guards.get(edge) {
         if !guards.check() { return false; }
     }
     // Must have valid target
-    q_target.get(edge).is_ok()
+    if let Ok(Target(target)) = q_target.get(edge) {
+        // Consider the edge valid only if the target state still exists.
+        // We treat targets as states; states (other than machine root) have SubstateOf.
+        q_substate_of.get(*target).is_ok()
+    } else {
+        false
+    }
 }
 
 /// Generic edge firing logic for TransitionEvent
@@ -237,7 +275,7 @@ fn try_fire_first_matching_edge_generic<E: TransitionEvent + RegisteredTransitio
         if q_listener.get(edge).is_err() { continue; }
 
         // Validate edge (guards and target) - skip if invalid
-        if !validate_edge_basic(edge, q_guards, q_edge_target) { continue; }
+        if !validate_edge_basic(edge, q_guards, q_edge_target, q_substate_of) { continue; }
 
         // If edge is delayed, schedule timer and store pending event
         if let Ok(after) = q_after.get(edge) {
@@ -339,7 +377,7 @@ pub fn always_edge_listener(
         if q_after.get(edge).is_ok() { continue; }
 
         // Validate edge (guards and target)
-        if !validate_edge_basic(edge, &q_guards, &q_edge_target) { continue; }
+        if !validate_edge_basic(edge, &q_guards, &q_edge_target, &q_substate_of) { continue; }
 
         // Fire transition
         let root = q_substate_of.root_ancestor(source);
@@ -621,8 +659,8 @@ pub fn tick_after_system(
             timer.0.tick(time.delta());
             if !timer.0.just_finished() { continue; }
 
-            // Validate edge (guards and target) before firing
-            if !validate_edge_basic(edge, &q_guards, &q_edge_target) {
+        // Validate edge (guards and target) before firing
+        if !validate_edge_basic(edge, &q_guards, &q_edge_target, &q_substate_of) {
                 // Cancel invalid timer
                 commands.entity(edge).remove::<EdgeTimer>();
                 continue;
@@ -684,7 +722,7 @@ pub fn tick_after_event_timers<E: TransitionEvent + RegisteredTransitionEvent + 
         if !timer.0.just_finished() { continue; }
 
         // Validate edge (guards and target) before firing
-        if !validate_edge_basic(edge, &q_guards, &q_edge_target) {
+        if !validate_edge_basic(edge, &q_guards, &q_edge_target, &q_substate_of) {
             // Cancel invalid timer/pending
             cleanup_edge_timer_and_pending::<E>(&mut commands, edge);
             continue;
