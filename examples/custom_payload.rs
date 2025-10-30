@@ -1,0 +1,460 @@
+// Ported from bevy_gearbox_editor/examples/custom_payload.rs
+// Uses protocol server to enable optional remote editor connection
+use bevy::prelude::*;
+use bevy_gearbox::prelude::*;
+use bevy_gearbox::GearboxPlugin;
+use bevy::math::primitives::{Plane3d, Sphere, Cuboid};
+use bevy_gearbox::transitions::{AlwaysEdge, After};
+use bevy_gearbox::transitions::EdgeKind;
+use bevy_gearbox_editor::ServerPlugin;
+
+// This example focuses on TransitionEvent payloads: mapping a trigger event into
+// typed Entry/Exit/Effect phase events that carry data (like target and damage).
+
+// --- Events ---
+
+#[derive(EntityEvent, Clone)]
+#[register_transition]
+struct Attack {
+    #[event_target]
+    pub target: Entity, // shooter state machine root
+    pub victim: Entity,
+    pub damage: f32,
+}
+
+#[derive(EntityEvent, Clone)]
+struct ApplyDamage {
+    #[event_target]
+    pub target: Entity, 
+    pub damage: f32 
+}
+
+#[derive(EntityEvent, Clone)]
+#[register_transition]
+struct TakeDamage { 
+    #[event_target]
+    pub target: Entity,
+    pub amount: f32 
+}
+
+#[derive(EntityEvent, Clone)]
+struct DoDamage {
+    #[event_target]
+    pub target: Entity,
+    pub amount: f32 
+}
+
+#[derive(EntityEvent, Clone)]
+#[register_transition]
+struct Die {
+    #[event_target]
+    pub target: Entity,
+}
+
+// Map the trigger into a phase payload that emits ApplyDamage on Entry.
+impl TransitionEvent for Attack {
+    type EntryEvent = ApplyDamage;
+
+    fn to_entry_event(&self) -> Option<Self::EntryEvent> {
+        Some(ApplyDamage { target: self.victim, damage: self.damage })
+    }
+}
+
+impl TransitionEvent for TakeDamage {
+    type EntryEvent = DoDamage;
+    fn to_entry_event(&self) -> Option<Self::EntryEvent> { Some(DoDamage { target: self.target, amount: self.amount }) }
+}
+
+impl TransitionEvent for Die {}
+
+// --- State markers ---
+
+#[derive(Component, Clone)]
+struct Waiting;
+
+#[derive(Component, Clone)]
+struct Attacking;
+
+#[derive(Component, Clone)]
+struct TargetWaiting;
+
+#[derive(Component, Clone)]
+struct TakingDamageState;
+
+#[derive(Component, Clone)]
+struct Dead;
+
+#[derive(Component)]
+struct DummyTarget;
+
+#[derive(Component)]
+struct Shooter;
+
+#[derive(Component)]
+struct DamageAmount(pub f32);
+
+#[derive(Component)]
+struct Life(pub f32);
+
+#[derive(Component)]
+struct BounceTowards { home: Vec3, goal: Vec3, out_speed: f32, return_speed: f32, phase: BouncePhase }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BouncePhase { Out, Return }
+
+#[derive(Resource, Default)]
+struct RespawnQueue(Vec<RespawnRequest>);
+
+struct RespawnRequest { position: Vec3, delay: f32, timer: f32 }
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .add_plugins(GearboxPlugin)
+        .add_plugins(ServerPlugin::default())
+        .init_resource::<RespawnQueue>()
+        .add_observer(print_enter_state)
+        .add_observer(apply_damage_system)
+        .add_observer(on_enter_taking_damage_color)
+        .add_observer(on_exit_taking_damage_color)
+        .add_observer(do_damage_on_entry)
+        .add_systems(Startup, setup)
+        .add_systems(Update, (input_attack_event, drive_bounces, process_respawn_queue))
+        .add_state_component::<Waiting>()
+        .add_state_component::<Attacking>()
+        .add_state_component::<TargetWaiting>()
+        .add_state_component::<TakingDamageState>()
+        .add_state_component::<Dead>()
+        .run();
+}
+
+fn setup(mut commands: Commands) {
+    commands.queue(|world: &mut World| {
+        // Camera
+        world.spawn((
+            Camera3d::default(),
+            Transform::from_xyz(0.0, 8.0, 14.0).looking_at(Vec3::ZERO, Vec3::Y),
+        ));
+
+        // Light
+        world.spawn((
+            DirectionalLight::default(),
+            Transform::from_xyz(6.0, 10.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
+        ));
+
+        // Ground
+        {
+            let ground_mesh = {
+                let mut meshes = world.resource_mut::<Assets<Mesh>>();
+                meshes.add(Mesh::from(Plane3d::default().mesh().size(50.0, 50.0)))
+            };
+            let ground_mat = {
+                let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
+                materials.add(StandardMaterial {
+                    base_color: Color::srgb(0.2, 0.22, 0.25),
+                    perceptual_roughness: 0.9,
+                    ..default()
+                })
+            };
+
+            world.spawn((
+                Name::new("Ground"),
+                Mesh3d(ground_mesh),
+                MeshMaterial3d(ground_mat),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+            ));
+        }
+
+        // Shooter and Target visuals
+        let shooter = {
+            // Shooter assets
+            let shooter_mesh = {
+                let mut meshes = world.resource_mut::<Assets<Mesh>>();
+                meshes.add(Mesh::from(Sphere { radius: 0.5 }))
+            };
+            let shooter_mat = {
+                let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
+                materials.add(StandardMaterial { base_color: Color::from(bevy::color::palettes::css::GREEN), ..default() })
+            };
+
+            world.spawn((
+                Name::new("Shooter"),
+                Shooter,
+                Mesh3d(shooter_mesh),
+                MeshMaterial3d(shooter_mat),
+                Transform::from_xyz(-4.0, 0.5, 0.0),
+                DamageAmount(25.0),
+            )).id()
+        };
+
+        // Spawn initial defender via template
+        let _ = spawn_defender(world, Vec3::new(4.0, 0.75, 0.0));
+
+        // Shooter state machine
+        let waiting = world.spawn((
+            Name::new("Waiting"),
+            SubstateOf(shooter),
+            StateComponent(Waiting),
+        )).id();
+
+        let attacking = world.spawn((
+            Name::new("Attack"),
+            SubstateOf(shooter),
+            StateComponent(Attacking),
+        )).id();
+
+        // Edge: Waiting --(Attack{target,damage})--> Attack
+        world.spawn((
+            Name::new("Attack"),
+            Source(waiting),
+            Target(attacking),
+            EventEdge::<Attack>::default(),
+        ));
+
+        // Edge: Attack --(Always)--> Waiting (immediate return)
+        world.spawn((
+            Name::new("Always"),
+            Source(attacking),
+            Target(waiting),
+            AlwaysEdge,
+        ));
+
+        // Bounce motion: on entering Attack, add BounceTowards to shooter toward defender
+        world.entity_mut(attacking).observe(|enter_state: On<EnterState>,
+            q_substate_of: Query<&SubstateOf>,
+            q_transform: Query<&Transform>,
+            q_target: Query<&Transform, With<DummyTarget>>,
+            mut commands: Commands,
+        |{
+            let state = enter_state.target;
+            let root = q_substate_of.root_ancestor(state);
+            if let Ok(tf) = q_transform.get(root) {
+                // Clamp bounce distance to avoid reaching the target; anchor to starting position
+                let home = tf.translation;
+                // Try to get current target position; fall back to a fixed point
+                let goal = q_target.iter().next().map(|t| t.translation).unwrap_or(Vec3::new(4.0, 0.75, 0.0));
+                let dir = (goal - home).normalize_or_zero();
+                let bump = 0.8; // meters to move outward
+                let goal_pos = home + dir * bump;
+                commands.entity(root).insert(BounceTowards { home, goal: goal_pos, out_speed: 18.0, return_speed: 24.0, phase: BouncePhase::Out });
+            }
+        });
+
+        world.entity_mut(shooter).insert(InitialState(waiting));
+        world.entity_mut(shooter).insert(StateMachine::new());
+    });
+}
+
+// Press Space to fire: send Attack(target, damage) to the shooter machine.
+fn input_attack_event(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    q_shooter: Query<(Entity, &DamageAmount), With<Shooter>>,
+    q_dummy: Query<Entity, With<DummyTarget>>,
+    mut commands: Commands,
+) {
+    if !keyboard_input.just_pressed(KeyCode::Space) { return; }
+    let Ok((shooter_entity, damage)) = q_shooter.single() else { return; };
+    let Ok(target) = q_dummy.single() else { return; };
+    println!("\n-- Space: Attack -> target {:?}, damage {}", target, damage.0);
+    commands.trigger(Attack { target: shooter_entity, victim: target, damage: damage.0 });
+}
+
+fn drive_bounces(
+    time: Res<Time>,
+    mut q: Query<(&mut Transform, &mut BounceTowards)>,
+) {
+    for (mut tf, mut b) in &mut q {
+        match b.phase {
+            BouncePhase::Out => {
+                let to = b.goal - tf.translation;
+                let d = to.length();
+                let step = b.out_speed * time.delta().as_secs_f32();
+                if d <= step { tf.translation = b.goal; b.phase = BouncePhase::Return; } else if d > 0.0 { tf.translation += to.normalize() * step; }
+            }
+            BouncePhase::Return => {
+                let to = b.home - tf.translation;
+                let d = to.length();
+                let step = b.return_speed * time.delta().as_secs_f32();
+                if d <= step { tf.translation = b.home; }
+                else if d > 0.0 { tf.translation += to.normalize() * step; }
+            }
+        }
+    }
+}
+
+// Entry-phase handler: we received ApplyDamage (created from Attack's payload mapping).
+fn apply_damage_system(
+    apply_damage: On<ApplyDamage>,
+    q_substate_of: Query<&SubstateOf>,
+    mut commands: Commands,
+) {
+    let ApplyDamage { target, damage } = apply_damage.event().clone();
+    let root = q_substate_of.root_ancestor(target);
+    println!("[ApplyDamage] target {:?}, damage {}", root, damage);
+    commands.trigger(TakeDamage { target: root, amount: damage });
+}
+
+// Apply damage to Life on Entry of TakingDamage via payload event (DoDamage).
+fn do_damage_on_entry(
+    do_damage: On<DoDamage>,
+    q_substate_of: Query<&SubstateOf>,
+    mut q_life: Query<&mut Life>,
+    q_transform: Query<&Transform>,
+    mut commands: Commands,
+    mut respawns: ResMut<RespawnQueue>,
+) {
+    let amount = do_damage.amount;
+    let target = do_damage.target;
+    // Support either root-targeted or state-targeted entry events
+    let root = if q_life.get(target).is_ok() { target } else { q_substate_of.root_ancestor(target) };
+    println!("[DoDamage] root {:?}, amount {}", root, amount);
+    if let Ok(mut life) = q_life.get_mut(root) {
+        life.0 -= amount;
+        println!("[Damage] Applied {amount}, Life now {:.1}", life.0);
+        if life.0 <= 0.0 {
+            // Capture current position for respawn, enqueue, then despawn
+            let mut pos = Vec3::ZERO;
+            if let Ok(tf_ro) = q_transform.get(root) { pos = tf_ro.translation; }
+            respawns.0.push(RespawnRequest { position: pos, delay: 1.0, timer: 0.0 });
+            commands.trigger(Die { target: root });
+            commands.entity(root).despawn();
+        }
+    }
+}
+
+// Visual feedback: turn red during TakingDamage, restore to gray on exit
+fn on_enter_taking_damage_color(
+    enter_state: On<EnterState>,
+    q_name: Query<&Name>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut material_handles: Query<&mut MeshMaterial3d<StandardMaterial>>, 
+) {
+    let state = enter_state.target;
+    if let Ok(name) = q_name.get(state) {
+        if name.as_str() != "TakingDamage" { return; }
+    } else { return; }
+    let root = enter_state.state_machine;
+    if let Ok(mat_handle) = material_handles.get_mut(root) {
+        if let Some(mat) = materials.get_mut(&mat_handle.0) {
+            mat.base_color = Color::from(bevy::color::palettes::css::RED);
+        }
+    }
+}
+
+fn on_exit_taking_damage_color(
+    exit_state: On<ExitState>,
+    q_name: Query<&Name>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut material_handles: Query<&mut MeshMaterial3d<StandardMaterial>>, 
+) {
+    let state = exit_state.target;
+    if let Ok(name) = q_name.get(state) {
+        if name.as_str() != "TakingDamage" { return; }
+    } else { return; }
+    let root = exit_state.state_machine;
+    if let Ok(mat_handle) = material_handles.get_mut(root) {
+        if let Some(mat) = materials.get_mut(&mat_handle.0) {
+            mat.base_color = Color::from(bevy::color::palettes::css::GRAY);
+        }
+    }
+}
+
+fn process_respawn_queue(
+    time: Res<Time>,
+    mut respawns: ResMut<RespawnQueue>,
+    mut commands: Commands,
+) {
+    // Tick timers and spawn new defenders when due
+    let mut spawn_positions: Vec<Vec3> = Vec::new();
+    for req in respawns.0.iter_mut() {
+        req.timer += time.delta().as_secs_f32();
+        if req.timer >= req.delay { spawn_positions.push(req.position); }
+    }
+    respawns.0.retain(|r| r.timer < r.delay);
+    if spawn_positions.is_empty() { return; }
+    commands.queue(move |world: &mut World| {
+        for pos in spawn_positions {
+            spawn_defender(world, pos);
+        }
+    });
+}
+
+fn spawn_defender(world: &mut World, position: Vec3) -> Entity {
+    // Target assets then spawn
+    let target_mesh = {
+        let mut meshes = world.resource_mut::<Assets<Mesh>>();
+        meshes.add(Mesh::from(Cuboid::new(1.0, 1.5, 1.0)))
+    };
+    let target_mat = {
+        let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
+        materials.add(StandardMaterial { base_color: Color::from(bevy::color::palettes::css::GRAY), ..default() })
+    };
+
+    let defender = world.spawn((
+        Name::new("DummyTargetEntity"),
+        DummyTarget,
+        Mesh3d(target_mesh),
+        MeshMaterial3d(target_mat),
+        Transform::from_translation(position),
+        Life(60.0),
+    )).id();
+
+    // Defender state machine (root = defender)
+    let target_waiting = world.spawn((
+        Name::new("TargetWaiting"),
+        SubstateOf(defender),
+        StateComponent(TargetWaiting),
+    )).id();
+
+    let taking_damage = world.spawn((
+        Name::new("TakingDamage"),
+        SubstateOf(defender),
+        StateComponent(TakingDamageState),
+    )).id();
+
+    let dead = world.spawn((
+        Name::new("Dead"),
+        SubstateOf(defender),
+        StateComponent(Dead),
+    )).id();
+
+    // Edge: TargetWaiting --(TakeDamage)--> TakingDamage
+    world.spawn((
+        Name::new("TakeDamage"),
+        Source(target_waiting),
+        Target(taking_damage),
+        EventEdge::<TakeDamage>::default(),
+        EdgeKind::External,
+    ));
+
+    // Edge: Defender root --(Die)--> Dead
+    world.spawn((
+        Name::new("Die"),
+        Source(defender),
+        Target(dead),
+        EventEdge::<Die>::default(),
+        EdgeKind::External,
+    ));
+
+    // Edge: TakingDamage --(Always, After 0.2s)--> TargetWaiting
+    world.spawn((
+        Name::new("Always"),
+        Source(taking_damage),
+        Target(target_waiting),
+        AlwaysEdge,
+        After { duration: std::time::Duration::from_millis(200) },
+    ));
+
+    world.entity_mut(defender).insert(InitialState(target_waiting));
+    world.entity_mut(defender).insert(StateMachine::new());
+
+    defender
+}
+
+fn print_enter_state(enter_state: On<EnterState>, names: Query<&Name>) {
+    if let Ok(name) = names.get(enter_state.target) {
+        println!("[EnterState] {}", name);
+    }
+}
+
+

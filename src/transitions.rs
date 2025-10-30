@@ -194,47 +194,21 @@ where
     for<'a> <Effect as Event>::Trigger<'a>: Default,
     for<'a> <Entry as Event>::Trigger<'a>: Default,
 {
-    fn on_exit(&self, commands: &mut Commands, source: Entity, children: &Query<&Substates>, state_machine: &StateMachine) {
-        if let Some(mut ev) = self.exit.clone() {
-            // target the source
-            *ev.event_target_mut() = source;
+    fn on_exit(&self, commands: &mut Commands, _source: Entity, _children: &Query<&Substates>, _state_machine: &StateMachine) {
+        if let Some(ev) = self.exit.clone() {
             commands.trigger(ev);
-        }
-        for child in children.iter_descendants(source) {
-            if !state_machine.is_active(&child) { continue; }
-            if let Some(mut ev) = self.exit.clone() {
-                // target each active child (replacement for trigger_targets)
-                *ev.event_target_mut() = child;
-                commands.trigger(ev);
-            }
         }
     }
 
-    fn on_effect(&self, commands: &mut Commands, edge: Entity, children: &Query<&Substates>, state_machine: &StateMachine) {
-        if let Some(mut ev) = self.effect.clone() {
-            *ev.event_target_mut() = edge;
+    fn on_effect(&self, commands: &mut Commands, _edge: Entity, _children: &Query<&Substates>, _state_machine: &StateMachine) {
+        if let Some(ev) = self.effect.clone() {
             commands.trigger(ev);
-        }
-        for child in children.iter_descendants(edge) {
-            if !state_machine.is_active(&child) { continue; }
-            if let Some(mut ev) = self.effect.clone() {
-                *ev.event_target_mut() = child;
-                commands.trigger(ev);
-            }
         }
     }
 
-    fn on_entry(&self, commands: &mut Commands, target: Entity, children: &Query<&Substates>, state_machine: &StateMachine) {
-        if let Some(mut ev) = self.entry.clone() {
-            *ev.event_target_mut() = target;
+    fn on_entry(&self, commands: &mut Commands, _target: Entity, _children: &Query<&Substates>, _state_machine: &StateMachine) {
+        if let Some(ev) = self.entry.clone() {
             commands.trigger(ev);
-        }
-        for child in children.iter_descendants(target) {
-            if !state_machine.is_active(&child) { continue; }
-            if let Some(mut ev) = self.entry.clone() {
-                *ev.event_target_mut() = child;
-                commands.trigger(ev);
-            }
         }
     }
 }
@@ -322,8 +296,6 @@ fn try_fire_first_matching_edge_generic<E: TransitionEvent + RegisteredTransitio
     false
 }
 
-
-
 /// Attach this to a transition entity to react to a specific event `E`.
 #[derive(Reflect, Component)]
 #[reflect(Component, Default)]
@@ -338,6 +310,13 @@ pub struct EventEdge<E: RegisteredTransitionEvent + TransitionEvent> {
 impl<E: RegisteredTransitionEvent + TransitionEvent> Default for EventEdge<E> {
     fn default() -> Self {
         Self { _marker: PhantomData, validator: None }
+    }
+}
+
+impl<E: RegisteredTransitionEvent + TransitionEvent> EventEdge<E> {
+    #[inline]
+    pub fn new(validator: Option<<E as TransitionEvent>::Validator>) -> Self {
+        Self { _marker: PhantomData, validator }
     }
 }
 

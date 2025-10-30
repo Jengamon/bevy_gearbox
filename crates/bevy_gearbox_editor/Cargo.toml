@@ -9,10 +9,14 @@ homepage = "https://github.com/DEMIURGE-studio/bevy_gearbox_editor"
 keywords = ["bevy", "state-machine", "gamedev", "ecs"]
 categories = ["game-development", "game-engines"]
 
+[lib]
+name = "bevy_gearbox_editor"
+path = "src/lib.rs"
+
 [dependencies]
 bevy = "0.17.2"
 bevy_egui = "0.38.0"
-bevy_gearbox_protocol = { path = "../bevy_gearbox_protocol" }
+bevy_gearbox_protocol = { path = "../bevy_gearbox_protocol", features = ["server"] }
 hex = "0.4.3"
 rfd = "0.15.4"
 ron = "0.11.0"

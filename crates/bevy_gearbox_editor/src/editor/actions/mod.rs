@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use crate::types::ServerEntity;
 use super::model::store::EditorStore;
 use super::model::types::{ConnectionState, IndexFilter};
-use bevy_gearbox_protocol::client::{ProtocolClientCommand, ProtocolNetCommand};
+use bevy_gearbox_protocol::client::{ClientCommand, NetCommand};
 use super::model::store::OpenDocument;
 use super::model::types::{DocMode, DocId, TabId};
 use crate::editor::workspace::Workspace;
@@ -62,37 +62,37 @@ pub struct RefreshIndexRequested { pub query: String }
 pub struct OpenRequested { pub entity: ServerEntity }
 
 // Observers: mutate store
-pub fn on_connect_requested(evt: On<ConnectRequested>, mut store: ResMut<EditorStore>, mut proto_cmd: MessageWriter<ProtocolClientCommand>, _proto_net: MessageWriter<ProtocolNetCommand>) {
+pub fn on_connect_requested(evt: On<ConnectRequested>, mut store: ResMut<EditorStore>, mut proto_cmd: MessageWriter<ClientCommand>, _proto_net: MessageWriter<NetCommand>) {
     // Optimistically bump session and set last endpoint
     connect(&mut store, EndpointConfig { endpoint: evt.endpoint.clone() });
     // Route URL and connection intent to the protocol client
-    proto_cmd.write(ProtocolClientCommand::SetUrl { url: evt.endpoint.clone() });
+    proto_cmd.write(ClientCommand::SetUrl { url: evt.endpoint.clone() });
     // Kick off initial refresh only; discovery will start after a successful refresh
-    proto_cmd.write(ProtocolClientCommand::RefreshMachines);
+    proto_cmd.write(ClientCommand::RefreshMachines);
 }
 
-pub fn on_disconnect_requested(_evt: On<DisconnectRequested>, mut store: ResMut<EditorStore>, mut proto_net: MessageWriter<ProtocolNetCommand>) {
+pub fn on_disconnect_requested(_evt: On<DisconnectRequested>, mut store: ResMut<EditorStore>, mut proto_net: MessageWriter<NetCommand>) {
     // Stop discovery stream when disconnecting
-    proto_net.write(ProtocolNetCommand::StopDiscovery);
+    proto_net.write(NetCommand::StopDiscovery);
     // Proactively unsubscribe from all open docs before disconnecting
     for (id, _) in store.open_docs.iter() {
-        proto_net.write(ProtocolNetCommand::StopMachine { id: id.0 });
+        proto_net.write(NetCommand::StopMachine { id: id.0 });
     }
     disconnect(&mut store);
 }
 
-pub fn on_reconnect_requested(_evt: On<ReconnectRequested>, mut store: ResMut<EditorStore>, mut proto_cmd: MessageWriter<ProtocolClientCommand>, mut proto_net: MessageWriter<ProtocolNetCommand>) {
+pub fn on_reconnect_requested(_evt: On<ReconnectRequested>, mut store: ResMut<EditorStore>, mut proto_cmd: MessageWriter<ClientCommand>, mut proto_net: MessageWriter<NetCommand>) {
     reconnect(&mut store);
     if let Some(ep) = store.last_endpoint.clone() {
-        proto_cmd.write(ProtocolClientCommand::SetUrl { url: ep });
+        proto_cmd.write(ClientCommand::SetUrl { url: ep });
     }
-    proto_net.write(ProtocolNetCommand::StartDiscovery);
-    proto_cmd.write(ProtocolClientCommand::RefreshMachines);
+    proto_net.write(NetCommand::StartDiscovery);
+    proto_cmd.write(ClientCommand::RefreshMachines);
 }
 
-pub fn on_refresh_index_requested(evt: On<RefreshIndexRequested>, mut store: ResMut<EditorStore>, mut proto_cmd: MessageWriter<ProtocolClientCommand>) {
+pub fn on_refresh_index_requested(evt: On<RefreshIndexRequested>, mut store: ResMut<EditorStore>, mut proto_cmd: MessageWriter<ClientCommand>) {
     refresh_index(&mut store, IndexFilter { query: evt.query.clone() });
-    proto_cmd.write(ProtocolClientCommand::RefreshMachines);
+    proto_cmd.write(ClientCommand::RefreshMachines);
 }
 
 pub fn on_open_requested(
@@ -100,8 +100,8 @@ pub fn on_open_requested(
     mut store: ResMut<EditorStore>,
     mut workspace: ResMut<Workspace>,
     mut commands: Commands,
-    mut proto_net: MessageWriter<ProtocolNetCommand>,
-    mut proto_cmd: MessageWriter<ProtocolClientCommand>,
+    mut proto_net: MessageWriter<NetCommand>,
+    mut proto_cmd: MessageWriter<ClientCommand>,
 ) {
     // Ensure an OpenDocument exists (UI metadata only)
     store.open_docs.entry(evt.entity).or_insert_with(|| OpenDocument {
@@ -118,7 +118,7 @@ pub fn on_open_requested(
     let prev = store.active_doc;
     store.active_doc = Some(evt.entity);
     // Start per-machine +watch stream
-    proto_net.write(ProtocolNetCommand::StartMachine { id: evt.entity.0 });
+    proto_net.write(NetCommand::StartMachine { id: evt.entity.0 });
     // Decoupled unsubscribe and single-doc retention after fetch is enqueued
     if let Some(p) = prev {
         if p != evt.entity {
@@ -128,15 +128,15 @@ pub fn on_open_requested(
         }
     }
     // Request a fresh graph snapshot via protocol (handled asynchronously)
-    proto_cmd.write(ProtocolClientCommand::FetchGraph { id: evt.entity.0 });
+    proto_cmd.write(ClientCommand::FetchGraph { id: evt.entity.0 });
 }
 
 #[derive(Debug, Clone, Event)]
 pub struct UnsubscribeRequested { pub entity: ServerEntity }
 
-pub fn on_unsubscribe_requested(evt: On<UnsubscribeRequested>, mut proto_net: MessageWriter<ProtocolNetCommand>) {
+pub fn on_unsubscribe_requested(evt: On<UnsubscribeRequested>, mut proto_net: MessageWriter<NetCommand>) {
     // Decoupled unsubscribe: stop server-side feeds for this machine. Do not couple to new selection.
-    proto_net.write(ProtocolNetCommand::StopMachine { id: evt.entity.0 });
+    proto_net.write(NetCommand::StopMachine { id: evt.entity.0 });
 }
 
 #[derive(Debug, Clone, Event)]
@@ -145,7 +145,7 @@ pub struct SaveAsRequested { pub entity: ServerEntity }
 pub fn on_save_as_requested(
     save_as_requested: On<SaveAsRequested>,
     workspace: Res<Workspace>,
-    client: Res<bevy_gearbox_protocol::client::ProtocolClient>,
+    client: Res<bevy_gearbox_protocol::client::Client>,
     rt: Res<bevy_gearbox_protocol::client::TokioRuntime>,
 ) {
     // Open native Save dialog for .sm.ron, start in assets/ and suggest a name

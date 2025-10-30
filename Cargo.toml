@@ -27,7 +27,6 @@ inventory = "0.3.21"
 bevy = "0.17"
 bevy-inspector-egui = "0.35.0"
 bevy_gearbox_editor = { path = "./crates/bevy_gearbox_editor" }
-bevy_gearbox_protocol = { path = "./crates/bevy_gearbox_protocol", features = ["server"] }
 
 [[example]]
 name = "repeater"

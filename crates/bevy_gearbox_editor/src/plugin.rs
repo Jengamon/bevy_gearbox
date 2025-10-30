@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use std::collections::HashMap;
 
-use bevy_gearbox_protocol::client::{GearboxProtocolClientPlugin, ProtocolNetMessage, ProtocolClientMessage, ProtocolNetCommand, ProtocolClientCommand};
+use bevy_gearbox_protocol::client::{ClientPlugin, NetMessage, ClientMessage, NetCommand, ClientCommand};
 use crate::types::ServerEntity;
 use crate::model::StateMachineGraph;
 use crate::editor::workspace::Workspace;
@@ -22,7 +22,7 @@ pub(crate) struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(GearboxProtocolClientPlugin)
+        app.add_plugins(ClientPlugin)
             .insert_resource(UiState {
                 url_edit: String::new(),
                 connecting: false,
@@ -78,10 +78,10 @@ fn setup_camera(mut commands: Commands) {
 
 fn poll_network(
     mut ui: ResMut<UiState>,
-    mut client_msgs: MessageReader<ProtocolClientMessage>,
-    mut net_msgs: MessageReader<ProtocolNetMessage>,
-    mut net_cmd: MessageWriter<ProtocolNetCommand>,
-    mut client_cmd: MessageWriter<ProtocolClientCommand>,
+    mut client_msgs: MessageReader<ClientMessage>,
+    mut net_msgs: MessageReader<NetMessage>,
+    mut net_cmd: MessageWriter<NetCommand>,
+    mut client_cmd: MessageWriter<ClientCommand>,
     mut store: ResMut<EditorStore>,
     mut workspace: ResMut<Workspace>,
 ) {
@@ -91,7 +91,7 @@ fn poll_network(
     for msg in client_msgs.read() {
         if processed >= MAX_PER_FRAME { break; }
         match msg {
-            ProtocolClientMessage::RefreshResult(Ok(list)) => {
+            ClientMessage::RefreshResult(Ok(list)) => {
                 // Update UI cache and editor index
                 ui.machines = list.iter().map(|m| (ServerEntity(m.id), m.name.clone())).collect();
                 ui.connecting = false;
@@ -103,10 +103,10 @@ fn poll_network(
                 let ep = store.last_endpoint.clone().unwrap_or_else(|| "http://127.0.0.1:15703".to_string());
                 store.connection = EditorConnectionState::Connected { session_id: store.session_id, endpoint: ep };
                 // Now that the refresh succeeded, start discovery watch
-                net_cmd.write(ProtocolNetCommand::StartDiscovery);
+                net_cmd.write(NetCommand::StartDiscovery);
                 processed += 1;
             }
-            ProtocolClientMessage::RefreshResult(Err(e)) => {
+            ClientMessage::RefreshResult(Err(e)) => {
                 ui.connecting = false;
                 ui.error = Some(e.clone());
                 store.index.is_loading = false;
@@ -114,25 +114,25 @@ fn poll_network(
                 store.connection = EditorConnectionState::Disconnected;
                 processed += 1;
             }
-            ProtocolClientMessage::GraphResult { id, graph } => {
+            ClientMessage::GraphResult { id, graph } => {
                 if let Some(sm_graph) = convert_wire_graph_to_state_machine_graph(graph.clone()) {
                     let fp = compute_graph_fingerprint(&sm_graph);
                     let doc_id = ServerEntity(*id);
                     ui.graphs.insert(doc_id, sm_graph);
                     // Prefer server-resolved sidecar lookup by machine
-                    client_cmd.write(ProtocolClientCommand::SidecarForMachine { id: *id });
+                    client_cmd.write(ClientCommand::SidecarForMachine { id: *id });
                 }
             }
-            ProtocolClientMessage::SidecarFound { id, text } => {
+            ClientMessage::SidecarFound { id, text } => {
                 let doc_id = ServerEntity(*id);
                 ui.sidecar_texts.insert(doc_id, text.clone());
                 processed += 1;
             }
-            ProtocolClientMessage::SidecarMissing { .. } => {
+            ClientMessage::SidecarMissing { .. } => {
                 // No-op; fallback to local disk/default layout in sync pass
                 processed += 1;
             }
-            ProtocolClientMessage::EventEdgeVariants { variants } => {
+            ClientMessage::EventEdgeVariants { variants } => {
                 workspace.available_event_edges = variants.clone();
                 processed += 1;
             }
@@ -142,7 +142,7 @@ fn poll_network(
     for msg in net_msgs.read() {
         if processed >= MAX_PER_FRAME { break; }
         match msg.clone() {
-            ProtocolNetMessage::Discovery(batch) => {
+            NetMessage::Discovery(batch) => {
                 for m in batch.into_iter() {
                     if let Some(name) = m.name.clone() {
                         if let Some(ix) = ui.machines.iter_mut().position(|(id, _)| id.0 == m.id) {
@@ -158,7 +158,7 @@ fn poll_network(
                 store.index.items = ui.machines.iter().map(|(id, name)| IndexItem { name: name.clone(), entity: *id }).collect();
                 processed += 1;
             }
-            ProtocolNetMessage::Machine { id, events } => {
+            NetMessage::Machine { id, events } => {
                 let doc_id = ServerEntity(id);
                 // Update last seqs and stash events
                 let mut max_a = ui.last_active_seq.get(&doc_id).copied().unwrap_or(0);
@@ -176,7 +176,7 @@ fn poll_network(
                 ui.pending_machine_events.entry(doc_id).or_default().extend(events.into_iter());
                 processed += 1;
             }
-            ProtocolNetMessage::Components { id, components, removed } => {
+            NetMessage::Components { id, components, removed } => {
                 // Apply Name changes to any open doc containing this entity
                 let target = crate::model::EntityId::Server(ServerEntity(id));
                 let name_key = bevy_gearbox_protocol::components::NAME_REFLECT;
@@ -202,7 +202,7 @@ fn poll_network(
     if !workspace.pending_fetch_docs.is_empty() {
         let docs: Vec<ServerEntity> = std::mem::take(&mut workspace.pending_fetch_docs);
         for d in docs.into_iter() {
-            client_cmd.write(ProtocolClientCommand::FetchGraph { id: d.0 });
+            client_cmd.write(ClientCommand::FetchGraph { id: d.0 });
         }
     }
 }

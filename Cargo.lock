@@ -898,7 +898,6 @@ dependencies = [
  "bevy-inspector-egui",
  "bevy_gearbox_editor",
  "bevy_gearbox_macros",
- "bevy_gearbox_protocol",
  "inventory",
 ]
 

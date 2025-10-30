@@ -14,24 +14,13 @@ use crate::methods::EDITOR_CREATE_TRANSITION;
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Default)]
-pub struct GearboxProtocolServerPlugin {
+pub struct ServerPlugin {
     pub headers: Vec<(String, String)>,
     pub bind_address: Option<SocketAddr>,
 }
 
-impl Plugin for GearboxProtocolServerPlugin {
+impl Plugin for ServerPlugin {
     fn build(&self, app: &mut App) {
-        // Register reflect types used by protocol watchers / RPCs
-        app.register_type::<Name>()
-            .register_type::<gearbox::SubstateOf>()
-            .register_type::<gearbox::Substates>()
-            .register_type::<gearbox::StateMachine>()
-            .register_type::<gearbox::InitialState>()
-            .register_type::<gearbox::transitions::Source>()
-            .register_type::<gearbox::transitions::Target>()
-            .register_type::<gearbox::transitions::EdgeKind>()
-            .register_type::<gearbox::transitions::AlwaysEdge>();
-
         // Install Bevy Remote HTTP server
         let mut http = {
             let addr = self.bind_address.unwrap_or_else(|| "127.0.0.1:15703".parse().expect("bind addr"));
@@ -60,7 +49,7 @@ impl Plugin for GearboxProtocolServerPlugin {
         register_editor_convenience_rpcs(app);
         register_editor_transition_rpcs(app);
         register_editor_machine_graph_rpc(app);
-        register_protocol_version_rpc(app);
+        register_version_rpc(app);
     }
 }
 
@@ -371,15 +360,15 @@ fn on_state_machine_changed(
 // =========================
 // Protocol version RPC
 // =========================
-fn protocol_version_handler(_in: In<Option<Value>>, _world: &World) -> BrpResult {
+fn version_handler(_in: In<Option<Value>>, _world: &World) -> BrpResult {
     // Single u32 version for now; expand to { min, max } if needed
     Ok(serde_json::json!({"version": 1u32}))
 }
 
-fn register_protocol_version_rpc(app: &mut App) {
+fn register_version_rpc(app: &mut App) {
     if !app.world().contains_resource::<RemoteMethods>() { return; }
     let world = app.main_mut().world_mut();
-    let id = world.register_system(protocol_version_handler);
+    let id = world.register_system(version_handler);
     let mut methods = world.resource_mut::<RemoteMethods>();
     methods.insert(PROTOCOL_VERSION, RemoteMethodSystemId::Instant(id));
 }

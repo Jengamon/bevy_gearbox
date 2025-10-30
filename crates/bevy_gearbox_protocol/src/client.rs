@@ -7,47 +7,47 @@ use crate::methods::*;
 use crate::components as wire;
 
 #[derive(Resource, Clone)]
-pub struct ProtocolClientConfig { pub url: String }
+pub struct ClientConfig { pub url: String }
 
 #[derive(Debug)]
-pub enum ProtocolError {
+pub enum Error {
     Http(reqwest::Error),
     Json(serde_json::Error),
     Rpc { code: i64, message: String, data: Option<Value> },
 }
 
-impl std::fmt::Display for ProtocolError {
+impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProtocolError::Http(e) => write!(f, "http: {}", e),
-            ProtocolError::Json(e) => write!(f, "json: {}", e),
-            ProtocolError::Rpc { code, message, .. } => write!(f, "rpc {}: {}", code, message),
+            Error::Http(e) => write!(f, "http: {}", e),
+            Error::Json(e) => write!(f, "json: {}", e),
+            Error::Rpc { code, message, .. } => write!(f, "rpc {}: {}", code, message),
         }
     }
 }
 
-impl std::error::Error for ProtocolError {}
+impl std::error::Error for Error {}
 
-impl From<reqwest::Error> for ProtocolError { fn from(e: reqwest::Error) -> Self { ProtocolError::Http(e) } }
-impl From<serde_json::Error> for ProtocolError { fn from(e: serde_json::Error) -> Self { ProtocolError::Json(e) } }
+impl From<reqwest::Error> for Error { fn from(e: reqwest::Error) -> Self { Error::Http(e) } }
+impl From<serde_json::Error> for Error { fn from(e: serde_json::Error) -> Self { Error::Json(e) } }
 
 #[derive(Resource, Clone)]
-pub struct ProtocolClient {
+pub struct Client {
     pub base_url: String,
     http: reqwest::Client,
 }
 
-impl ProtocolClient {
+impl Client {
     pub fn new(base_url: String) -> Self {
         Self { base_url, http: reqwest::Client::new() }
     }
 
-    pub async fn registry_schema(&self) -> Result<Value, ProtocolError> {
+    pub async fn registry_schema(&self) -> Result<Value, Error> {
         let v = self.jsonrpc_call(crate::methods::REGISTRY_SCHEMA, None).await?;
         Ok(v.get("result").cloned().unwrap_or(v))
     }
 
-    async fn jsonrpc_call(&self, method: &str, params: Option<Value>) -> Result<Value, ProtocolError> {
+    async fn jsonrpc_call(&self, method: &str, params: Option<Value>) -> Result<Value, Error> {
         let id = 1u64;
         let body = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         let resp = self.http.post(&self.base_url).json(&body).send().await?;
@@ -57,11 +57,11 @@ impl ProtocolClient {
             let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(-32000);
             let message = err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown error").to_string();
             let data = err.get("data").cloned();
-            return Err(ProtocolError::Rpc { code, message, data });
+            return Err(Error::Rpc { code, message, data });
         }
         if !status.is_success() {
             // best-effort message
-            return Err(ProtocolError::Rpc { code: status.as_u16() as i64, message: "http status".to_string(), data: Some(v) });
+            return Err(Error::Rpc { code: status.as_u16() as i64, message: "http status".to_string(), data: Some(v) });
         }
         Ok(v)
     }
@@ -74,7 +74,7 @@ impl ProtocolClient {
         &self,
         entity: u64,
         components: Option<&[&str]>,
-    ) -> Result<Map<String, Value>, ProtocolError> {
+    ) -> Result<Map<String, Value>, Error> {
         let params = match components {
             Some(list) => json!({"entity": entity, "components": list}),
             None => json!({"entity": entity}),
@@ -90,14 +90,14 @@ impl ProtocolClient {
         if let Some(obj) = v.as_object() {
             return Ok(obj.clone());
         }
-        Err(ProtocolError::Rpc { code: -32603, message: "unexpected response for world.get_components".to_string(), data: Some(v) })
+        Err(Error::Rpc { code: -32603, message: "unexpected response for world.get_components".to_string(), data: Some(v) })
     }
 
     pub async fn insert_components(
         &self,
         entity: u64,
         components: Map<String, Value>,
-    ) -> Result<(), ProtocolError> {
+    ) -> Result<(), Error> {
         let params = json!({"entity": entity, "components": components});
         let _ = self.jsonrpc_call(WORLD_INSERT_COMPONENTS, Some(params)).await?;
         Ok(())
@@ -107,29 +107,29 @@ impl ProtocolClient {
         &self,
         entity: u64,
         keys: &[&str],
-    ) -> Result<(), ProtocolError> {
+    ) -> Result<(), Error> {
         let params = json!({"entity": entity, "components": keys});
         let _ = self.jsonrpc_call(WORLD_REMOVE_COMPONENTS, Some(params)).await?;
         Ok(())
     }
 
-	pub async fn spawn(&self, components: Map<String, Value>) -> Result<u64, ProtocolError> {
+	pub async fn spawn(&self, components: Map<String, Value>) -> Result<u64, Error> {
 		let params = json!({"components": components});
 		let v = self.jsonrpc_call(WORLD_SPAWN, Some(params)).await?;
 		if let Some(id) = v.get("result").and_then(|r| r.get("entity")).and_then(|n| n.as_u64()) { return Ok(id); }
 		if let Some(id) = v.get("result").and_then(|n| n.as_u64()) { return Ok(id); }
 		if let Some(id) = v.get("entity").and_then(|n| n.as_u64()) { return Ok(id); }
 		if let Some(id) = v.as_u64() { return Ok(id); }
-		Err(ProtocolError::Rpc { code: -32603, message: "unexpected response for world.spawn".to_string(), data: Some(v) })
+		Err(Error::Rpc { code: -32603, message: "unexpected response for world.spawn".to_string(), data: Some(v) })
 	}
 
-	pub async fn despawn(&self, entity: u64) -> Result<(), ProtocolError> {
+	pub async fn despawn(&self, entity: u64) -> Result<(), Error> {
 		let params = json!({"entity": entity});
 		let _ = self.jsonrpc_call(WORLD_DESPAWN, Some(params)).await?;
 		Ok(())
 	}
 
-	pub async fn reset_region(&self, root: u64) -> Result<(), ProtocolError> {
+	pub async fn reset_region(&self, root: u64) -> Result<(), Error> {
 		let params = json!({"root": root});
 		let _ = self.jsonrpc_call(EDITOR_RESET_REGION, Some(params)).await?;
 		Ok(())
@@ -139,39 +139,39 @@ impl ProtocolClient {
 	// Query and file helpers used by editor flows
 	// ===============
 
-	pub async fn world_query(&self, data: Value, filter: Value, strict: bool) -> Result<Vec<Value>, ProtocolError> {
+	pub async fn world_query(&self, data: Value, filter: Value, strict: bool) -> Result<Vec<Value>, Error> {
 		let params = json!({"data": data, "filter": filter, "strict": strict});
 		let v = self.jsonrpc_call(WORLD_QUERY, Some(params)).await?;
 		if let Some(arr) = v.get("result").and_then(|r| r.as_array()) { return Ok(arr.clone()); }
 		if let Some(arr) = v.as_array() { return Ok(arr.clone()); }
-		Err(ProtocolError::Rpc { code: -32603, message: "unexpected response for world.query".to_string(), data: Some(v) })
+		Err(Error::Rpc { code: -32603, message: "unexpected response for world.query".to_string(), data: Some(v) })
 	}
 
-	pub async fn save_graph(&self, entity: u64, path: &str) -> Result<(), ProtocolError> {
+	pub async fn save_graph(&self, entity: u64, path: &str) -> Result<(), Error> {
 		let params = json!({"entity": entity, "path": path});
 		let _ = self.jsonrpc_call(EDITOR_SAVE_GRAPH, Some(params)).await?;
 		Ok(())
 	}
 
-	pub async fn save_sidecar(&self, path: &str, contents: &str) -> Result<(), ProtocolError> {
+	pub async fn save_sidecar(&self, path: &str, contents: &str) -> Result<(), Error> {
 		let params = json!({"path": path, "contents": contents});
 		let _ = self.jsonrpc_call(EDITOR_SAVE_SIDECAR, Some(params)).await?;
 		Ok(())
 	}
 
-	pub async fn load_sidecar(&self, path: &str) -> Result<Option<String>, ProtocolError> {
+	pub async fn load_sidecar(&self, path: &str) -> Result<Option<String>, Error> {
 		let params = json!({"path": path});
 		let v = self.jsonrpc_call(EDITOR_LOAD_SIDECAR, Some(params)).await?;
 		Ok(v.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
 	}
 
-	pub async fn find_sidecar_by_fingerprint(&self, fp: &str) -> Result<Option<String>, ProtocolError> {
+	pub async fn find_sidecar_by_fingerprint(&self, fp: &str) -> Result<Option<String>, Error> {
 		let params = json!({"fp": fp});
 		let v = self.jsonrpc_call(EDITOR_FIND_SIDECAR_BY_FINGERPRINT, Some(params)).await?;
 		Ok(v.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
 	}
 
-	pub async fn sidecar_for_machine(&self, entity: u64) -> Result<Option<String>, ProtocolError> {
+	pub async fn sidecar_for_machine(&self, entity: u64) -> Result<Option<String>, Error> {
 		let params = json!({"entity": entity});
 		let v = self.jsonrpc_call(EDITOR_SIDECAR_FOR_MACHINE, Some(params)).await?;
 		// Accept {result:{text}} or top-level {text}
@@ -179,33 +179,33 @@ impl ProtocolClient {
 		Ok(v.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
 	}
 
-	pub async fn set_state_machine_id(&self, entity: u64, path: &str) -> Result<(), ProtocolError> {
+	pub async fn set_state_machine_id(&self, entity: u64, path: &str) -> Result<(), Error> {
 		let params = json!({"entity": entity, "path": path});
 		let _ = self.jsonrpc_call(EDITOR_SET_STATE_MACHINE_ID, Some(params)).await?;
 		Ok(())
 	}
 
-    pub async fn create_transition(&self, source: u64, target: u64, kind: &str) -> Result<u64, ProtocolError> {
+    pub async fn create_transition(&self, source: u64, target: u64, kind: &str) -> Result<u64, Error> {
         let params = json!({"source": source, "target": target, "kind": kind});
         let v = self.jsonrpc_call(crate::methods::EDITOR_CREATE_TRANSITION, Some(params)).await?;
         if let Some(id) = v.get("result").and_then(|r| r.get("entity")).and_then(|n| n.as_u64()) { return Ok(id); }
         if let Some(id) = v.get("entity").and_then(|n| n.as_u64()) { return Ok(id); }
-        Err(ProtocolError::Rpc { code: -32603, message: "unexpected response for editor.create_transition".to_string(), data: Some(v) })
+        Err(Error::Rpc { code: -32603, message: "unexpected response for editor.create_transition".to_string(), data: Some(v) })
     }
 
-    pub async fn rename(&self, entity: u64, name: &str) -> Result<(), ProtocolError> {
+    pub async fn rename(&self, entity: u64, name: &str) -> Result<(), Error> {
         let params = json!({ "entity": entity, "components": { wire::NAME_REFLECT: name } });
         let _ = self.jsonrpc_call(WORLD_INSERT_COMPONENTS, Some(params)).await?;
         Ok(())
     }
 
-    pub async fn protocol_version(&self) -> Result<u32, ProtocolError> {
+    pub async fn version(&self) -> Result<u32, Error> {
         let v = self.jsonrpc_call(PROTOCOL_VERSION, None).await?;
         Ok(v.get("result").and_then(|r| r.get("version")).and_then(|n| n.as_u64()).unwrap_or(0) as u32)
     }
 }
 
-pub fn on_rename(rename: On<crate::events::Rename>, client: Res<ProtocolClient>, rt: Res<TokioRuntime>) {
+pub fn on_rename(rename: On<crate::events::Rename>, client: Res<Client>, rt: Res<TokioRuntime>) {
     // fire-and-forget via Tokio runtime; watches ensure convergence
     let name = rename.name.clone();
     let id = rename.target.to_bits();
@@ -216,7 +216,7 @@ pub fn on_rename(rename: On<crate::events::Rename>, client: Res<ProtocolClient>,
     });
 }
 
-pub fn on_despawn(despawn: On<crate::events::Despawn>, client: Res<ProtocolClient>, rt: Res<TokioRuntime>) {
+pub fn on_despawn(despawn: On<crate::events::Despawn>, client: Res<Client>, rt: Res<TokioRuntime>) {
     let id = despawn.target.to_bits();
     let client_cloned = client.clone();
     let rt = rt.0.clone();
@@ -225,7 +225,7 @@ pub fn on_despawn(despawn: On<crate::events::Despawn>, client: Res<ProtocolClien
     });
 }
 
-pub fn on_reset_region(reset_region: On<crate::events::ResetRegion>, client: Res<ProtocolClient>, rt: Res<TokioRuntime>) {
+pub fn on_reset_region(reset_region: On<crate::events::ResetRegion>, client: Res<Client>, rt: Res<TokioRuntime>) {
     let root = reset_region.target.to_bits();
     let client_cloned = client.clone();
     let rt = rt.0.clone();
@@ -236,9 +236,9 @@ pub fn on_reset_region(reset_region: On<crate::events::ResetRegion>, client: Res
 
 pub fn on_create_transition(
     ev: On<crate::events::CreateTransition>,
-    client: Res<ProtocolClient>,
+    client: Res<Client>,
     rt: Res<TokioRuntime>,
-    mut writer: MessageWriter<ProtocolClientCommand>,
+    mut writer: MessageWriter<ClientCommand>,
 ) {
     let machine = ev.machine.to_bits();
     let source = ev.source.to_bits();
@@ -250,7 +250,7 @@ pub fn on_create_transition(
     rt.spawn(async move {
         let _ = client_cloned.create_transition(source, target, &kind).await;
     });
-    writer.write(ProtocolClientCommand::FetchGraph { id: machine });
+    writer.write(ClientCommand::FetchGraph { id: machine });
 }
 
 // =========================
@@ -258,7 +258,7 @@ pub fn on_create_transition(
 // =========================
 
 #[derive(Message)]
-pub enum ProtocolClientCommand {
+pub enum ClientCommand {
     RefreshMachines,
     SetUrl { url: String },
     FetchGraph { id: u64 },
@@ -267,20 +267,20 @@ pub enum ProtocolClientCommand {
 }
 
 #[derive(Message, Clone)]
-pub enum ProtocolClientMessage {
-    RefreshResult(Result<Vec<ProtocolMachineSummary>, String>),
+pub enum ClientMessage {
+    RefreshResult(Result<Vec<MachineSummary>, String>),
     GraphResult { id: u64, graph: serde_json::Value },
     SidecarFound { id: u64, text: String },
     SidecarMissing { id: u64 },
     EventEdgeVariants { variants: Vec<String> },
 }
 
-async fn list_state_machines(client: &ProtocolClient) -> Result<Vec<ProtocolMachineSummary>, String> {
+async fn list_state_machines(client: &Client) -> Result<Vec<MachineSummary>, String> {
     let rows = client
         .world_query(serde_json::json!({}), serde_json::json!({"with":[crate::components::STATE_MACHINE]}), false)
         .await
         .map_err(|e| e.to_string())?;
-    let mut out: Vec<ProtocolMachineSummary> = Vec::new();
+    let mut out: Vec<MachineSummary> = Vec::new();
     for row in rows.into_iter() {
         if let Some(id) = row.get("entity").and_then(|e| e.as_u64()) {
             let comps = client
@@ -288,75 +288,75 @@ async fn list_state_machines(client: &ProtocolClient) -> Result<Vec<ProtocolMach
                 .await
                 .unwrap_or_default();
             let name = comps.get(crate::components::NAME_REFLECT).and_then(|v| v.as_str()).map(|s| s.to_string());
-            out.push(ProtocolMachineSummary { id, name });
+            out.push(MachineSummary { id, name });
         }
     }
     Ok(out)
 }
 
-fn handle_protocol_client_commands(
-    mut reader: MessageReader<ProtocolClientCommand>,
+fn client_commands(
+    mut reader: MessageReader<ClientCommand>,
     rt: Res<TokioRuntime>,
-    mut client: ResMut<ProtocolClient>,
-    mut writer: MessageWriter<ProtocolClientMessage>,
-    mut conn: ResMut<ProtocolConnectionState>,
+    mut client: ResMut<Client>,
+    mut writer: MessageWriter<ClientMessage>,
+    mut conn: ResMut<ConnectionState>,
 ) {
     for cmd in reader.read() {
         match *cmd {
-            ProtocolClientCommand::RefreshMachines => {
+            ClientCommand::RefreshMachines => {
                 let client_cloned = client.clone();
                 let r = rt.0.block_on(async move { list_state_machines(&client_cloned).await });
-                writer.write(ProtocolClientMessage::RefreshResult(r));
+                writer.write(ClientMessage::RefreshResult(r));
             }
-            ProtocolClientCommand::SetUrl { ref url } => {
+            ClientCommand::SetUrl { ref url } => {
                 client.base_url = url.clone();
-                conn.state = ProtocolConnectionPhase::Connecting;
+                conn.state = ConnectionPhase::Connecting;
                 conn.endpoint = Some(url.clone());
                 // Probe connectivity via protocol.version
                 let client_cloned = client.clone();
-                let ver = rt.0.block_on(async move { client_cloned.protocol_version().await });
+                let ver = rt.0.block_on(async move { client_cloned.version().await });
                 match ver {
                     Ok(_) => {
-                        conn.state = ProtocolConnectionPhase::Connected;
+                        conn.state = ConnectionPhase::Connected;
                         // Fetch registry schema and publish discovered EventEdge<T> variants
                         let client_cloned2 = client.clone();
                         if let Ok(schema) = rt.0.block_on(async move { client_cloned2.registry_schema().await }) {
                             let variants = extract_event_edge_variants(&schema);
-                            if !variants.is_empty() { writer.write(ProtocolClientMessage::EventEdgeVariants { variants }); }
+                            if !variants.is_empty() { writer.write(ClientMessage::EventEdgeVariants { variants }); }
                         }
                     }
-                    Err(_) => { conn.state = ProtocolConnectionPhase::Disconnected; }
+                    Err(_) => { conn.state = ConnectionPhase::Disconnected; }
                 }
             }
-            ProtocolClientCommand::FetchGraph { id } => {
+            ClientCommand::FetchGraph { id } => {
                 let client_cloned = client.clone();
                 let v = rt.0.block_on(async move {
                     client_cloned.jsonrpc_call(EDITOR_MACHINE_GRAPH, Some(serde_json::json!({"entity": id}))).await
                 });
                 if let Ok(v) = v {
                     let graph = v.get("result").cloned().unwrap_or(v);
-                    writer.write(ProtocolClientMessage::GraphResult { id, graph });
+                    writer.write(ClientMessage::GraphResult { id, graph });
                 } else if let Err(e) = v {
-                    writer.write(ProtocolClientMessage::GraphResult { id, graph: serde_json::json!({"error": e.to_string()}) });
+                    writer.write(ClientMessage::GraphResult { id, graph: serde_json::json!({"error": e.to_string()}) });
                 }
             }
-            ProtocolClientCommand::LoadSidecarByPath { id, ref path } => {
+            ClientCommand::LoadSidecarByPath { id, ref path } => {
                 let client_cloned = client.clone();
                 let path_for_call = path.clone();
                 let r = rt.0.block_on(async move { client_cloned.load_sidecar(&path_for_call).await });
                 match r {
-                    Ok(Some(text)) => { let _ = writer.write(ProtocolClientMessage::SidecarFound { id, text }); }
-                    Ok(None) => { let _ = writer.write(ProtocolClientMessage::SidecarMissing { id }); }
-                    Err(e) => { let _ = writer.write(ProtocolClientMessage::SidecarMissing { id }); }
+                    Ok(Some(text)) => { let _ = writer.write(ClientMessage::SidecarFound { id, text }); }
+                    Ok(None) => { let _ = writer.write(ClientMessage::SidecarMissing { id }); }
+                    Err(e) => { let _ = writer.write(ClientMessage::SidecarMissing { id }); }
                 }
             }
-            ProtocolClientCommand::SidecarForMachine { id } => {
+            ClientCommand::SidecarForMachine { id } => {
                 let client_cloned = client.clone();
                 let r = rt.0.block_on(async move { client_cloned.sidecar_for_machine(id).await });
                 match r {
-                    Ok(Some(text)) => { let _ = writer.write(ProtocolClientMessage::SidecarFound { id, text }); }
-                    Ok(None) => { let _ = writer.write(ProtocolClientMessage::SidecarMissing { id }); }
-                    Err(e) => { let _ = writer.write(ProtocolClientMessage::SidecarMissing { id }); }
+                    Ok(Some(text)) => { let _ = writer.write(ClientMessage::SidecarFound { id, text }); }
+                    Ok(None) => { let _ = writer.write(ClientMessage::SidecarMissing { id }); }
+                    Err(e) => { let _ = writer.write(ClientMessage::SidecarMissing { id }); }
                 }
             }
         }
@@ -364,35 +364,35 @@ fn handle_protocol_client_commands(
 }
 
 #[derive(Default)]
-pub struct GearboxProtocolClientPlugin;
+pub struct ClientPlugin;
 
-impl Plugin for GearboxProtocolClientPlugin {
+impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
-        if app.world().get_resource::<ProtocolClientConfig>().is_none() {
+        if app.world().get_resource::<ClientConfig>().is_none() {
             let url = std::env::var("GEARBOX_PROTOCOL_URL").or_else(|_| std::env::var("BRP_URL")).unwrap_or_else(|_| "http://127.0.0.1:15703".to_string());
-            app.insert_resource(ProtocolClientConfig { url: url.clone() });
-            app.insert_resource(ProtocolClient::new(url));
-        } else if app.world().get_resource::<ProtocolClient>().is_none() {
-            let url = app.world().get_resource::<ProtocolClientConfig>().unwrap().url.clone();
-            app.insert_resource(ProtocolClient::new(url));
+            app.insert_resource(ClientConfig { url: url.clone() });
+            app.insert_resource(Client::new(url));
+        } else if app.world().get_resource::<Client>().is_none() {
+            let url = app.world().get_resource::<ClientConfig>().unwrap().url.clone();
+            app.insert_resource(Client::new(url));
         }
         if app.world().get_resource::<TokioRuntime>().is_none() {
             let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
             app.insert_resource(TokioRuntime(Arc::new(rt)));
         }
         app.init_resource::<WatchManager>();
-        app.init_resource::<ProtocolCompatibility>();
-        app.init_resource::<ProtocolConnectionState>();
-        app.add_message::<ProtocolNetMessage>();
-        app.add_message::<ProtocolNetCommand>();
-        app.add_message::<ProtocolClientCommand>();
-        app.add_message::<ProtocolClientMessage>();
+        app.init_resource::<Compatibility>();
+        app.init_resource::<ConnectionState>();
+        app.add_message::<NetMessage>();
+        app.add_message::<NetCommand>();
+        app.add_message::<ClientCommand>();
+        app.add_message::<ClientMessage>();
         app.add_observer(on_rename);
         app.add_observer(on_create_transition);
 		app.add_observer(on_despawn);
 		app.add_observer(on_reset_region);
-        app.add_systems(Startup, protocol_version_check_startup);
-        app.add_systems(Update, (handle_protocol_net_commands, drain_protocol_watch_events, handle_protocol_client_commands));
+        app.add_systems(Startup, version_check_startup);
+        app.add_systems(Update, (net_commands, watch_events, client_commands));
     }
 }
 
@@ -404,13 +404,13 @@ impl Plugin for GearboxProtocolClientPlugin {
 pub struct TokioRuntime(pub Arc<tokio::runtime::Runtime>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProtocolConnectionPhase { Disconnected, Connecting, Connected }
+pub enum ConnectionPhase { Disconnected, Connecting, Connected }
 
-impl Default for ProtocolConnectionPhase { fn default() -> Self { ProtocolConnectionPhase::Disconnected } }
+impl Default for ConnectionPhase { fn default() -> Self { ConnectionPhase::Disconnected } }
 
 #[derive(Resource, Clone, Default)]
-pub struct ProtocolConnectionState {
-    pub state: ProtocolConnectionPhase,
+pub struct ConnectionState {
+    pub state: ConnectionPhase,
     pub endpoint: Option<String>,
 }
 
@@ -432,11 +432,11 @@ enum WatchCtl {
 }
 
 #[derive(Debug, Clone)]
-pub struct ProtocolMachineSummary { pub id: u64, pub name: Option<String> }
+pub struct MachineSummary { pub id: u64, pub name: Option<String> }
 
 #[derive(Debug)]
 enum WatchEvt {
-    Discovery(Vec<ProtocolMachineSummary>),
+    Discovery(Vec<MachineSummary>),
     Machine { id: u64, events: Vec<Value> },
     Error(String),
     Components { id: u64, components: serde_json::Map<String, Value>, removed: Vec<String> },
@@ -503,17 +503,17 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                                                 // If server sends a full snapshot each tick, compute a diff vs known
                                                 if !current.is_empty() {
                                                     // Compute diffs
-                                                    let mut diff: Vec<ProtocolMachineSummary> = Vec::new();
+                                                    let mut diff: Vec<MachineSummary> = Vec::new();
                                                     // Added or changed
                                                     for (id, name) in current.iter() {
                                                         if known.get(id) != Some(name) {
-                                                            diff.push(ProtocolMachineSummary { id: *id, name: name.clone() });
+                                                            diff.push(MachineSummary { id: *id, name: name.clone() });
                                                         }
                                                     }
                                                     // Removed
                                                     for id in known.keys() {
                                                         if !current.contains_key(id) {
-                                                            diff.push(ProtocolMachineSummary { id: *id, name: None });
+                                                            diff.push(MachineSummary { id: *id, name: None });
                                                         }
                                                     }
                                                     if !diff.is_empty() {
@@ -643,14 +643,14 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
 }
 
 #[derive(Message, Clone)]
-pub enum ProtocolNetMessage {
-    Discovery(Vec<ProtocolMachineSummary>),
+pub enum NetMessage {
+    Discovery(Vec<MachineSummary>),
     Machine { id: u64, events: Vec<Value> },
     Components { id: u64, components: serde_json::Map<String, Value>, removed: Vec<String> },
 }
 
 #[derive(Message)]
-pub enum ProtocolNetCommand {
+pub enum NetCommand {
     StartDiscovery,
     StopDiscovery,
     StartMachine { id: u64 },
@@ -659,41 +659,41 @@ pub enum ProtocolNetCommand {
     StopComponents { id: u64 },
 }
 
-fn handle_protocol_net_commands(
-    mut reader: MessageReader<ProtocolNetCommand>,
+fn net_commands(
+    mut reader: MessageReader<NetCommand>,
     rt: Res<TokioRuntime>,
-    client: Res<ProtocolClient>,
+    client: Res<Client>,
     mut mgr: ResMut<WatchManager>,
 ) {
     ensure_watch_manager(&rt.0, &mut *mgr);
     for cmd in reader.read() {
         match *cmd {
-            ProtocolNetCommand::StartDiscovery => {
+            NetCommand::StartDiscovery => {
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartDiscovery { url: client.base_url.clone() }); }
             }
-            ProtocolNetCommand::StopDiscovery => {
+            NetCommand::StopDiscovery => {
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopDiscovery); }
             }
-            ProtocolNetCommand::StartMachine { id } => {
+            NetCommand::StartMachine { id } => {
                 let (la, lt, ln) = mgr.cursors.get(&id).copied().unwrap_or((0, 0, 0));
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartMachine { url: client.base_url.clone(), id, last_active_seq: la, last_transition_seq: lt, last_name_seq: ln }); }
             }
-            ProtocolNetCommand::StopMachine { id } => {
+            NetCommand::StopMachine { id } => {
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopMachine { url: client.base_url.clone(), id }); }
             }
-            ProtocolNetCommand::StartComponents { id, ref components } => {
+            NetCommand::StartComponents { id, ref components } => {
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartComponents { url: client.base_url.clone(), id, components: components.clone() }); }
             }
-            ProtocolNetCommand::StopComponents { id } => {
+            NetCommand::StopComponents { id } => {
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopComponents { url: client.base_url.clone(), id }); }
             }
         }
     }
 }
 
-fn drain_protocol_watch_events(
+fn watch_events(
     mut mgr: ResMut<WatchManager>,
-    mut writer: MessageWriter<ProtocolNetMessage>,
+    mut writer: MessageWriter<NetMessage>,
 ) {
     if mgr.evt_rx.is_some() {
         let mut rx = mgr.evt_rx.take().unwrap();
@@ -702,7 +702,7 @@ fn drain_protocol_watch_events(
             drained += 1;
             match evt {
                 WatchEvt::Discovery(batch) => {
-                    writer.write(ProtocolNetMessage::Discovery(batch));
+                    writer.write(NetMessage::Discovery(batch));
                 }
                 WatchEvt::Machine { id, events } => {
                     // Filter duplicates using stored cursors
@@ -742,12 +742,12 @@ fn drain_protocol_watch_events(
                                 _ => {}
                             }
                         }
-                        writer.write(ProtocolNetMessage::Machine { id, events: filtered });
+                        writer.write(NetMessage::Machine { id, events: filtered });
                     }
                 }
                 WatchEvt::Error(e) => { println!("[dbg] client: watch error: {}", e); }
                 WatchEvt::Components { id, components, removed } => {
-                    writer.write(ProtocolNetMessage::Components { id, components, removed });
+                    writer.write(NetMessage::Components { id, components, removed });
                 }
             }
         }
@@ -764,18 +764,18 @@ const SUPPORTED_VERSION_MIN: u32 = 1;
 const SUPPORTED_VERSION_MAX: u32 = 1;
 
 #[derive(Resource, Clone, Default)]
-pub struct ProtocolCompatibility {
+pub struct Compatibility {
     pub server_version: Option<u32>,
     pub compatible: bool,
     pub message: Option<String>,
 }
 
-fn protocol_version_check_startup(
-    client: Res<ProtocolClient>,
+fn version_check_startup(
+    client: Res<Client>,
     rt: Res<TokioRuntime>,
-    mut compat: ResMut<ProtocolCompatibility>,
+    mut compat: ResMut<Compatibility>,
 ) {
-    match rt.0.block_on(client.protocol_version()) {
+    match rt.0.block_on(client.version()) {
         Ok(ver) => {
             let ok = ver >= SUPPORTED_VERSION_MIN && ver <= SUPPORTED_VERSION_MAX;
             compat.server_version = Some(ver);
