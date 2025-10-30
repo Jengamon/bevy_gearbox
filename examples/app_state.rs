@@ -61,7 +61,6 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(GearboxPlugin)
-        // Egui/Inspector not required for this example; keep the protocol server only
         .add_plugins(ServerPlugin::default())
         .init_state::<ExampleState>()
         .add_state_bridge::<ExampleState>()
