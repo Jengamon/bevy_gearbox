@@ -298,12 +298,12 @@ impl<'a> StateNodeBuilder<'a> {
 
     /// Sugar: add an Event edge and set both its name and validator from a single value
     /// that can convert into both a `String` (for the name) and `E::Validator`.
-    pub fn edge_from<E, V>(&mut self, to: impl AsRef<str>, v: V) -> &mut Self
+    pub fn edge_from<E>(&mut self, to: impl AsRef<str>, v: impl Into<<E as crate::TransitionEvent>::Validator> + Into<String> + Clone) -> &mut Self
     where
         E: crate::registration::RegisteredTransitionEvent + crate::TransitionEvent + 'static,
-        V: Into<<E as crate::TransitionEvent>::Validator> + Into<String> + Clone,
     {
-        self.edge::<E>(to, move |e| { e.nv(v); });
+        let val = v.clone();
+        self.edge::<E>(to, move |e| { e.nv(val); });
         self
     }
 
