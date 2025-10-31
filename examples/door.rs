@@ -4,7 +4,6 @@ use bevy::prelude::*;
 use bevy_gearbox::prelude::*;
 use bevy_gearbox::transitions::{Source, After, DeferEvent};
 use bevy_gearbox::GearboxPlugin;
-use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use std::time::Duration;
 use bevy_gearbox_editor::ServerPlugin;
 
@@ -70,7 +69,7 @@ fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
 
     let machine_entity = commands.spawn_empty().id();
-    commands.entity(machine_entity).with_children(|mut c| {
+    commands.entity(machine_entity).with_children(|c| {
         let closed = c.spawn_empty().id();
         let opening = c.spawn_empty().id();
         let open = c.spawn_empty().id();
