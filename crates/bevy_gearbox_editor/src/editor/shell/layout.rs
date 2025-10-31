@@ -44,9 +44,8 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                     // Ensure a doc entry exists, then temporarily remove it to avoid borrow conflicts
                     workspace.docs.entry(active).or_default();
                     let mut sel_local = workspace.selection.clone();
-                    let mut menu_local = workspace.menu.clone();
                     let mut entry = workspace.docs.remove(&active).unwrap_or_default();
-                    if let Some(selection) = crate::editor::view::draw_doc(ui, &mut entry, &mut sel_local, active, &mut menu_local, workspace) {
+                    if let Some(selection) = crate::editor::view::draw_doc(ui, &mut entry, &mut sel_local, active, workspace) {
                         match selection {
                             crate::editor::context_menu::MenuSelection::SaveStateMachine { .. } => {
                                 commands.trigger(crate::editor::actions::SaveAsRequested { entity: active });
@@ -93,7 +92,6 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                         }
                     }
                     workspace.selection = sel_local;
-                    workspace.menu = menu_local;
                 } else {
                     // no-op: avoid chatty log
                     ui.label("No document open. Select a state machine from the left.");
