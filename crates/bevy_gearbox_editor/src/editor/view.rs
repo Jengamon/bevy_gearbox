@@ -1,7 +1,7 @@
 use super::view_model::{GraphDoc, UiViewKind};
 use super::layout::{NodeLayout, LayoutConfig};
 use super::context_menu::{build_context_menu, MenuItemKind, MenuSelection};
-use crate::editor::workspace::{ContextMenuState, RenameInline, Workspace, EdgeBuildState, EdgeMenuState};
+use crate::editor::workspace::{ RenameInline, Workspace, EdgeBuildState, EdgeMenuState};
 use crate::types::ServerEntity;
 use bevy_egui::egui;
 
@@ -11,7 +11,6 @@ pub fn draw_doc(
     doc: &mut GraphDoc,
     selection: &mut Option<crate::model::EntityId>,
     doc_id: ServerEntity,
-    _menu_state: &mut Option<ContextMenuState>,
     workspace: &mut Workspace,
 ) -> Option<MenuSelection> {
     let desired = ui.available_size_before_wrap();
