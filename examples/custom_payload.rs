@@ -24,25 +24,18 @@ struct Attack {
 }
 
 #[derive(EntityEvent, Clone)]
-struct ApplyDamage {
-    #[event_target]
-    pub target: Entity, 
-    pub damage: f32 
-}
-
-#[derive(EntityEvent, Clone)]
 #[register_transition]
-struct TakeDamage { 
+struct TryDamage {
     #[event_target]
     pub target: Entity,
-    pub amount: f32 
+    pub amount: f32,
 }
 
 #[derive(EntityEvent, Clone)]
-struct DoDamage {
+struct TakeDamage {
     #[event_target]
     pub target: Entity,
-    pub amount: f32 
+    pub amount: f32,
 }
 
 #[derive(EntityEvent, Clone)]
@@ -52,18 +45,18 @@ struct Die {
     pub target: Entity,
 }
 
-// Map the trigger into a phase payload that emits ApplyDamage on Entry.
+// Map the trigger into a phase payload that targets the victim with TryDamage.
 impl TransitionEvent for Attack {
-    type EntryEvent = ApplyDamage;
+    type EntryEvent = TryDamage;
 
     fn to_entry_event(&self) -> Option<Self::EntryEvent> {
-        Some(ApplyDamage { target: self.victim, damage: self.damage })
+        Some(TryDamage { target: self.victim, amount: self.damage })
     }
 }
 
-impl TransitionEvent for TakeDamage {
-    type EntryEvent = DoDamage;
-    fn to_entry_event(&self) -> Option<Self::EntryEvent> { Some(DoDamage { target: self.target, amount: self.amount }) }
+impl TransitionEvent for TryDamage {
+    type EntryEvent = TakeDamage;
+    fn to_entry_event(&self) -> Option<Self::EntryEvent> { Some(TakeDamage { target: self.target, amount: self.amount }) }
 }
 
 impl TransitionEvent for Die {}
@@ -115,7 +108,6 @@ fn main() {
         .add_plugins(ServerPlugin::default())
         .init_resource::<RespawnQueue>()
         .add_observer(print_enter_state)
-        .add_observer(apply_damage_system)
         .add_observer(on_enter_taking_damage_color)
         .add_observer(on_exit_taking_damage_color)
         .add_observer(do_damage_on_entry)
@@ -283,21 +275,9 @@ fn drive_bounces(
     }
 }
 
-// Entry-phase handler: we received ApplyDamage (created from Attack's payload mapping).
-fn apply_damage_system(
-    apply_damage: On<ApplyDamage>,
-    q_substate_of: Query<&SubstateOf>,
-    mut commands: Commands,
-) {
-    let ApplyDamage { target, damage } = apply_damage.event().clone();
-    let root = q_substate_of.root_ancestor(target);
-    println!("[ApplyDamage] target {:?}, damage {}", root, damage);
-    commands.trigger(TakeDamage { target: root, amount: damage });
-}
-
-// Apply damage to Life on Entry of TakingDamage via payload event (DoDamage).
+// Apply damage to Life on Entry of TakingDamage via payload event (TakeDamage).
 fn do_damage_on_entry(
-    do_damage: On<DoDamage>,
+    do_damage: On<TakeDamage>,
     q_substate_of: Query<&SubstateOf>,
     mut q_life: Query<&mut Life>,
     q_transform: Query<&Transform>,
@@ -308,7 +288,7 @@ fn do_damage_on_entry(
     let target = do_damage.target;
     // Support either root-targeted or state-targeted entry events
     let root = if q_life.get(target).is_ok() { target } else { q_substate_of.root_ancestor(target) };
-    println!("[DoDamage] root {:?}, amount {}", root, amount);
+    println!("[TakeDamage] root {:?}, amount {}", root, amount);
     if let Ok(mut life) = q_life.get_mut(root) {
         life.0 -= amount;
         println!("[Damage] Applied {amount}, Life now {:.1}", life.0);
@@ -420,12 +400,12 @@ fn spawn_defender(world: &mut World, position: Vec3) -> Entity {
         StateComponent(Dead),
     )).id();
 
-    // Edge: TargetWaiting --(TakeDamage)--> TakingDamage
+    // Edge: TargetWaiting --(TryDamage)--> TakingDamage
     world.spawn((
         Name::new("TakeDamage"),
         Source(target_waiting),
         Target(taking_damage),
-        EventEdge::<TakeDamage>::default(),
+        EventEdge::<TryDamage>::default(),
         EdgeKind::External,
     ));
 
