@@ -151,9 +151,9 @@ pub fn on_save_as_requested(
     // Open native Save dialog for .sm.ron, start in assets/ and suggest a name
     let picked = FileDialog::new()
         .add_filter("State Machine Sidecar", &["sm.ron"])        
-        .set_title("Save State Machine (.sm.ron)")
+        .set_title("Save State Machine")
         .set_directory("assets")
-        .set_file_name("state_machine.sm.ron")
+        .set_file_name("statemachine")
         .save_file();
 
     if let Some(path) = picked {

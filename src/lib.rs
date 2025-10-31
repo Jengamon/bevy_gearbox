@@ -6,7 +6,6 @@ use bevy::platform::collections::HashSet;
 use crate::{active::{Active, Inactive}, guards::Guards, history::{History, HistoryState}};
 
 pub mod active;
-pub mod builder;
 pub mod guards;
 pub mod history;
 pub mod prelude;
@@ -21,7 +20,6 @@ pub use bevy_gearbox_macros::SimpleTransition;
 pub use transitions::{TransitionEvent, NoEvent};
 pub use inventory;
 pub use bevy_gearbox_macros::register_transition;
-pub use builder::StateMachineBuilder;
 
 /// The main plugin for `bevy_gearbox`. Registers events and adds the core systems.
 pub struct GearboxPlugin;
@@ -146,13 +144,6 @@ pub struct StateMachine {
     pub active_leaves: HashSet<Entity>,
 }
 
-/// Stable identifier for a state machine. Stored on the root state machine entity and
-/// serialized as part of scene assets. Editors can use this to associate sidecar files
-/// (e.g., by resolving `<id>.sm.ron`).
-#[derive(Component, Reflect, Default, Clone)]
-#[reflect(Component, Default, Clone)]
-pub struct StateMachineId(pub String);
-
 impl StateMachine {
     pub fn new() -> Self {
         Self { active: HashSet::new(), active_leaves: HashSet::new() }
@@ -176,6 +167,19 @@ impl StateMachine {
     #[inline]
     pub fn is_leaf_active(&self, entity: &Entity) -> bool {
         self.active_leaves.contains(entity)
+    }
+}
+
+/// Stable identifier for a state machine. Stored on the root state machine entity and
+/// serialized as part of scene assets. Editors can use this to associate sidecar files
+/// (e.g., by resolving `<id>.sm.ron`).
+#[derive(Component, Reflect, Default, Clone)]
+#[reflect(Component, Default, Clone)]
+pub struct StateMachineId(pub String);
+
+impl StateMachineId {
+    pub fn new(id: &str) -> Self {
+        Self(id.to_string())
     }
 }
 

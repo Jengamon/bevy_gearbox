@@ -8,7 +8,7 @@ pub struct CanvasTransform {
 
 impl Default for CanvasTransform {
     fn default() -> Self {
-        Self { pan: egui::Vec2::ZERO, zoom: 1.0 }
+        Self { pan: egui::vec2(200.0, 0.0), zoom: 1.0 }
     }
 }
 

@@ -1,6 +1,7 @@
 // Ported from bevy_gearbox_editor/examples/app_state.rs
 // Uses protocol server to enable optional remote editor connection
 use bevy::prelude::*;
+use bevy_gearbox::StateMachineId;
 use bevy_gearbox::prelude::*;
 use bevy_gearbox::GearboxPlugin;
 use bevy_gearbox_editor::ServerPlugin;
@@ -84,10 +85,14 @@ fn setup_machine(mut commands: Commands) {
     let playing = commands.spawn((SubstateOf(root), ExampleState::Playing, Name::new("Playing"))).id();
     let paused = commands.spawn((SubstateOf(root), ExampleState::Paused, Name::new("Paused"))).id();
 
-    // Initial state is Menu
-    commands.entity(root).insert((StateMachine::new(), InitialState(menu)));
+    // StateMachine inserted after all states are spawned. 
+    commands.entity(root).insert((
+        StateMachine::new(), 
+        InitialState(menu),
+        StateMachineId::new("app_state"), // ID lets the editor connect a sidecar file to the state machine
+    ));
 
-    // Edges (one event; per-edge validator selects the signal)
+    // Edges
     {
         let edge = commands.spawn((
             Name::new("Start"),

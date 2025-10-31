@@ -5,8 +5,6 @@ use bevy::reflect::Reflect;
 use bevy_gearbox::prelude::*;
 use bevy_gearbox::GearboxPlugin;
 use bevy_gearbox::transitions::EventEdge;
-use bevy_inspector_egui::inspector_egui_impls::InspectorEguiImpl;
-use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_gearbox_editor::ServerPlugin;
 
 fn main() {
@@ -21,13 +19,6 @@ fn main() {
         .add_observer(print_enter_state_messages)
         .add_observer(print_onrepeat)
         .add_observer(print_oncomplete)
-        .register_type_data::<u32, InspectorEguiImpl>()
-        .register_type_data::<u64, InspectorEguiImpl>()
-        .register_type_data::<std::borrow::Cow<str>, InspectorEguiImpl>()
-        .register_type_data::<Entity, InspectorEguiImpl>()
-        .register_type_data::<std::time::Duration, InspectorEguiImpl>()
-        .register_type_data::<f32, InspectorEguiImpl>()
-        .register_type_data::<f64, InspectorEguiImpl>()
         .register_type::<AbilityMachine>()
         .register_type::<Repeater>()
         // ResetEdge/ResetScope are provided by core

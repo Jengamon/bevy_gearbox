@@ -1,6 +1,7 @@
 // Ported from bevy_gearbox_editor/examples/custom_payload.rs
 // Uses protocol server to enable optional remote editor connection
 use bevy::prelude::*;
+use bevy_gearbox::StateMachineId;
 use bevy_gearbox::prelude::*;
 use bevy_gearbox::GearboxPlugin;
 use bevy::math::primitives::{Plane3d, Sphere, Cuboid};
@@ -391,12 +392,13 @@ fn spawn_defender(world: &mut World, position: Vec3) -> Entity {
     };
 
     let defender = world.spawn((
-        Name::new("DummyTargetEntity"),
+        Name::new("DummyTarget"),
         DummyTarget,
         Mesh3d(target_mesh),
         MeshMaterial3d(target_mat),
         Transform::from_translation(position),
         Life(60.0),
+        StateMachineId::new("dummy_target"), // ID lets the editor connect a sidecar file to the state machine
     )).id();
 
     // Defender state machine (root = defender)
