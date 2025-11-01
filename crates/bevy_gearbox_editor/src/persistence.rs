@@ -48,7 +48,7 @@ pub fn parse_sidecar_text(text: &str) -> std::io::Result<Sidecar> {
 // Key + fingerprint API
 // ======================
 
-use crate::editor::view_model::{GraphDoc, UiViewKind};
+use crate::editor::view_model::GraphDoc;
 use crate::model::StateMachineGraph;
 use crate::types::EntityId;
 
@@ -141,11 +141,7 @@ pub fn extract_sidecar_for_subtree(doc: &GraphDoc, root: &EntityId) -> Sidecar {
     let mut sc = Sidecar::new();
     if let Some(graph) = &doc.graph {
         // Compute a local origin for subtree serialization: the subtree root's current world min
-        let base_min = doc
-            .views
-            .get(root)
-            .map(|v| v.rect.min)
-            .unwrap_or(egui::pos2(0.0, 0.0));
+        let base_min = doc.scene.node_rects.get(root).map(|r| r.min).unwrap_or(egui::pos2(0.0, 0.0));
         // Collect subtree nodes (DFS) and internal edges
         use std::collections::{HashSet, VecDeque};
         let mut nodes_set: HashSet<EntityId> = HashSet::new();
@@ -172,25 +168,16 @@ pub fn extract_sidecar_for_subtree(doc: &GraphDoc, root: &EntityId) -> Sidecar {
         sc.graph_fingerprint = Some(compute_graph_fingerprint(&sub));
 
         // Capture views only for nodes/edges in the subtree
-        for (id, view) in doc.views.iter() {
-            let include = match view.kind {
-                UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => nodes_set.contains(id),
-                UiViewKind::Edge { .. } => sub.edges.contains_key(id),
-            };
-            if !include { continue; }
-            match view.kind {
-                UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => {
-                    let key = node_key(&sub, id);
-                    // Store positions relative to the subtree root so they compose correctly when embedded
-                    sc.nodes.insert(key, NodeLayout { pos: (view.rect.min.x - base_min.x, view.rect.min.y - base_min.y), collapsed: false });
-                }
-                UiViewKind::Edge { .. } => {
-                    let key = edge_key(&sub, id);
-                    let center = view.pill.as_ref().map(|p| p.center).unwrap_or(view.rect.center());
-                    // Store pill centers relative to the subtree root
-                    sc.edges.insert(key, EdgeLayout { pill_center: (center.x - base_min.x, center.y - base_min.y) });
-                }
-            }
+        for (id, sv) in doc.scene.states.iter() {
+            if !nodes_set.contains(id) { continue; }
+            let key = node_key(&sub, id);
+            sc.nodes.insert(key, NodeLayout { pos: (sv.rect.min.x - base_min.x, sv.rect.min.y - base_min.y), collapsed: false });
+        }
+        for (eid, _ev) in doc.scene.edges.iter() {
+            if !sub.edges.contains_key(eid) { continue; }
+            let key = edge_key(&sub, eid);
+            let center = doc.scene.node_rects.get(eid).map(|r| r.center()).unwrap_or(egui::pos2(0.0, 0.0));
+            sc.edges.insert(key, EdgeLayout { pill_center: (center.x - base_min.x, center.y - base_min.y) });
         }
     }
     sc.viewport = Some(SidecarViewport { pan: (doc.transform.pan.x, doc.transform.pan.y), zoom: doc.transform.zoom });
@@ -199,35 +186,31 @@ pub fn extract_sidecar_for_subtree(doc: &GraphDoc, root: &EntityId) -> Sidecar {
 
 pub fn apply_sidecar_to_doc(doc: &mut GraphDoc, sidecar: &Sidecar) {
     if let Some(graph) = &doc.graph {
-        for (id, view) in doc.views.iter_mut() {
-            match view.kind {
-                UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => {
-                    let key = node_key(graph, id);
-                    let mut found = sidecar.nodes.get(&key);
-                    if found.is_none() {
-                        // Fallback to legacy key scheme
-                        let legacy = legacy_node_key(graph, id);
-                        found = sidecar.nodes.get(&legacy);
-                    }
-                    if let Some(n) = found {
-                        let size = view.rect.size();
-                        view.rect = egui::Rect::from_min_size(egui::pos2(n.pos.0, n.pos.1), size);
-                    }
-                }
-                UiViewKind::Edge { .. } => {
-                    let key = edge_key(graph, id);
-                    let mut found = sidecar.edges.get(&key);
-                    if found.is_none() {
-                        let legacy = legacy_edge_key(graph, id);
-                        found = sidecar.edges.get(&legacy);
-                    }
-                    if let Some(e) = found {
-                        let size = view.rect.size();
-                        let min = egui::pos2(e.pill_center.0 - size.x * 0.5, e.pill_center.1 - size.y * 0.5);
-                        view.rect = egui::Rect::from_min_size(min, size);
-                        if let Some(p) = view.pill.as_mut() { p.center = egui::pos2(e.pill_center.0, e.pill_center.1); }
-                    }
-                }
+        for (id, sv) in doc.scene.states.iter_mut() {
+            let key = node_key(graph, id);
+            let mut found = sidecar.nodes.get(&key);
+            if found.is_none() {
+                let legacy = legacy_node_key(graph, id);
+                found = sidecar.nodes.get(&legacy);
+            }
+            if let Some(n) = found {
+                let size = sv.rect.size();
+                sv.rect = egui::Rect::from_min_size(egui::pos2(n.pos.0, n.pos.1), size);
+                if let Some(r) = doc.scene.node_rects.get_mut(id) { *r = sv.rect; }
+            }
+        }
+        for (eid, ev) in doc.scene.edges.iter_mut() {
+            let key = edge_key(graph, eid);
+            let mut found = sidecar.edges.get(&key);
+            if found.is_none() {
+                let legacy = legacy_edge_key(graph, eid);
+                found = sidecar.edges.get(&legacy);
+            }
+            if let Some(e) = found {
+                let size = ev.rect.size();
+                let min = egui::pos2(e.pill_center.0 - size.x * 0.5, e.pill_center.1 - size.y * 0.5);
+                ev.rect = egui::Rect::from_min_size(min, size);
+                if let Some(r) = doc.scene.node_rects.get_mut(eid) { *r = ev.rect; }
             }
         }
     }
@@ -242,11 +225,7 @@ pub fn apply_sidecar_to_subtree(doc: &mut GraphDoc, sidecar: &Sidecar, root: &En
     if doc.graph.is_none() { return; }
     let graph = doc.graph.clone().unwrap();
     // World-space offset to place subtree-local positions: current subtree root min
-    let base_min = doc
-        .views
-        .get(root)
-        .map(|v| v.rect.min)
-        .unwrap_or(egui::pos2(0.0, 0.0));
+    let base_min = doc.scene.node_rects.get(root).map(|r| r.min).unwrap_or(egui::pos2(0.0, 0.0));
     // 1) Collect subtree node ids
     let mut nodes_set: HashSet<EntityId> = HashSet::new();
     let mut q: VecDeque<EntityId> = VecDeque::new();
@@ -264,42 +243,34 @@ pub fn apply_sidecar_to_subtree(doc: &mut GraphDoc, sidecar: &Sidecar, root: &En
         if nodes_set.contains(&e.source) && nodes_set.contains(&e.target) { sub.edges.insert(*eid, e.clone()); }
     }
     // 3) Apply node/edge layouts using subtree-relative keys
-    for (id, view) in doc.views.iter_mut() {
-        let include = match view.kind {
-            UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => nodes_set.contains(id),
-            UiViewKind::Edge { .. } => sub.edges.contains_key(id),
-        };
-        if !include { continue; }
-        match view.kind {
-            UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => {
-                let key = node_key(&sub, id);
-                let mut found = sidecar.nodes.get(&key);
-                if found.is_none() {
-                    let legacy = legacy_node_key(&sub, id);
-                    found = sidecar.nodes.get(&legacy);
-                }
-                if let Some(n) = found {
-                    let size = view.rect.size();
-                    // Convert subtree-local position back to world by adding the current root's min
-                    view.rect = egui::Rect::from_min_size(egui::pos2(n.pos.0 + base_min.x, n.pos.1 + base_min.y), size);
-                }
-            }
-            UiViewKind::Edge { .. } => {
-                let key = edge_key(&sub, id);
-                let mut found = sidecar.edges.get(&key);
-                if found.is_none() {
-                    let legacy = legacy_edge_key(&sub, id);
-                    found = sidecar.edges.get(&legacy);
-                }
-                if let Some(e) = found {
-                    let size = view.rect.size();
-                    // Convert subtree-local pill center to world
-                    let center = egui::pos2(e.pill_center.0 + base_min.x, e.pill_center.1 + base_min.y);
-                    let min = egui::pos2(center.x - size.x * 0.5, center.y - size.y * 0.5);
-                    view.rect = egui::Rect::from_min_size(min, size);
-                    if let Some(p) = view.pill.as_mut() { p.center = center; }
-                }
-            }
+    for (id, sv) in doc.scene.states.iter_mut() {
+        if !nodes_set.contains(id) { continue; }
+        let key = node_key(&sub, id);
+        let mut found = sidecar.nodes.get(&key);
+        if found.is_none() {
+            let legacy = legacy_node_key(&sub, id);
+            found = sidecar.nodes.get(&legacy);
+        }
+        if let Some(n) = found {
+            let size = sv.rect.size();
+            sv.rect = egui::Rect::from_min_size(egui::pos2(n.pos.0 + base_min.x, n.pos.1 + base_min.y), size);
+            if let Some(r) = doc.scene.node_rects.get_mut(id) { *r = sv.rect; }
+        }
+    }
+    for (eid, ev) in doc.scene.edges.iter_mut() {
+        if !sub.edges.contains_key(eid) { continue; }
+        let key = edge_key(&sub, eid);
+        let mut found = sidecar.edges.get(&key);
+        if found.is_none() {
+            let legacy = legacy_edge_key(&sub, eid);
+            found = sidecar.edges.get(&legacy);
+        }
+        if let Some(e) = found {
+            let size = ev.rect.size();
+            let center = egui::pos2(e.pill_center.0 + base_min.x, e.pill_center.1 + base_min.y);
+            let min = egui::pos2(center.x - size.x * 0.5, center.y - size.y * 0.5);
+            ev.rect = egui::Rect::from_min_size(min, size);
+            if let Some(r) = doc.scene.node_rects.get_mut(eid) { *r = ev.rect; }
         }
     }
     // Do not apply viewport for subtree overlays; keep parent's viewport unchanged

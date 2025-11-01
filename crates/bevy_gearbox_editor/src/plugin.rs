@@ -195,7 +195,10 @@ fn poll_network(
                 let name_key = bevy_gearbox_protocol::components::NAME_REFLECT;
                 let name_opt = components.get(name_key).and_then(|v| v.as_str()).map(|s| s.to_string());
                 for (_doc_id, doc) in workspace.docs.iter_mut() {
-                    if let Some(v) = doc.views.get_mut(&target) {
+                    if let Some(v) = doc.scene.states.get_mut(&target) {
+                        if let Some(ref name) = name_opt { v.label = name.clone(); }
+                    }
+                    if let Some(v) = doc.scene.edges.get_mut(&target) {
                         if let Some(ref name) = name_opt { v.label = name.clone(); }
                     }
                     if let Some(g) = doc.graph.as_mut() {
@@ -284,7 +287,8 @@ fn sync_snapshots_to_workspace(
                         let ent_u = crate::util::canonicalize_entity_u64(ent_u);
                         let eid = EntityId(ent_u);
                         let name = name_s.to_string();
-                        if let Some(v) = doc.views.get_mut(&eid) { v.label = name.clone(); }
+                        if let Some(v) = doc.scene.states.get_mut(&eid) { v.label = name.clone(); }
+                        if let Some(v) = doc.scene.edges.get_mut(&eid) { v.label = name.clone(); }
                         if let Some(g) = doc.graph.as_mut() {
                             if let Some(n) = g.nodes.get_mut(&eid) { n.display_name = Some(name.clone()); }
                             if let Some(e) = g.edges.get_mut(&eid) { e.display_label = Some(name.clone()); }
@@ -338,7 +342,7 @@ fn sync_snapshots_to_workspace(
             if !applied {
                 // As a final fallback when no sidecar is found anywhere, ensure a derived default layout
                 // is applied so the editor shows states/edges at reasonable default positions.
-                if entry.graph.is_some() && entry.views.is_empty() {
+                if entry.graph.is_some() && entry.scene.node_rects.is_empty() {
                     println!("[editor] no sidecar found; projecting default layout");
                     project_graph_into_doc(entry, graph.clone());
                 }

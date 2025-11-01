@@ -50,7 +50,10 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                                 // Seed inline edit with current display name or current label
                                 let mut default_text = String::new();
                                 if let Some(g) = &entry.graph { if let Some(n) = g.nodes.get(&target) { if let Some(name) = &n.display_name { default_text = name.clone(); } } }
-                                if default_text.is_empty() { if let Some(v) = entry.views.get(&target) { default_text = v.label.clone(); } }
+                                if default_text.is_empty() {
+                                    if let Some(v) = entry.scene.states.get(&target) { default_text = v.label.clone(); }
+                                    else if let Some(v) = entry.scene.edges.get(&target) { default_text = v.label.clone(); }
+                                }
                                 workspace.rename_inline = Some(crate::editor::workspace::RenameInline { doc: active, target, text: default_text });
                             }
                             crate::editor::context_menu::MenuSelection::DeleteEntity { target } => {

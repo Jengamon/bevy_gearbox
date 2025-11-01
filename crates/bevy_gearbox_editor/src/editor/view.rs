@@ -1,4 +1,4 @@
-use super::view_model::{GraphDoc, UiViewKind};
+use super::view_model::{GraphDoc, StateKind};
 use super::layout::{NodeLayout, LayoutConfig};
 use super::context_menu::{build_context_menu, MenuItemKind, MenuSelection};
 use crate::editor::workspace::{ RenameInline, Workspace, EdgeBuildState, EdgeMenuState};
@@ -24,118 +24,40 @@ pub fn draw_doc(
     let animating = doc.tick_highlights(0.92);
     if animating { ui.ctx().request_repaint(); }
 
-    // Build deterministic edge sequence for stable per-parent pill ordering
-    let mut edge_sequence: Vec<EntityId> = Vec::new();
-    let mut node_rank: std::collections::HashMap<EntityId, usize> = std::collections::HashMap::new();
-    if let Some(graph) = &doc.graph {
-        let mut stack: Vec<EntityId> = Vec::new();
-        let mut seen: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
-        stack.push(graph.root);
-        let mut node_order: Vec<EntityId> = Vec::new();
-        while let Some(id) = stack.pop() {
-            if !seen.insert(id) { continue; }
-            node_order.push(id);
-            if let Some(node) = graph.nodes.get(&id) {
-                for &child in node.children.iter().rev() { stack.push(child); }
-            }
-        }
-        for (i, id) in node_order.iter().enumerate() { node_rank.insert(*id, i); }
-        for nid in node_order.iter() {
-            if let Some(out) = graph.adjacency_out.get(nid) {
-                for eid in out { edge_sequence.push(*eid); }
-            } else {
-                let mut edges: Vec<&crate::model::Edge> = graph.edges.values().filter(|e| &e.source == nid).collect();
-                edges.sort_by_key(|e| (*node_rank.get(&e.target).unwrap_or(&usize::MAX), format!("{:?}", e.id)));
-                for e in edges { edge_sequence.push(e.id); }
-            }
-        }
-    }
+    // Scene provides stable ordering; no per-frame edge ordering needed
 
-    // Construct NodeLayout with pills as children and containers defined by graph/view kind
-    let mut node_rects: std::collections::HashMap<EntityId, egui::Rect> = std::collections::HashMap::new();
-    let mut parent_of: std::collections::HashMap<EntityId, Option<EntityId>> = std::collections::HashMap::new();
-    let mut children_of: std::collections::HashMap<EntityId, Vec<EntityId>> = std::collections::HashMap::new();
-    let mut container_nodes: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
-    for (id, view) in doc.views.iter() { node_rects.insert(*id, view.rect); }
-    if let Some(graph) = &doc.graph {
-        for (id, node) in graph.nodes.iter() {
-            parent_of.insert(*id, node.parent);
-            // Containers: explicit Parent/Parallel kinds or having graph children
-            if matches!(doc.views.get(id).map(|v| &v.kind), Some(UiViewKind::Parent | UiViewKind::Parallel)) || !node.children.is_empty() {
-                container_nodes.insert(*id);
-            }
-        }
-        // Edges/pills: parent from transform_parent
-        for eid in graph.edges.keys() {
-            if let Some(pid) = doc.transform_parent.get(eid).and_then(|p| *p) { parent_of.insert(*eid, Some(pid)); }
-        }
-    } else {
-        // Fallback: use transform_parent for everything we can
-        for id in doc.views.keys() { parent_of.insert(*id, doc.transform_parent.get(id).and_then(|p| *p)); }
-    }
-    // Build children_of per parent with pills first (edge_sequence order) then graph node children
-    if let Some(graph) = &doc.graph {
-        // Start with empty lists for all potential parents
-        for id in doc.views.keys() { children_of.entry(*id).or_default(); }
-        // Add pills first per parent in deterministic order
-        for eid in edge_sequence.iter() {
-            if let Some(pid) = parent_of.get(eid).and_then(|p| *p) {
-                children_of.entry(pid).or_default().push(*eid);
-            }
-        }
-        // Then append graph child nodes preserving graph order
-        for (pid, node) in graph.nodes.iter() {
-            let list = children_of.entry(*pid).or_default();
-            for &cid in node.children.iter() { list.push(cid); }
-        }
-    } else {
-        // Without a graph, just group by transform parent, pills then others alphabetically
-        for (id, p) in parent_of.iter() {
-            if let Some(pid) = p { children_of.entry(*pid).or_default().push(*id); }
-        }
-    }
-
-    let mut layout = NodeLayout::new(node_rects, parent_of, children_of, container_nodes, doc.graph.as_ref().map(|g| g.root));
+    // Construct NodeLayout from the prebuilt scene
+    let mut layout = NodeLayout::new(
+        doc.scene.node_rects.clone(),
+        doc.scene.tree.parent_of.clone(),
+        doc.scene.tree.children_of.clone(),
+        doc.scene.tree.containers.clone(),
+        doc.graph.as_ref().map(|g| g.root),
+    );
     let cfg = LayoutConfig::default();
     // Pre-draw layout updates
     layout.clamp_children_left_top(&cfg);
     layout.fit_parents_to_children(&cfg, None);
-    // Sync rects back to doc.views
-    for (id, rect) in layout.node_rects.iter() {
-        if let Some(v) = doc.views.get_mut(id) {
-            v.rect = *rect;
-            if let UiViewKind::Edge { .. } = v.kind { if let Some(p) = v.pill.as_mut() { p.center = rect.center(); } }
-        }
-    }
+    // Sync rects back to scene
+    for (id, rect) in layout.node_rects.iter() { doc.set_rect(id, *rect); }
 
     // Selection-aware draw order from layout: when selecting an edge, bias to its parent (or source)
     let effective_selected = doc.dragging.or(*selection);
-    let selected_for_bias = effective_selected.and_then(|sel| match doc.views.get(&sel).map(|v| &v.kind) {
-        Some(UiViewKind::Edge { source, .. }) => {
-            // Prefer the edge's transform parent so its ancestor containers rise above siblings
-            if let Some(pid) = doc.transform_parent.get(&sel).and_then(|p| *p) {
-                Some(pid)
-            } else {
-                // Fallback: bias to the source node
-                Some(*source)
-            }
-        }
-        _ => Some(sel),
+    let selected_for_bias = effective_selected.and_then(|sel| {
+        if let Some(ev) = doc.scene.edges.get(&sel) {
+            if let Some(pid) = doc.scene.tree.parent_of.get(&sel).and_then(|p| *p) { Some(pid) } else { Some(ev.source) }
+        } else { Some(sel) }
     });
     let base_order = layout.compute_draw_order(selected_for_bias).to_vec();
 
     // Overlay edges: selected state's incoming ∪ outgoing, or the selected edge itself
     let mut overlay_edges: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
     if let Some(sel) = effective_selected {
-        match doc.views.get(&sel).map(|v| &v.kind) {
-            Some(UiViewKind::Edge { .. }) => { overlay_edges.insert(sel); }
-            _ => {
-                if let Some(graph) = &doc.graph {
+        if doc.scene.edges.contains_key(&sel) { overlay_edges.insert(sel); }
+        else if let Some(graph) = &doc.graph {
                     if let Some(out_ids) = graph.adjacency_out.get(&sel) { for e in out_ids { overlay_edges.insert(*e); } }
                     if let Some(in_ids) = graph.adjacency_in.get(&sel) { for e in in_ids { overlay_edges.insert(*e); } }
-                    overlay_edges.retain(|eid| matches!(doc.views.get(eid).map(|v| &v.kind), Some(UiViewKind::Edge { .. })));
-                }
-            }
+            overlay_edges.retain(|eid| doc.scene.edges.contains_key(eid));
         }
     }
 
@@ -145,34 +67,30 @@ pub fn draw_doc(
         .filter(|id| !overlay_edges.contains(id))
         .collect();
     if !overlay_edges.is_empty() {
-        for eid in edge_sequence.iter() { if overlay_edges.contains(eid) { order.push(*eid); } }
+        for eid in doc.scene.draw_order.iter() { if overlay_edges.contains(eid) { order.push(*eid); } }
     }
-    doc.draw_order = order.clone();
+    doc.scene.draw_order = order.clone();
 
     // Interactions: node/pill dragging vs background pan; hit test in front-to-back order
     let pointer_pos = response.ctx.input(|i| i.pointer.hover_pos());
     let mut hovered_entity: Option<EntityId> = None;
     if let Some(pos) = pointer_pos {
         for eid in order.iter().rev() {
-            if let Some(view) = doc.views.get(eid) {
-                match view.kind {
-                    UiViewKind::Edge { .. } => {
-                        // Measure pill in screen space
+            if doc.scene.edges.contains_key(eid) {
+                if let Some(edge) = doc.scene.edges.get(eid) {
                         let zoom = doc.transform.zoom;
-                        let text_size_s = doc.cached_label_size_screen(&view.label, zoom, &painter);
+                    let text_size_s = doc.cached_label_size_screen(&edge.label, zoom, &painter);
                         let pill_pad_x = 10.0 * zoom;
                         let pill_pad_y = 6.0 * zoom;
                         let pill_size_s = egui::vec2(text_size_s.x + 2.0 * pill_pad_x, text_size_s.y + 2.0 * pill_pad_y);
-                        let center_w = view.pill.as_ref().map(|p| p.center).unwrap_or(view.rect.center());
+                    let center_w = doc.scene.node_rects.get(eid).map(|r| r.center()).unwrap_or(egui::pos2(0.0, 0.0));
                         let pill_center_s = doc.transform.to_screen(center_w);
                         let pill_rect_s = egui::Rect::from_center_size(pill_center_s, pill_size_s);
                         if pill_rect_s.contains(pos) { hovered_entity = Some(*eid); break; }
                     }
-                    _ => {
+            } else {
                         if let Some(rect) = layout.interactive_rect_screen(eid, &cfg, &doc.transform) {
                             if rect.contains(pos) { hovered_entity = Some(*eid); break; }
-                        }
-                    }
                 }
             }
         }
@@ -184,9 +102,8 @@ pub fn draw_doc(
             if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
                 let pointer_world = doc.transform.to_world(cursor);
                 // Compute rect for entity (node rect or pill rect in world space)
-                let Some(view) = doc.views.get(&ent) else { return None; };
-
-                let anchor = egui::vec2(pointer_world.x - view.rect.min.x, pointer_world.y - view.rect.min.y);
+                let rect_w = doc.scene.node_rects.get(&ent).copied().unwrap_or(egui::Rect::from_min_max(pointer_world, pointer_world));
+                let anchor = egui::vec2(pointer_world.x - rect_w.min.x, pointer_world.y - rect_w.min.y);
                     doc.dragging = Some(ent);
                     doc.drag_anchor_world = Some(anchor);
                 *selection = Some(ent);
@@ -204,25 +121,21 @@ pub fn draw_doc(
     let mut context_menu_selection: Option<MenuSelection> = None;
     if doc.graph.is_some() && workspace.edge_build.is_none() {
         for eid in order.iter() {
-            let Some(view) = doc.views.get(eid) else { continue };
             // Compute interactive rect in screen space: full rect for nodes, pill rect for edges
-            let rect_screen = match view.kind {
-                UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => {
-                    egui::Rect::from_min_max(doc.transform.to_screen(view.rect.min), doc.transform.to_screen(view.rect.max))
-                }
-                UiViewKind::Edge { .. } => {
+            let rect_screen = if let Some(sv) = doc.scene.states.get(eid) {
+                egui::Rect::from_min_max(doc.transform.to_screen(sv.rect.min), doc.transform.to_screen(sv.rect.max))
+            } else if let Some(ev) = doc.scene.edges.get(eid) {
                     let zoom = doc.transform.zoom;
-                    let text_size_s = doc.cached_label_size_screen(&view.label, zoom, &ui.painter());
+                let text_size_s = doc.cached_label_size_screen(&ev.label, zoom, &ui.painter());
                     let pill_pad_x = 10.0 * zoom;
                     let pill_pad_y = 6.0 * zoom;
                     let pill_size_s = egui::vec2(text_size_s.x + 2.0 * pill_pad_x, text_size_s.y + 2.0 * pill_pad_y);
-                    let center_w = view.pill.as_ref().map(|p| p.center).unwrap_or(view.rect.center());
+                let center_w = doc.scene.node_rects.get(eid).map(|r| r.center()).unwrap_or(ev.rect.center());
                     let pill_center_s = doc.transform.to_screen(center_w);
                     egui::Rect::from_center_size(pill_center_s, pill_size_s)
-                }
-            };
+            } else { continue };
             // Build a stable, collision-free id per doc, per entity, and per kind (node vs edge)
-            let kind_tag: &str = match view.kind { UiViewKind::Edge { .. } => "edge", _ => "node" };
+            let kind_tag: &str = if doc.scene.edges.contains_key(eid) { "edge" } else { "node" };
             let id = egui::Id::new(("node_ctx", doc_id, kind_tag)).with(*eid);
             let resp = ui.interact(rect_screen, id, egui::Sense::click());
             if resp.clicked() { *selection = Some(*eid); }
@@ -257,8 +170,7 @@ pub fn draw_doc(
                         return;
                     }
                 }
-                match view.kind {
-                    UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => {
+                if doc.scene.states.contains_key(eid) {
                         if let Some(graph) = &doc.graph {
                             let items = build_context_menu(graph, *eid);
                             if items.is_empty() {
@@ -285,8 +197,7 @@ pub fn draw_doc(
                         } else {
                             menu_ui.close();
                         }
-                    }
-                    UiViewKind::Edge { .. } => {
+                    } else {
                         if menu_ui.button("Rename").clicked() {
                             context_menu_selection = Some(MenuSelection::RenameEntity { target: *eid });
                             menu_ui.close();
@@ -294,7 +205,6 @@ pub fn draw_doc(
                         if menu_ui.button("Delete").clicked() {
                             context_menu_selection = Some(MenuSelection::DeleteEntity { target: *eid });
                             menu_ui.close();
-                        }
                     }
                 }
             });
@@ -309,20 +219,13 @@ pub fn draw_doc(
             if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
                 let pointer_world = doc.transform.to_world(cursor);
                 let desired_min = egui::pos2(pointer_world.x - anchor.x, pointer_world.y - anchor.y);
-                match doc.views.get(&ent).map(|v| &v.kind) {
-                    Some(UiViewKind::Leaf) | Some(UiViewKind::Parent) | Some(UiViewKind::Parallel) => {
+                if !doc.scene.edges.contains_key(&ent) {
                         let _ = layout.move_node_clamped_and_propagate(ent, desired_min, &cfg);
-                        // Sync rects for all nodes back to views (simple and safe)
-                        for (id, rect) in layout.node_rects.iter() {
-                            if let Some(v) = doc.views.get_mut(id) {
-                                v.rect = *rect;
-                                if let UiViewKind::Edge { .. } = v.kind { if let Some(p) = v.pill.as_mut() { p.center = rect.center(); } }
-                            }
-                        }
-                    }
-                    Some(UiViewKind::Edge { .. }) => {
+                        // Sync rects back to scene
+                        for (id, rect) in layout.node_rects.iter() { doc.set_rect(id, *rect); }
+                } else {
                         // Compute pill size in world from cached label size, set desired rect, then clamp via layout
-                        let label = doc.views.get(&ent).map(|v| v.label.clone()).unwrap_or_default();
+                        let label = doc.scene.edges.get(&ent).map(|v| v.label.clone()).unwrap_or_default();
                         let zoom = doc.transform.zoom;
                         let size_s = doc.cached_label_size_screen(&label, zoom, &painter);
                         let pad_s = egui::vec2(10.0 * zoom, 6.0 * zoom);
@@ -330,15 +233,8 @@ pub fn draw_doc(
                         let rect = egui::Rect::from_min_size(desired_min, size_w);
                         layout.node_rects.insert(ent, rect);
                         layout.clamp_children_left_top(&cfg);
-                        // Sync rects back to views
-                        for (id, rect) in layout.node_rects.iter() {
-                            if let Some(v) = doc.views.get_mut(id) {
-                                v.rect = *rect;
-                                if let UiViewKind::Edge { .. } = v.kind { if let Some(p) = v.pill.as_mut() { p.center = rect.center(); } }
-                            }
-                        }
-                    }
-                    _ => {}
+                        // Sync rects back to scene
+                        for (id, rect) in layout.node_rects.iter() { doc.set_rect(id, *rect); }
                 }
             }
         } else {
@@ -521,10 +417,11 @@ pub fn draw_doc(
     // Helper: see free function `is_direct_substate_of_parallel`
 
     for id in order.iter() {
-        let Some(view) = doc.views.get(id).cloned() else { continue };
-        match view.kind {
-            UiViewKind::Parent | UiViewKind::Parallel => {
-                let rect_world = view.rect;
+        if let Some(sv) = doc.scene.states.get(id) {
+            // Debug: print classification and name when drawing as a state
+            let is_container = !matches!(sv.kind, StateKind::Leaf);
+            if is_container {
+                let rect_world = sv.rect;
                 let min = doc.transform.to_screen(rect_world.min);
                 let max = doc.transform.to_screen(rect_world.max);
                 let rect_screen = egui::Rect::from_min_max(min, max);
@@ -581,7 +478,7 @@ pub fn draw_doc(
                     &painter,
                     label_pos,
                     egui::Align2::LEFT_TOP,
-                    &view.label,
+                    &sv.label,
                     &font_id,
                     text_col,
                 );
@@ -620,138 +517,15 @@ pub fn draw_doc(
                 if doc.is_initial_child.contains(id) {
                     draw_initial_indicator(rect_screen);
                 }
-            }
-            UiViewKind::Edge { source, target } => {
-                // Endpoints
-                let Some(src_view) = doc.views.get(&source) else { continue };
-                let Some(dst_view) = doc.views.get(&target) else { continue };
-                let src_rect_w = src_view.rect;
-                let dst_rect_w = dst_view.rect;
-
-                let src_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(src_rect_w.min), doc.transform.to_screen(src_rect_w.max));
-                let dst_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(dst_rect_w.min), doc.transform.to_screen(dst_rect_w.max));
-
-                let pill_center_s = doc.transform.to_screen(view.pill.as_ref().map(|p| p.center).unwrap_or(view.rect.center()));
-                let text_size_s = doc.cached_label_size_screen(&view.label, zoom, &painter);
-                let pill_pad_x = 10.0 * zoom;
-                let pill_pad_y = 6.0 * zoom;
-                let pill_size_s = egui::vec2(text_size_s.x + 2.0 * pill_pad_x, text_size_s.y + 2.0 * pill_pad_y);
-                let pill_rect_s = egui::Rect::from_center_size(pill_center_s, pill_size_s);
-
-                // Selection halo around pill (drawn before pill border)
-                let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
-                if is_selected {
-                    let rounding = egui::CornerRadius::same((pill_size_s.y * 0.5).round() as u8);
-                    draw_selection_halo(pill_rect_s, rounding);
-                }
-
-                let a_start = rect_from_inside_toward(src_rect_s, pill_center_s);
-                let a_end = rect_from_outside_toward_center(pill_rect_s, a_start);
-                // If source is an ancestor of target, draw an outward-and-back curve to create a loop illusion
-                let mut is_ancestor_edge = false;
-                {
-                    let mut cur = Some(target);
-                    while let Some(cid) = cur {
-                        if cid == source { is_ancestor_edge = true; break; }
-                        cur = doc.transform_parent.get(&cid).and_then(|p| *p);
+            } else {
+                // Debug: also log if this id is unexpectedly present as an edge (should not happen)
+                if doc.scene.edges.contains_key(id) {
+                    if let Some(ev) = doc.scene.edges.get(id) {
+                        println!("[editor][warn] entity id={:?} also classified as EDGE with name={} while drawing as STATE name={}", id, ev.label, sv.label);
                     }
                 }
-                // Edge highlight color (bright yellow -> base gray)
-                let bright_yellow = egui::Color32::from_rgb(255, 240, 0);
-                let base_gray_line = egui::Color32::from_gray(120);
-                let base_gray_edge = egui::Color32::from_gray(160);
-                let lerp_color = |a: egui::Color32, b: egui::Color32, t: f32| -> egui::Color32 {
-                    let cl = |x: f32| -> u8 { x.clamp(0.0, 255.0) as u8 };
-                    let ta = t.clamp(0.0, 1.0);
-                    let inv = 1.0 - ta;
-                    let r = a.r() as f32 * inv + b.r() as f32 * ta;
-                    let g = a.g() as f32 * inv + b.g() as f32 * ta;
-                    let bch = a.b() as f32 * inv + b.b() as f32 * ta;
-                    egui::Color32::from_rgb(cl(r), cl(g), cl(bch))
-                };
-                let t_edge = doc.edge_flash.get(id).copied().unwrap_or(0.0);
-                let alpha = 1.0 - t_edge;
-                let edge_line_col = lerp_color(bright_yellow, base_gray_line, alpha);
-                let edge_col = lerp_color(bright_yellow, base_gray_edge, alpha);
-                // Edge pill body/text: flash bright yellow then lerp back to base fill & text to white
-                let base_fill = egui::Color32::from_rgb(30, 30, 35);
-                let pill_fill_col = lerp_color(bright_yellow, base_fill, alpha);
-                let pill_text_col = lerp_color(egui::Color32::BLACK, egui::Color32::WHITE, alpha);
-
-                if is_ancestor_edge {
-                    // Determine outward normal based on which side a_start lies on
-                    let eps = 0.5;
-                    let normal = if (a_start.x - src_rect_s.min.x).abs() <= eps { egui::vec2(-1.0, 0.0) }
-                    else if (a_start.x - src_rect_s.max.x).abs() <= eps { egui::vec2(1.0, 0.0) }
-                    else if (a_start.y - src_rect_s.min.y).abs() <= eps { egui::vec2(0.0, -1.0) }
-                    else if (a_start.y - src_rect_s.max.y).abs() <= eps { egui::vec2(0.0, 1.0) }
-                    else {
-                        // Fallback: pick axis-aligned direction away from rect center
-                        let d = (a_start - src_rect_s.center()).normalized();
-                        if d.x.abs() >= d.y.abs() { egui::vec2(d.x.signum(), 0.0) } else { egui::vec2(0.0, d.y.signum()) }
-                    };
-                    let loop_out = 48.0 * zoom; // loop distance in screen space
-                    let p_out = a_start + normal * loop_out;
-                    // Sample a quadratic bezier (a_start -> p_out -> a_end)
-                    let segments = 20;
-                    let mut prev = a_start;
-                    for i in 1..=segments {
-                        let t = (i as f32) / (segments as f32);
-                        let omt = 1.0 - t;
-                        let x = omt * omt * a_start.x + 2.0 * omt * t * p_out.x + t * t * a_end.x;
-                        let y = omt * omt * a_start.y + 2.0 * omt * t * p_out.y + t * t * a_end.y;
-                        let p = egui::pos2(x, y);
-                        painter.line_segment([prev, p], egui::Stroke::new(2.0, edge_line_col));
-                        prev = p;
-                    }
-                } else {
-                painter.line_segment([a_start, a_end], egui::Stroke::new(2.0, edge_line_col));
-                }
-
-                let b_end = rect_from_inside_toward(dst_rect_s, pill_center_s);
-                let b_start = rect_from_outside_toward_center(pill_rect_s, b_end);
-                painter.line_segment([b_start, b_end], egui::Stroke::new(2.0, edge_line_col));
-
-                let dir = (b_end - b_start).normalized();
-                let arrow_len = 10.0 * zoom;
-                let arrow_w = 8.0 * zoom;
-                let tip = b_end;
-                let base = tip - dir * arrow_len;
-                let perp = egui::pos2(-dir.y, dir.x);
-                let left = base + perp.to_vec2() * (arrow_w * 0.5);
-                let right = base - perp.to_vec2() * (arrow_w * 0.5);
-                painter.add(egui::Shape::convex_polygon(
-                    vec![tip, left, right],
-                    edge_col,
-                    egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
-                ));
-
-                let rounding = egui::CornerRadius::same((pill_size_s.y * 0.5).round() as u8);
-                painter.rect(
-                    pill_rect_s,
-                    rounding,
-                    pill_fill_col,
-                    egui::Stroke::new(1.0, edge_col),
-                    egui::StrokeKind::Outside,
-                );
-                // Inline rename for edge pills
-                let edit_rect = pill_rect_s.shrink2(egui::vec2(6.0 * zoom, 4.0 * zoom));
-                draw_label_or_inline_editor(
-                    ui,
-                    workspace,
-                    doc_id,
-                    id,
-                    edit_rect,
-                    &painter,
-                    pill_rect_s.center(),
-                    egui::Align2::CENTER_CENTER,
-                    &view.label,
-                    &font_id,
-                    pill_text_col,
-                );
-            }
-            UiViewKind::Leaf => {
-                let rect_world = view.rect;
+                // Leaf state rendering (see container branch for shared helpers)
+                let rect_world = sv.rect;
             let min = doc.transform.to_screen(rect_world.min);
             let max = doc.transform.to_screen(rect_world.max);
             let rect_screen = egui::Rect::from_min_max(min, max);
@@ -833,7 +607,7 @@ pub fn draw_doc(
                     &painter,
                     label_top,
                     egui::Align2::CENTER_TOP,
-                    &view.label,
+                    &sv.label,
                     &font_id,
                     text_col,
                 );
@@ -842,6 +616,136 @@ pub fn draw_doc(
                     draw_initial_indicator(rect_screen);
                 }
             }
+        } else if let Some(ev) = doc.scene.edges.get(id) {
+            // Edge rendering
+            let source = ev.source;
+            let target = ev.target;
+            let Some(src_view) = doc.scene.states.get(&source) else { continue };
+            let Some(dst_view) = doc.scene.states.get(&target) else { continue };
+                let src_rect_w = src_view.rect;
+                let dst_rect_w = dst_view.rect;
+
+                let src_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(src_rect_w.min), doc.transform.to_screen(src_rect_w.max));
+                let dst_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(dst_rect_w.min), doc.transform.to_screen(dst_rect_w.max));
+
+            let pill_center_s = doc.transform.to_screen(doc.scene.node_rects.get(id).map(|r| r.center()).unwrap_or(ev.rect.center()));
+            let text_size_s = doc.cached_label_size_screen(&ev.label, zoom, &painter);
+                let pill_pad_x = 10.0 * zoom;
+                let pill_pad_y = 6.0 * zoom;
+                let pill_size_s = egui::vec2(text_size_s.x + 2.0 * pill_pad_x, text_size_s.y + 2.0 * pill_pad_y);
+                let pill_rect_s = egui::Rect::from_center_size(pill_center_s, pill_size_s);
+
+                // Selection halo around pill (drawn before pill border)
+                let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
+                if is_selected {
+                    let rounding = egui::CornerRadius::same((pill_size_s.y * 0.5).round() as u8);
+                    draw_selection_halo(pill_rect_s, rounding);
+                }
+
+                let a_start = rect_from_inside_toward(src_rect_s, pill_center_s);
+                let a_end = rect_from_outside_toward_center(pill_rect_s, a_start);
+                // If source is an ancestor of target, draw an outward-and-back curve to create a loop illusion
+                let mut is_ancestor_edge = false;
+                {
+                    let mut cur = Some(target);
+                    while let Some(cid) = cur {
+                        if cid == source { is_ancestor_edge = true; break; }
+                    cur = doc.scene.tree.parent_of.get(&cid).and_then(|p| *p);
+                    }
+                }
+                // Edge highlight color (bright yellow -> base gray)
+                let bright_yellow = egui::Color32::from_rgb(255, 240, 0);
+                let base_gray_line = egui::Color32::from_gray(120);
+                let base_gray_edge = egui::Color32::from_gray(160);
+                let lerp_color = |a: egui::Color32, b: egui::Color32, t: f32| -> egui::Color32 {
+                    let cl = |x: f32| -> u8 { x.clamp(0.0, 255.0) as u8 };
+                    let ta = t.clamp(0.0, 1.0);
+                    let inv = 1.0 - ta;
+                    let r = a.r() as f32 * inv + b.r() as f32 * ta;
+                    let g = a.g() as f32 * inv + b.g() as f32 * ta;
+                    let bch = a.b() as f32 * inv + b.b() as f32 * ta;
+                    egui::Color32::from_rgb(cl(r), cl(g), cl(bch))
+                };
+                let t_edge = doc.edge_flash.get(id).copied().unwrap_or(0.0);
+                let alpha = 1.0 - t_edge;
+                let edge_line_col = lerp_color(bright_yellow, base_gray_line, alpha);
+                let edge_col = lerp_color(bright_yellow, base_gray_edge, alpha);
+                // Edge pill body/text: flash bright yellow then lerp back to base fill & text to white
+                let base_fill = egui::Color32::from_rgb(30, 30, 35);
+                let pill_fill_col = lerp_color(bright_yellow, base_fill, alpha);
+                let pill_text_col = lerp_color(egui::Color32::BLACK, egui::Color32::WHITE, alpha);
+
+                if is_ancestor_edge {
+                    // Determine outward normal based on which side a_start lies on
+                    let eps = 0.5;
+                    let normal = if (a_start.x - src_rect_s.min.x).abs() <= eps { egui::vec2(-1.0, 0.0) }
+                    else if (a_start.x - src_rect_s.max.x).abs() <= eps { egui::vec2(1.0, 0.0) }
+                    else if (a_start.y - src_rect_s.min.y).abs() <= eps { egui::vec2(0.0, -1.0) }
+                    else if (a_start.y - src_rect_s.max.y).abs() <= eps { egui::vec2(0.0, 1.0) }
+                    else {
+                        // Fallback: pick axis-aligned direction away from rect center
+                        let d = (a_start - src_rect_s.center()).normalized();
+                        if d.x.abs() >= d.y.abs() { egui::vec2(d.x.signum(), 0.0) } else { egui::vec2(0.0, d.y.signum()) }
+                    };
+                    let loop_out = 48.0 * zoom; // loop distance in screen space
+                    let p_out = a_start + normal * loop_out;
+                    // Sample a quadratic bezier (a_start -> p_out -> a_end)
+                    let segments = 20;
+                    let mut prev = a_start;
+                    for i in 1..=segments {
+                        let t = (i as f32) / (segments as f32);
+                        let omt = 1.0 - t;
+                        let x = omt * omt * a_start.x + 2.0 * omt * t * p_out.x + t * t * a_end.x;
+                        let y = omt * omt * a_start.y + 2.0 * omt * t * p_out.y + t * t * a_end.y;
+                        let p = egui::pos2(x, y);
+                        painter.line_segment([prev, p], egui::Stroke::new(2.0, edge_line_col));
+                        prev = p;
+                    }
+                } else {
+                painter.line_segment([a_start, a_end], egui::Stroke::new(2.0, edge_line_col));
+                }
+
+                let b_end = rect_from_inside_toward(dst_rect_s, pill_center_s);
+                let b_start = rect_from_outside_toward_center(pill_rect_s, b_end);
+                painter.line_segment([b_start, b_end], egui::Stroke::new(2.0, edge_line_col));
+
+                let dir = (b_end - b_start).normalized();
+                let arrow_len = 10.0 * zoom;
+                let arrow_w = 8.0 * zoom;
+                let tip = b_end;
+                let base = tip - dir * arrow_len;
+                let perp = egui::pos2(-dir.y, dir.x);
+                let left = base + perp.to_vec2() * (arrow_w * 0.5);
+                let right = base - perp.to_vec2() * (arrow_w * 0.5);
+                painter.add(egui::Shape::convex_polygon(
+                    vec![tip, left, right],
+                    edge_col,
+                egui::Stroke::new(0.0, egui::Color32::from_rgba_premultiplied(0, 0, 0, 0)),
+                ));
+
+                let rounding = egui::CornerRadius::same((pill_size_s.y * 0.5).round() as u8);
+                painter.rect(
+                    pill_rect_s,
+                    rounding,
+                    pill_fill_col,
+                    egui::Stroke::new(1.0, edge_col),
+                    egui::StrokeKind::Outside,
+                );
+                // Inline rename for edge pills
+                let edit_rect = pill_rect_s.shrink2(egui::vec2(6.0 * zoom, 4.0 * zoom));
+                draw_label_or_inline_editor(
+                    ui,
+                    workspace,
+                    doc_id,
+                    id,
+                    edit_rect,
+                    &painter,
+                    pill_rect_s.center(),
+                    egui::Align2::CENTER_CENTER,
+                &ev.label,
+                    &font_id,
+                    pill_text_col,
+                );
         }
     }
 
@@ -858,15 +762,13 @@ pub fn draw_doc(
             let end_screen = cursor_opt.unwrap_or(rect.center());
             let mut snap_to_target: Option<EntityId> = None;
             if let Some(hid) = hovered_entity {
-                if let Some(view) = doc.views.get(&hid) {
-                    if !matches!(view.kind, UiViewKind::Edge { .. }) && hid != build.source {
+                if !doc.scene.edges.contains_key(&hid) && hid != build.source {
                         // Do not snap the preview; only record a valid target for click commit
                         snap_to_target = Some(hid);
-                    }
                 }
             }
             // Draw line from source rect toward end
-            if let Some(src_view) = doc.views.get(&build.source) {
+            if let Some(src_view) = doc.scene.states.get(&build.source) {
                 let src_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(src_view.rect.min), doc.transform.to_screen(src_view.rect.max));
                 let a_start = rect_from_inside_toward(src_rect_s, end_screen);
                 let color = egui::Color32::from_rgb(110, 190, 255);
@@ -922,7 +824,7 @@ pub fn draw_doc(
     // When an edge-target is chosen but menu not necessarily open, draw solid preview until selection
     if let Some(menu) = workspace.edge_menu.clone() {
         if menu.doc == doc_id {
-            if let (Some(src_view), Some(dst_view)) = (doc.views.get(&menu.source), doc.views.get(&menu.target)) {
+            if let (Some(src_view), Some(dst_view)) = (doc.scene.states.get(&menu.source), doc.scene.states.get(&menu.target)) {
                 let src_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(src_view.rect.min), doc.transform.to_screen(src_view.rect.max));
                 let dst_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(dst_view.rect.min), doc.transform.to_screen(dst_view.rect.max));
                 let start = rect_from_inside_toward(src_rect_s, dst_rect_s.center());
@@ -1017,8 +919,8 @@ pub fn draw_doc(
     // Draw persisted preview edges (solid line with arrowhead)
     if doc.graph.is_some() {
         for pe in workspace.preview_edges.iter().filter(|pe| pe.doc == doc_id) {
-            let Some(src_view) = doc.views.get(&pe.source) else { continue };
-            let Some(dst_view) = doc.views.get(&pe.target) else { continue };
+            let Some(src_view) = doc.scene.states.get(&pe.source) else { continue };
+            let Some(dst_view) = doc.scene.states.get(&pe.target) else { continue };
             let src_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(src_view.rect.min), doc.transform.to_screen(src_view.rect.max));
             let dst_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(dst_view.rect.min), doc.transform.to_screen(dst_view.rect.max));
             let start = rect_from_inside_toward(src_rect_s, dst_rect_s.center());
@@ -1098,10 +1000,10 @@ fn draw_label_or_inline_editor(
 }
 
 fn is_direct_substate_of_parallel(doc: &GraphDoc, child_id: &EntityId) -> bool {
-    let parent_opt = doc.transform_parent.get(child_id).and_then(|p| *p);
+    let parent_opt = doc.scene.tree.parent_of.get(child_id).and_then(|p| *p);
     let by_view = parent_opt
-        .and_then(|pid| doc.views.get(&pid))
-        .map(|pv| matches!(pv.kind, UiViewKind::Parallel))
+        .and_then(|pid| doc.scene.states.get(&pid))
+        .map(|pv| matches!(pv.kind, StateKind::Parallel))
         .unwrap_or(false);
     if by_view { return true; }
     if let (Some(graph), Some(pid)) = (&doc.graph, parent_opt) {

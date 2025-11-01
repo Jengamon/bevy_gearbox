@@ -3,170 +3,119 @@ use bevy_egui::egui;
 use crate::model::StateMachineGraph;
 use crate::types::EntityId;
 use bevy_gearbox_protocol::components as c;
-use super::view_model::{GraphDoc, UiNode, UiNodeKind, UiEdge, EdgePill, UiView, UiViewKind, PillData};
+use super::view_model::{GraphDoc, StateKind, StateView, EdgeView, LayoutTree, ViewScene};
 
 /// Merge a fresh snapshot into an existing GraphDoc, preserving layout where possible
 pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
-    // Preserve existing rects and pill offsets by id from unified views
-    let mut preserved_views = std::mem::take(&mut doc.views);
+    // Preserve previous scene for rect carry-over
+    let prev_scene = std::mem::take(&mut doc.scene);
 
-    // Rebuild nodes with preserved rects where available
-    let mut node_views = std::collections::HashMap::new();
-    for (id, node) in snapshot.nodes.iter() {
-        let prev_view_opt = preserved_views.get(id);
-        let mut rect = prev_view_opt
-            .map(|v| v.rect)
-            .unwrap_or_else(|| egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(140.0, 60.0)));
-        let label = node
-            .display_name
-            .clone()
-            .unwrap_or_else(|| format!("{}", id));
-        let is_container = !node.children.is_empty();
-        let has_initial = snapshot.nodes.get(id).and_then(|n| n.components.get(c::INITIAL_STATE)).is_some();
-        let is_parallel = is_container && !has_initial;
-        let kind = if is_parallel { UiNodeKind::Parallel } else if is_container { UiNodeKind::Parent } else { UiNodeKind::Leaf };
-        // If this node was previously a container view and is now a leaf with no children,
-        // shrink its rect back to the default leaf size, anchored at the existing min.
-        if matches!(prev_view_opt.map(|v| &v.kind), Some(UiViewKind::Parent | UiViewKind::Parallel))
-            && matches!(kind, UiNodeKind::Leaf)
-        {
-            let default_size = egui::vec2(140.0, 60.0);
-            rect = egui::Rect::from_min_size(rect.min, default_size);
-        }
-        node_views.insert(*id, UiNode { id: *id, rect, kind, label, is_container });
+    // Authoritative classification by components:
+    // Edge if it has Target; otherwise treat as State.
+    let mut edge_ids_by_target: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
+    for (eid, edge) in snapshot.edges.iter() {
+        if edge.components.contains(c::TARGET) { edge_ids_by_target.insert(*eid); }
+    }
+    // Guard against misfiled edges that appear in nodes but carry Target
+    for (nid, node) in snapshot.nodes.iter() {
+        if node.components.contains(c::TARGET) { edge_ids_by_target.insert(*nid); }
     }
 
-    // Deterministic layout for nodes lacking a rect (at origin). Use DFS grid/stack.
-    apply_initial_layout_for_unseen_nodes(&snapshot, &mut node_views);
+    // Build state views, preserving rects
+    let mut states: std::collections::HashMap<EntityId, StateView> = std::collections::HashMap::new();
+    let default_state_size = egui::vec2(140.0, 60.0);
+    for (id, node) in snapshot.nodes.iter() {
+        // Skip any entity classified as an edge by Target component
+        if edge_ids_by_target.contains(id) { continue; }
+        let mut rect = prev_scene.node_rects.get(id).copied()
+            .unwrap_or_else(|| egui::Rect::from_min_size(egui::pos2(0.0, 0.0), default_state_size));
+        let label = node.display_name.clone().unwrap_or_else(|| format!("{}", id));
+        let is_container = !node.children.is_empty();
+        let has_initial = node.components.get(c::INITIAL_STATE).is_some();
+        let kind = if !is_container { StateKind::Leaf } else if !has_initial { StateKind::Parallel } else { StateKind::Sequence };
+        // If previously a container and now leaf, shrink to default at same min
+        if let Some(prev) = prev_scene.states.get(id) {
+            if !matches!(prev.kind, StateKind::Leaf) && matches!(kind, StateKind::Leaf) {
+                rect = egui::Rect::from_min_size(rect.min, default_state_size);
+            }
+        }
+        states.insert(*id, StateView { id: *id, rect, label, kind });
+    }
 
-    // Rebuild edges
-    let mut edge_views = std::collections::HashMap::new();
+    // Initial placement for unseen nodes
+    apply_initial_layout_for_unseen_nodes(&snapshot, &mut states);
+
+    // Build edge views
+    let mut edges: std::collections::HashMap<EntityId, EdgeView> = std::collections::HashMap::new();
+    let default_pill_half = egui::vec2(40.0, 12.0);
     for (eid, edge) in snapshot.edges.iter() {
-        let preserved = preserved_views.remove(eid);
-        let midpoint = {
-            let s = node_views.get(&edge.source).map(|n| n.rect.center()).unwrap_or(egui::pos2(0.0, 0.0));
-            let t = node_views.get(&edge.target).map(|n| n.rect.center()).unwrap_or(egui::pos2(0.0, 0.0));
+        // Only include entities classified as edges by Target
+        if !edge_ids_by_target.contains(eid) { continue; }
+        let center = {
+            let s = states.get(&edge.source).map(|n| n.rect.center()).unwrap_or(egui::pos2(0.0, 0.0));
+            let t = states.get(&edge.target).map(|n| n.rect.center()).unwrap_or(egui::pos2(0.0, 0.0));
             egui::pos2((s.x + t.x) * 0.5, (s.y + t.y) * 0.5)
         };
-        let pill = if let Some(prev) = preserved.as_ref() { prev.pill.as_ref().map(|p| EdgePill { pos: p.center, offset_from_midpoint: p.offset_from_midpoint, dragging: p.dragging }).unwrap_or(EdgePill { pos: midpoint, offset_from_midpoint: egui::Vec2::ZERO, dragging: false }) } else { EdgePill { pos: midpoint, offset_from_midpoint: egui::Vec2::ZERO, dragging: false } };
-        // Derive label per convention: Name > EventEdge<T> -> T > AlwaysEdge -> "Always" > id
-        let mut label = edge
-            .display_label
-            .clone()
-            .unwrap_or_else(|| crate::model::choose_edge_label_bag(&edge.components));
+        let rect = prev_scene.node_rects.get(eid).copied()
+            .unwrap_or_else(|| egui::Rect::from_center_size(center, default_pill_half * 2.0));
+        let mut label = edge.display_label.clone().unwrap_or_else(|| crate::model::choose_edge_label_bag(&edge.components));
         if label == "Edge" { label = format!("{}", eid); }
-        // Pill parent: apply parent-child rule for edges between a parent and its child (either direction)
         let pill_parent = compute_pill_parent_for_edge(&snapshot, edge.source, edge.target);
-        edge_views.insert(*eid, UiEdge { id: *eid, source: edge.source, target: edge.target, label, pill, pill_parent });
+        edges.insert(*eid, EdgeView { id: *eid, source: edge.source, target: edge.target, label, rect, pill_parent });
     }
 
-    // Compute deterministic draw orders
+    // Deterministic orders
     let (node_order, edge_order) = compute_draw_orders(&snapshot);
 
-    // Build unified view structures alongside legacy maps
-    let mut views: std::collections::HashMap<EntityId, UiView> = std::collections::HashMap::new();
-    let mut transform_parent: std::collections::HashMap<EntityId, Option<EntityId>> = std::collections::HashMap::new();
-    let mut transform_children: std::collections::HashMap<EntityId, Vec<EntityId>> = std::collections::HashMap::new();
+    // Build layout tree (parent_of, children_of, containers)
+    let mut parent_of: std::collections::HashMap<EntityId, Option<EntityId>> = std::collections::HashMap::new();
+    let mut children_of: std::collections::HashMap<EntityId, Vec<EntityId>> = std::collections::HashMap::new();
+    let mut containers: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
+    for (id, node) in snapshot.nodes.iter() {
+        parent_of.insert(*id, node.parent);
+        if !node.children.is_empty() { containers.insert(*id); }
+    }
+    for (eid, ev) in edges.iter() { parent_of.insert(*eid, ev.pill_parent); }
+
+    // Initialize children lists for all potential parents
+    for id in states.keys() { children_of.entry(*id).or_default(); }
+    // Pills first per parent in deterministic order
+    for eid in edge_order.iter() {
+        if let Some(Some(pid)) = parent_of.get(eid) { children_of.entry(*pid).or_default().push(*eid); }
+    }
+    // Then graph children
+    for (pid, node) in snapshot.nodes.iter() {
+        let list = children_of.entry(*pid).or_default();
+        for &cid in node.children.iter() { list.push(cid); }
+    }
+
+    // Unified rects
+    let mut node_rects: std::collections::HashMap<EntityId, egui::Rect> = std::collections::HashMap::new();
+    for (id, sv) in states.iter() { node_rects.insert(*id, sv.rect); }
+    for (id, ev) in edges.iter() { node_rects.insert(*id, ev.rect); }
+
+    // Unified draw order: parents, edges, leaves
+    let mut draw_order: Vec<EntityId> = Vec::new();
+    for nid in node_order.iter() { if containers.contains(nid) { draw_order.push(*nid); } }
+    for eid in edge_order.iter() { draw_order.push(*eid); }
+    for nid in node_order.iter() { if !containers.contains(nid) { draw_order.push(*nid); } }
+
+    // Initial child mapping (for indicators)
     let mut initial_substate_of: std::collections::HashMap<EntityId, EntityId> = std::collections::HashMap::new();
     let mut is_initial_child: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
-
-    // Insert node views
-    for (id, node) in node_views.iter() {
-        let view_kind = match node.kind {
-            UiNodeKind::Leaf => UiViewKind::Leaf,
-            UiNodeKind::Parent => UiViewKind::Parent,
-            UiNodeKind::Parallel => UiViewKind::Parallel,
-        };
-        // Detect initial child component on this non-Parallel parent and record mapping
-        if !matches!(node.kind, UiNodeKind::Parallel) {
-        if let Some(entry) = snapshot.nodes.get(id).and_then(|n| n.components.get(c::INITIAL_STATE)) {
-            let val = entry.value_json.clone();
-            // Helper to try build a ServerEntity from various JSON encodings
-            let mut try_set_child = |server_id: u64| {
-                let child = crate::types::EntityId(server_id);
-                if snapshot.nodes.contains_key(&child) && snapshot.nodes.get(id).map(|n| n.children.contains(&child)).unwrap_or(false) {
-                    initial_substate_of.insert(*id, child);
-                    is_initial_child.insert(child);
-                    true
-                } else { false }
-            };
-
-            let mut _set = false;
-            // 1) Plain number
-            if let Some(num) = val.as_u64() {
-                _set = try_set_child(num);
-            }
-            // 2) Plain string
-            if !_set {
-                if let Some(s) = val.as_str() {
-                    if let Ok(n) = s.parse::<u64>() { _set = try_set_child(n); }
-                }
-            }
-            // 3) Array: use first numeric or numeric-string
-            if !_set {
-                if let serde_json::Value::Array(arr) = val.clone() {
-                    for item in arr {
-                        if let Some(n) = item.as_u64() { if try_set_child(n) { _set = true; break; } }
-                        if let Some(s) = item.as_str() { if let Ok(n) = s.parse::<u64>() { if try_set_child(n) { _set = true; break; } } }
-                    }
-                }
-            }
-            // 4) Object: scan values for number or numeric-string
-            if !_set {
-                if let serde_json::Value::Object(obj) = val {
-                    for v in obj.values() {
-                        if let Some(n) = v.as_u64() { if try_set_child(n) { _set = true; break; } }
-                        if let Some(s) = v.as_str() { if let Ok(n) = s.parse::<u64>() { if try_set_child(n) { _set = true; break; } } }
-                    }
-                }
-            }
-        }
-        }
-
-        views.insert(*id, UiView { id: *id, rect: node.rect, kind: view_kind, label: node.label.clone(), pill: None });
-        transform_parent.insert(*id, snapshot.nodes.get(id).and_then(|n| n.parent));
-    }
-
-    // Insert edge views as pill rects (single source of truth for pill position)
-    for (eid, edge) in edge_views.iter() {
-        // Estimate pill rect size in world; will be refined at draw-time but keep a stable placeholder
-        let half = egui::vec2(40.0, 12.0);
-        let rect = egui::Rect::from_center_size(edge.pill.pos, half * 2.0);
-        views.insert(*eid, UiView {
-            id: *eid,
-            rect,
-            kind: UiViewKind::Edge { source: edge.source, target: edge.target },
-            label: edge.label.clone(),
-            pill: Some(PillData { center: rect.center(), offset_from_midpoint: edge.pill.offset_from_midpoint, dragging: edge.pill.dragging }),
-        });
-        transform_parent.insert(*eid, edge.pill_parent);
-    }
-
-    // Build transform_children: for each container node, include child nodes + edge pills whose pill_parent is this node
     for (id, node) in snapshot.nodes.iter() {
-        let mut children: Vec<EntityId> = Vec::new();
-        for &child in node.children.iter() { children.push(child); }
-        for (eid, e) in edge_views.iter() {
-            if e.pill_parent == Some(*id) { children.push(*eid); }
+        if node.components.get(c::INITIAL_STATE).is_some() {
+            // best-effort: use the first valid child that exists in graph
+            for &child in node.children.iter() {
+                initial_substate_of.insert(*id, child);
+                is_initial_child.insert(child);
+                break;
+            }
         }
-        if !children.is_empty() { transform_children.insert(*id, children); }
     }
-
-    // Unified draw_order: parents, edges, leaves in a deterministic sequence
-    let mut unified_order: Vec<EntityId> = Vec::new();
-    let is_container = |nid: &EntityId| -> bool { snapshot.nodes.get(nid).map(|n| !n.children.is_empty()).unwrap_or(false) };
-    // Parents first
-    for nid in node_order.iter() { if is_container(nid) { unified_order.push(*nid); } }
-    // Then edges by edge_order
-    for eid in edge_order.iter() { unified_order.push(*eid); }
-    // Then non-parents
-    for nid in node_order.iter() { if !is_container(nid) { unified_order.push(*nid); } }
 
     doc.graph = Some(snapshot);
-    doc.views = views;
-    doc.draw_order = unified_order;
-    doc.transform_parent = transform_parent;
-    doc.transform_children = transform_children;
+    doc.scene = ViewScene { states, edges, node_rects, tree: LayoutTree { parent_of, children_of, containers }, draw_order };
     doc.initial_substate_of = initial_substate_of;
     doc.is_initial_child = is_initial_child;
 }
@@ -186,7 +135,7 @@ fn compute_pill_parent_for_edge(graph: &StateMachineGraph, source: EntityId, tar
     dst_parent.or(Some(target))
 }
 
-fn apply_initial_layout_for_unseen_nodes(graph: &StateMachineGraph, node_views: &mut std::collections::HashMap<EntityId, UiNode>) {
+fn apply_initial_layout_for_unseen_nodes(graph: &StateMachineGraph, node_views: &mut std::collections::HashMap<EntityId, StateView>) {
     let default_size = egui::vec2(140.0, 60.0);
     let v_spacing = 100.0;
     let content_padding = egui::vec2(24.0, 24.0);

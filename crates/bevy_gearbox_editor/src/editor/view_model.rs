@@ -6,60 +6,45 @@ use super::canvas::CanvasTransform;
 use crate::types::EntityId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UiNodeKind { Leaf, Parent, Parallel }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UiViewKind {
-    Leaf,
-    Parent,
-    Parallel,
-    Edge { source: EntityId, target: EntityId },
-}
+pub enum StateKind { Leaf, Sequence, Parallel }
 
 #[derive(Debug, Clone)]
-pub struct PillData {
-    pub center: egui::Pos2,
-    pub offset_from_midpoint: egui::Vec2,
-    pub dragging: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct UiView {
-    pub id: EntityId,
-    /// For states, this is the state rect; for edges, this is the pill rect in world space.
-    pub rect: egui::Rect,
-    pub kind: UiViewKind,
-    pub label: String,
-    /// Edge-only: pill info (None for state views)
-    pub pill: Option<PillData>,
-}
-
-#[derive(Debug, Clone)]
-pub struct UiNode {
+pub struct StateView {
     pub id: EntityId,
     pub rect: egui::Rect,
-    pub kind: UiNodeKind,
     pub label: String,
-    pub is_container: bool,
+    pub kind: StateKind,
 }
 
 #[derive(Debug, Clone)]
-pub struct EdgePill {
-    pub pos: egui::Pos2,
-    pub offset_from_midpoint: egui::Vec2,
-    pub dragging: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct UiEdge {
+pub struct EdgeView {
     pub id: EntityId,
     pub source: EntityId,
     pub target: EntityId,
     pub label: String,
-    pub pill: EdgePill,
+    /// Pill rect in world space
+    pub rect: egui::Rect,
     /// Parent container that governs pill transform/clamping (sibling of target)
     pub pill_parent: Option<EntityId>,
 }
+
+#[derive(Debug, Default, Clone)]
+pub struct LayoutTree {
+    pub parent_of: HashMap<EntityId, Option<EntityId>>,
+    pub children_of: HashMap<EntityId, Vec<EntityId>>,
+    pub containers: std::collections::HashSet<EntityId>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ViewScene {
+    pub states: HashMap<EntityId, StateView>,
+    pub edges: HashMap<EntityId, EdgeView>,
+    pub node_rects: HashMap<EntityId, egui::Rect>,
+    pub tree: LayoutTree,
+    pub draw_order: Vec<EntityId>,
+}
+
+// --
 
 #[derive(Debug, Default)]
 pub struct GraphDoc {
@@ -69,14 +54,8 @@ pub struct GraphDoc {
     /// Unified drag state for either a node or a pill (by EntityId)
     pub dragging: Option<EntityId>,
     pub drag_anchor_world: Option<egui::Vec2>,
-    /// Unified view map (nodes and edges)
-    pub views: HashMap<EntityId, UiView>,
-    /// Unified draw order (parents, edges, leaves)
-    pub draw_order: Vec<EntityId>,
-    /// Transform children: node -> [child nodes and edge pills under this container]
-    pub transform_children: HashMap<EntityId, Vec<EntityId>>,
-    /// Transform parent for each view: node -> parent node; edge pill -> pill parent
-    pub transform_parent: HashMap<EntityId, Option<EntityId>>,
+    /// Prebuilt scene and layout
+    pub scene: ViewScene,
     /// Mapping of parent -> initial child state (if any)
     pub initial_substate_of: HashMap<EntityId, EntityId>,
     /// Set of nodes that are the initial child of their parent
@@ -112,19 +91,21 @@ impl GraphDoc {
         let size_s = self.cached_label_size_screen(label, zoom, painter);
         egui::vec2(size_s.x / zoom, size_s.y / zoom)
     }
-    /// Returns the rect for a unified view entity (if present).
+    /// Returns the rect for an entity (node or edge pill) if present.
     pub fn get_rect(&self, id: &EntityId) -> Option<egui::Rect> {
-        self.views.get(id).map(|v| v.rect)
+        self.scene.node_rects.get(id).copied()
     }
 
-    /// Sets the rect for a unified view entity (no-ops if not present).
+    /// Sets the rect for an entity (node or edge pill) if present.
     pub fn set_rect(&mut self, id: &EntityId, rect: egui::Rect) {
-        if let Some(v) = self.views.get_mut(id) { v.rect = rect; }
+        if let Some(r) = self.scene.node_rects.get_mut(id) { *r = rect; }
+        if let Some(sv) = self.scene.states.get_mut(id) { sv.rect = rect; }
+        if let Some(ev) = self.scene.edges.get_mut(id) { ev.rect = rect; }
     }
 
     /// Returns the transform parent for an entity (node parent or pill parent).
     pub fn parent_of(&self, id: &EntityId) -> Option<EntityId> {
-        self.transform_parent.get(id).and_then(|p| *p)
+        self.scene.tree.parent_of.get(id).and_then(|p| *p)
     }
 
     /// Replace the active node set, returning (newly_activated, deactivated)
