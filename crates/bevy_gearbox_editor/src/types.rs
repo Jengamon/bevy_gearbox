@@ -3,11 +3,11 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub(crate) struct ServerEntity(pub u64);
+pub(crate) struct EntityId(pub u64);
 
 #[derive(Clone, Debug)]
 pub(crate) struct MachineSummary {
-    pub(crate) id: ServerEntity,
+    pub(crate) id: EntityId,
     pub(crate) name: Option<String>,
 }
 
@@ -34,7 +34,7 @@ impl From<String> for NetError {
     fn from(value: String) -> Self { NetError::Other(value) }
 }
 
-impl fmt::Display for ServerEntity {
+impl fmt::Display for EntityId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Heuristic decode:
         // - If high 32 bits are nonzero, or low 32 bits look like !index (large), treat as to_bits()

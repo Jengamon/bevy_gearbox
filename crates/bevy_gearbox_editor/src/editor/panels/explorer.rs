@@ -10,7 +10,7 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands)
     ui.separator();
     if store.index.is_loading { ui.label("Loading..."); return; }
     if let Some(err) = &store.index.error { ui.colored_label(egui::Color32::RED, err); }
-    let mut to_open: Option<crate::types::ServerEntity> = None;
+    let mut to_open: Option<crate::types::EntityId> = None;
     egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
         let query = store.index.filter.query.trim().to_lowercase();
         let iter = store.index.items.iter().cloned().filter(|it| {

@@ -80,9 +80,9 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
         if !matches!(node.kind, UiNodeKind::Parallel) {
         if let Some(entry) = snapshot.nodes.get(id).and_then(|n| n.components.get(c::INITIAL_STATE)) {
             let val = entry.value_json.clone();
-            // Helper to try build an EntityId::Server from various JSON encodings
+            // Helper to try build a ServerEntity from various JSON encodings
             let mut try_set_child = |server_id: u64| {
-                let child = crate::model::EntityId::Server(crate::types::ServerEntity(server_id));
+                let child = crate::types::EntityId(server_id);
                 if snapshot.nodes.contains_key(&child) && snapshot.nodes.get(id).map(|n| n.children.contains(&child)).unwrap_or(false) {
                     initial_substate_of.insert(*id, child);
                     is_initial_child.insert(child);

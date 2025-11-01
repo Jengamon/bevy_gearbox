@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use crate::types::ServerEntity;
+use crate::types::EntityId;
 use super::model::store::EditorStore;
 use super::model::types::{ConnectionState, IndexFilter};
 use bevy_gearbox_protocol::client::{ClientCommand, NetCommand};
@@ -38,7 +38,7 @@ pub fn refresh_index(store: &mut EditorStore, _filter: IndexFilter) {
 }
 
 #[allow(dead_code)]
-pub fn open_machine(_store: &mut EditorStore, _entity: ServerEntity) {
+pub fn open_machine(_store: &mut EditorStore, _entity: EntityId) {
     // Will perform fresh RPC and create an OpenDocument; skeleton only
 }
 
@@ -56,7 +56,7 @@ pub struct ReconnectRequested;
 pub struct RefreshIndexRequested { pub query: String }
 
 #[derive(Debug, Clone, Event)]
-pub struct OpenRequested { pub entity: ServerEntity }
+pub struct OpenRequested { pub entity: EntityId }
 
 // Observers: mutate store
 pub fn on_connect_requested(evt: On<ConnectRequested>, mut store: ResMut<EditorStore>, mut proto_cmd: MessageWriter<ClientCommand>, _proto_net: MessageWriter<NetCommand>) {
@@ -116,7 +116,7 @@ pub fn on_open_requested(
 }
 
 #[derive(Debug, Clone, Event)]
-pub struct UnsubscribeRequested { pub entity: ServerEntity }
+pub struct UnsubscribeRequested { pub entity: EntityId }
 
 pub fn on_unsubscribe_requested(evt: On<UnsubscribeRequested>, mut proto_net: MessageWriter<NetCommand>) {
     // Decoupled unsubscribe: stop server-side feeds for this machine. Do not couple to new selection.
@@ -124,7 +124,7 @@ pub fn on_unsubscribe_requested(evt: On<UnsubscribeRequested>, mut proto_net: Me
 }
 
 #[derive(Debug, Clone, Event)]
-pub struct SaveAsRequested { pub doc: ServerEntity, pub target: ServerEntity }
+pub struct SaveAsRequested { pub doc: EntityId, pub target: EntityId }
 
 pub fn on_save_as_requested(
     save_as_requested: On<SaveAsRequested>,
@@ -153,7 +153,7 @@ pub fn on_save_as_requested(
             .docs
             .get(&save_as_requested.doc)
             .map(|doc| {
-                let root = crate::model::EntityId::Server(save_as_requested.target);
+                let root = save_as_requested.target;
                 let sc = crate::persistence::extract_sidecar_for_subtree(doc, &root);
                 let pretty = ron::ser::PrettyConfig::new();
                 ron::ser::to_string_pretty(&sc, pretty).ok()
@@ -176,7 +176,7 @@ pub fn on_save_as_requested(
 }
 
 #[derive(Debug, Clone, Event)]
-pub struct SaveSubstatesRequested { pub target: ServerEntity }
+pub struct SaveSubstatesRequested { pub target: EntityId }
 
 pub fn on_save_substates_requested(
     req: On<SaveSubstatesRequested>,

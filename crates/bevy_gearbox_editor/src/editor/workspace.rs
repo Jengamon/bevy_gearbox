@@ -1,12 +1,12 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
-use crate::{model::EntityId, types::ServerEntity};
+use crate::{model::EntityId, types::EntityId};
 use super::view_model::GraphDoc;
 use bevy_egui::egui;
 
 #[derive(Debug, Default, Resource)]
 pub struct Workspace {
-    pub docs: HashMap<ServerEntity, GraphDoc>,
+    pub docs: HashMap<EntityId, GraphDoc>,
     pub selection: Option<EntityId>,
     /// Global inline rename state (only one rename across app at a time)
     pub rename_inline: Option<RenameInline>,
@@ -23,20 +23,20 @@ pub struct Workspace {
     /// One-shot commit for creating a transition edge (doc-local)
     pub pending_edge_create: Option<PendingEdgeCreate>,
     /// Pending machine graph refreshes to request over the network
-    pub pending_fetch_docs: Vec<ServerEntity>,
+    pub pending_fetch_docs: Vec<EntityId>,
 }
 
 #[derive(Debug, Clone)]
-pub struct RenameInline { pub doc: ServerEntity, pub target: EntityId, pub text: String }
+pub struct RenameInline { pub doc: EntityId, pub target: EntityId, pub text: String }
 
 #[derive(Debug, Clone)]
-pub struct EdgeBuildState { pub doc: ServerEntity, pub source: EntityId, pub just_started: bool }
+pub struct EdgeBuildState { pub doc: EntityId, pub source: EntityId, pub just_started: bool }
 
 #[derive(Debug, Clone)]
-pub struct EdgeMenuState { pub doc: ServerEntity, pub source: EntityId, pub target: EntityId, pub pos: egui::Pos2, pub just_opened: bool, pub filter: String }
+pub struct EdgeMenuState { pub doc: EntityId, pub source: EntityId, pub target: EntityId, pub pos: egui::Pos2, pub just_opened: bool, pub filter: String }
 
 #[derive(Debug, Clone)]
-pub struct PreviewEdge { pub doc: ServerEntity, pub source: EntityId, pub target: EntityId }
+pub struct PreviewEdge { pub doc: EntityId, pub source: EntityId, pub target: EntityId }
 
 #[derive(Debug, Clone)]
-pub struct PendingEdgeCreate { pub doc: ServerEntity, pub source: EntityId, pub target: EntityId, pub kind: String }
+pub struct PendingEdgeCreate { pub doc: EntityId, pub source: EntityId, pub target: EntityId, pub kind: String }

@@ -1,10 +1,10 @@
-use crate::types::ServerEntity;
+use crate::types::EntityId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DocId(pub ServerEntity);
+pub struct DocId(pub EntityId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TabId(pub ServerEntity);
+pub struct TabId(pub EntityId);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -25,7 +25,7 @@ pub struct IndexFilter {
 #[derive(Debug, Clone)]
 pub struct IndexItem {
     pub name: Option<String>,
-    pub entity: ServerEntity,
+    pub entity: EntityId,
 }
 
 #[derive(Debug, Default, Clone)]

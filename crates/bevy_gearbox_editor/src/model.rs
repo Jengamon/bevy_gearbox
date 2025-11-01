@@ -4,37 +4,11 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use crate::types::ServerEntity;
+use crate::types::EntityId;
 use bevy_gearbox_protocol::components as c;
 
 /// Stable Rust type path of a component (e.g. "bevy_ecs::name::Name").
 pub(crate) type TypePathString = String;
-
-/// Locally generated identifier used before an entity exists on the server.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(crate) struct LocalId(pub u64);
-
-/// An entity identifier that may be a server-backed id or a local temporary id.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(crate) enum EntityId {
-    Server(ServerEntity),
-    Local(LocalId),
-}
-
-impl Default for EntityId {
-    fn default() -> Self {
-        EntityId::Local(LocalId(0))
-    }
-}
-
-impl fmt::Display for EntityId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            EntityId::Server(e) => write!(f, "{}", e.0),
-            EntityId::Local(LocalId(id)) => write!(f, "local:{id}"),
-        }
-    }
-}
 
 /// Tracks structural and data changes in the editor model.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,7 +93,7 @@ impl StateNode {
 
 impl Default for StateNode {
     fn default() -> Self {
-        Self::new(EntityId::Local(LocalId(0)))
+        Self::new(EntityId(0))
     }
 }
 
@@ -151,7 +125,7 @@ impl Edge {
 }
 
 /// Graph container with adjacency indices for efficient queries.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct StateMachineGraph {
     /// The root state of the machine. The root is also present in `nodes`.
     pub(crate) root: EntityId,

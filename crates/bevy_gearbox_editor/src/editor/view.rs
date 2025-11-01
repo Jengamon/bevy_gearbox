@@ -2,7 +2,7 @@ use super::view_model::{GraphDoc, UiViewKind};
 use super::layout::{NodeLayout, LayoutConfig};
 use super::context_menu::{build_context_menu, MenuItemKind, MenuSelection};
 use crate::editor::workspace::{ RenameInline, Workspace, EdgeBuildState, EdgeMenuState};
-use crate::types::ServerEntity;
+use crate::types::EntityId;
 use bevy_egui::egui;
 
 /// Minimal read-only view with pan/zoom and basic nodes/edges rendering.
@@ -10,7 +10,7 @@ pub fn draw_doc(
     ui: &mut egui::Ui,
     doc: &mut GraphDoc,
     selection: &mut Option<crate::model::EntityId>,
-    doc_id: ServerEntity,
+    doc_id: EntityId,
     workspace: &mut Workspace,
 ) -> Option<MenuSelection> {
     let desired = ui.available_size_before_wrap();
@@ -1061,7 +1061,7 @@ pub fn draw_doc(
 fn draw_label_or_inline_editor(
     ui: &mut egui::Ui,
     workspace: &mut Workspace,
-    doc_id: ServerEntity,
+    doc_id: EntityId,
     target_id: &crate::model::EntityId,
     edit_rect: egui::Rect,
     painter: &egui::Painter,

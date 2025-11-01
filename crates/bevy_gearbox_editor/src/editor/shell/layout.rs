@@ -41,14 +41,10 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                     if let Some(selection) = crate::editor::view::draw_doc(ui, &mut entry, &mut sel_local, active, workspace) {
                         match selection {
                             crate::editor::context_menu::MenuSelection::SaveStateMachine { target } => {
-                                if let crate::model::EntityId::Server(sid) = target {
-                                    commands.trigger(crate::editor::actions::SaveAsRequested { doc: active, target: sid });
-                                }
+                                commands.trigger(crate::editor::actions::SaveAsRequested { doc: active, target });
                             }
                             crate::editor::context_menu::MenuSelection::SaveSubstates { target } => {
-                                if let crate::model::EntityId::Server(sid) = target {
-                                    commands.trigger(crate::editor::actions::SaveSubstatesRequested { target: sid });
-                                }
+                                commands.trigger(crate::editor::actions::SaveSubstatesRequested { target });
                             }
                             crate::editor::context_menu::MenuSelection::RenameEntity { target } => {
                                 // Seed inline edit with current display name or current label
@@ -58,13 +54,10 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                                 workspace.rename_inline = Some(crate::editor::workspace::RenameInline { doc: active, target, text: default_text });
                             }
                             crate::editor::context_menu::MenuSelection::DeleteEntity { target } => {
-                                // Only support deleting server-backed entities
-                                if let crate::model::EntityId::Server(sid) = target {
-                                    let e = bevy::prelude::Entity::from_bits(sid.0);
-                                    commands.trigger(bevy_gearbox_protocol::events::Despawn { target: e });
-                                    // Request a fresh graph snapshot for the active document
-                                    workspace.pending_fetch_docs.push(active);
-                                }
+                                let e = bevy::prelude::Entity::from_bits(target.0);
+                                commands.trigger(bevy_gearbox_protocol::events::Despawn { target: e });
+                                // Request a fresh graph snapshot for the active document
+                                workspace.pending_fetch_docs.push(active);
                             }
                             _ => {}
                         }
@@ -73,23 +66,18 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                     workspace.docs.insert(active, entry);
                     // Global commit handler
                     if let Some(commit) = workspace.pending_rename_commit.take() {
-                        if let crate::model::EntityId::Server(sid) = commit.target {
-                            let e = bevy::prelude::Entity::from_bits(sid.0);
-                            commands.trigger(bevy_gearbox_protocol::events::Rename { target: e, name: commit.text.clone() });
-                        }
+                        let e = bevy::prelude::Entity::from_bits(commit.target.0);
+                        commands.trigger(bevy_gearbox_protocol::events::Rename { target: e, name: commit.text.clone() });
                         // No optimistic UI mutation; wait for watch-driven update
                     }
                     // Edge creation commit handler
                     if let Some(req) = workspace.pending_edge_create.take() {
-                        // Convert to server entities only
-                        if let (crate::model::EntityId::Server(src), crate::model::EntityId::Server(tgt)) = (req.source, req.target) {
-                            let m = bevy::prelude::Entity::from_bits(req.doc.0);
-                            let s = bevy::prelude::Entity::from_bits(src.0);
-                            let t = bevy::prelude::Entity::from_bits(tgt.0);
-                            commands.trigger(bevy_gearbox_protocol::events::CreateTransition { machine: m, source: s, target: t, kind: req.kind.clone() });
-                            // Ask for a graph refresh; the client observer will also request it, but keep this as a backup coupling
-                            workspace.pending_fetch_docs.push(req.doc);
-                        }
+                        let m = bevy::prelude::Entity::from_bits(req.doc.0);
+                        let s = bevy::prelude::Entity::from_bits(req.source.0);
+                        let t = bevy::prelude::Entity::from_bits(req.target.0);
+                        commands.trigger(bevy_gearbox_protocol::events::CreateTransition { machine: m, source: s, target: t, kind: req.kind.clone() });
+                        // Ask for a graph refresh; the client observer will also request it, but keep this as a backup coupling
+                        workspace.pending_fetch_docs.push(req.doc);
                     }
                     workspace.selection = sel_local;
                 } else {

@@ -3,7 +3,7 @@ use bevy_egui::{egui, EguiContexts};
 use std::collections::HashMap;
 
 use bevy_gearbox_protocol::client::{ClientPlugin, NetMessage, ClientMessage, NetCommand, ClientCommand};
-use crate::types::ServerEntity;
+use crate::types::EntityId;
 use crate::model::StateMachineGraph;
 use crate::editor::workspace::Workspace;
 use crate::editor::model::store::EditorStore;
@@ -60,17 +60,17 @@ pub(crate) struct UiState {
     url_edit: String,
     connecting: bool,
     error: Option<String>,
-    machines: Vec<(ServerEntity, Option<String>)>,
-    graphs: HashMap<ServerEntity, StateMachineGraph>,
+    machines: Vec<(EntityId, Option<String>)>,
+    graphs: HashMap<EntityId, StateMachineGraph>,
     /// Latest sidecar text fetched over RPC per machine (if any)
-    sidecar_texts: HashMap<ServerEntity, String>,
+    sidecar_texts: HashMap<EntityId, String>,
     /// One-shot active state snapshots awaiting application to docs
-    pending_active: HashMap<ServerEntity, (Vec<u64>, Vec<u64>)>,
+    pending_active: HashMap<EntityId, (Vec<u64>, Vec<u64>)>,
     /// Accumulated machine +watch events awaiting application to docs
-    pending_machine_events: HashMap<ServerEntity, Vec<JsonValue>>,
+    pending_machine_events: HashMap<EntityId, Vec<JsonValue>>,
     /// Per-machine cursors for stateless +watch
-    last_active_seq: HashMap<ServerEntity, u64>,
-    last_transition_seq: HashMap<ServerEntity, u64>,
+    last_active_seq: HashMap<EntityId, u64>,
+    last_transition_seq: HashMap<EntityId, u64>,
 }
 
 fn setup_camera(mut commands: Commands) {
@@ -94,12 +94,12 @@ fn poll_network(
         match msg {
             ClientMessage::RefreshResult(Ok(list)) => {
                 // Update UI cache and editor index
-                ui.machines = list.iter().map(|m| (ServerEntity(m.id), m.name.clone())).collect();
+                ui.machines = list.iter().map(|m| (EntityId(m.id), m.name.clone())).collect();
                 ui.connecting = false;
                 ui.error = None;
                 store.index.is_loading = false;
                 store.index.error = None;
-                store.index.items = list.iter().map(|m| IndexItem { name: m.name.clone(), entity: ServerEntity(m.id) }).collect();
+                store.index.items = list.iter().map(|m| IndexItem { name: m.name.clone(), entity: EntityId(m.id) }).collect();
                 // Mark connected for UI button logic
                 let ep = store.last_endpoint.clone().unwrap_or_else(|| "http://127.0.0.1:15703".to_string());
                 store.connection = EditorConnectionState::Connected { session_id: store.session_id, endpoint: ep };
@@ -117,7 +117,7 @@ fn poll_network(
             }
             ClientMessage::GraphResult { id, graph } => {
                 if let Some(sm_graph) = convert_wire_graph_to_state_machine_graph(graph.clone()) {
-                    let doc_id = ServerEntity(*id);
+                    let doc_id = EntityId(*id);
                     // Stash graph snapshot for projection
                     ui.graphs.insert(doc_id, sm_graph.clone());
                     // Request sidecar for the machine root
@@ -127,18 +127,16 @@ fn poll_network(
                     let mut requested = 0usize;
                     for (nid, node) in sm_graph.nodes.iter() {
                         if node.components.contains(c::STATE_MACHINE_ID) {
-                            if let crate::model::EntityId::Server(se) = nid {
-                                println!("[editor] graph_result: requesting sidecar for substate {}", se.0);
-                                client_cmd.write(ClientCommand::SidecarForMachine { id: se.0 });
-                                requested += 1;
-                            }
+                            println!("[editor] graph_result: requesting sidecar for substate {}", nid.0);
+                            client_cmd.write(ClientCommand::SidecarForMachine { id: nid.0 });
+                            requested += 1;
                         }
                     }
                     println!("[editor] graph_result: requested {} substate sidecars", requested);
                 }
             }
             ClientMessage::SidecarFound { id, text } => {
-                let doc_id = ServerEntity(*id);
+                let doc_id = EntityId(*id);
                 println!("[editor] sidecar_found: id={} ({} bytes)", id, text.len());
                 ui.sidecar_texts.insert(doc_id, text.clone());
                 processed += 1;
@@ -162,9 +160,9 @@ fn poll_network(
                 for m in batch.into_iter() {
                     if let Some(name) = m.name.clone() {
                         if let Some(ix) = ui.machines.iter_mut().position(|(id, _)| id.0 == m.id) {
-                            ui.machines[ix] = (ServerEntity(m.id), Some(name));
+                            ui.machines[ix] = (EntityId(m.id), Some(name));
                         } else {
-                            ui.machines.push((ServerEntity(m.id), Some(name)));
+                            ui.machines.push((EntityId(m.id), Some(name)));
                         }
                     } else {
                         ui.machines.retain(|(id, _)| id.0 != m.id);
@@ -175,7 +173,7 @@ fn poll_network(
                 processed += 1;
             }
             NetMessage::Machine { id, events } => {
-                let doc_id = ServerEntity(id);
+                let doc_id = EntityId(id);
                 // Update last seqs and stash events
                 let mut max_a = ui.last_active_seq.get(&doc_id).copied().unwrap_or(0);
                 let mut max_t = ui.last_transition_seq.get(&doc_id).copied().unwrap_or(0);
@@ -192,9 +190,9 @@ fn poll_network(
                 ui.pending_machine_events.entry(doc_id).or_default().extend(events.into_iter());
                 processed += 1;
             }
-            NetMessage::Components { id, components, removed } => {
+            NetMessage::Components { id, components, removed: _ } => {
                 // Apply Name changes to any open doc containing this entity
-                let target = crate::model::EntityId::Server(ServerEntity(id));
+                let target = EntityId(id);
                 let name_key = bevy_gearbox_protocol::components::NAME_REFLECT;
                 let name_opt = components.get(name_key).and_then(|v| v.as_str()).map(|s| s.to_string());
                 for (_doc_id, doc) in workspace.docs.iter_mut() {
@@ -216,7 +214,7 @@ fn poll_network(
     }
     // Drain any pending explicit fetch requests enqueued by UI actions
     if !workspace.pending_fetch_docs.is_empty() {
-        let docs: Vec<ServerEntity> = std::mem::take(&mut workspace.pending_fetch_docs);
+        let docs: Vec<EntityId> = std::mem::take(&mut workspace.pending_fetch_docs);
         for d in docs.into_iter() {
             client_cmd.write(ClientCommand::FetchGraph { id: d.0 });
         }
@@ -240,17 +238,17 @@ fn sync_snapshots_to_workspace(
     mut workspace: ResMut<Workspace>,
     mut ui: ResMut<UiState>,
 ) {
-    let mut consume_sidecar_for: Vec<ServerEntity> = Vec::new();
+    let mut consume_sidecar_for: Vec<EntityId> = Vec::new();
     // Apply pending active snapshots and machine deltas per-doc before projecting any new graph snapshots
     // 1) Active snapshots
-    let pending_active = std::mem::take(&mut ui.pending_active);
+        let pending_active = std::mem::take(&mut ui.pending_active);
     for (id, (active, _leaves)) in pending_active.into_iter() {
         let doc = workspace.docs.entry(id).or_default();
         // Map u64s to EntityId::Server (canonicalize)
         let set: std::collections::HashSet<EntityId> = active
             .into_iter()
             .map(|u| crate::util::canonicalize_entity_u64(u))
-            .map(|u| EntityId::Server(ServerEntity(u)))
+            .map(|u| EntityId(u))
             .collect();
         let (_new, _deactivated) = doc.set_active_nodes(&set);
     }
@@ -267,7 +265,7 @@ fn sync_snapshots_to_workspace(
                         .and_then(|a| a.as_array())
                         .map(|arr| arr.iter().filter_map(|v| v.as_u64()).map(|u| crate::util::canonicalize_entity_u64(u)).collect())
                         .unwrap_or_default();
-                    let set: std::collections::HashSet<EntityId> = active.into_iter().map(|u| EntityId::Server(ServerEntity(u))).collect();
+                    let set: std::collections::HashSet<EntityId> = active.into_iter().map(|u| EntityId(u)).collect();
                     let (new_nodes, deactivated) = doc.set_active_nodes(&set);
                     for nid in new_nodes { doc.node_flash.insert(nid, 1.0); }
                     for nid in deactivated { doc.node_fade.insert(nid, 1.0); }
@@ -275,7 +273,7 @@ fn sync_snapshots_to_workspace(
                 "transition_edge" => {
                     if let Some(edge) = ev.get("edge").and_then(|v| v.as_u64()) {
                         let edge = crate::util::canonicalize_entity_u64(edge);
-                        let eid = EntityId::Server(ServerEntity(edge));
+                        let eid = EntityId(edge);
                         doc.flash_edge(eid);
                     }
                 }
@@ -285,7 +283,7 @@ fn sync_snapshots_to_workspace(
                         ev.get("name").and_then(|v| v.as_str()),
                     ) {
                         let ent_u = crate::util::canonicalize_entity_u64(ent_u);
-                        let eid = EntityId::Server(ServerEntity(ent_u));
+                        let eid = EntityId(ent_u);
                         let name = name_s.to_string();
                         if let Some(v) = doc.views.get_mut(&eid) { v.label = name.clone(); }
                         if let Some(g) = doc.graph.as_mut() {
@@ -299,7 +297,7 @@ fn sync_snapshots_to_workspace(
         }
     }
     // Drain snapshot inbox: apply once, then clear from UiState
-    let mut to_remove: Vec<ServerEntity> = Vec::new();
+    let mut to_remove: Vec<EntityId> = Vec::new();
     for (id, graph) in ui.graphs.iter() {
         // Capture metrics before taking a mutable borrow of workspace.docs entry
         let was_empty = workspace.docs.get(id).and_then(|d| d.graph.as_ref()).is_none();
@@ -352,14 +350,14 @@ fn sync_snapshots_to_workspace(
     for id in to_remove { ui.graphs.remove(&id); }
     // Apply any sidecars that arrived independently of new snapshots (decoupled from inbox)
     // Only apply if the doc already has a graph to target
-    let extra_sidecars: Vec<(ServerEntity, String)> = ui.sidecar_texts.iter().map(|(k, v)| (*k, v.clone())).collect();
+    let extra_sidecars: Vec<(EntityId, String)> = ui.sidecar_texts.iter().map(|(k, v)| (*k, v.clone())).collect();
     for (target_entity, text) in extra_sidecars.iter() {
         for (doc_id, doc) in workspace.docs.iter_mut() {
             if doc.graph.is_none() { continue; }
             let graph = doc.graph.as_ref().unwrap();
             // If this sidecar targets the doc root, apply whole-doc overlay; otherwise, apply to subtree if present
-            if let Some(root_node) = graph.nodes.get(&graph.root) {
-                let is_doc_root = matches!(graph.root, crate::model::EntityId::Server(r) if r.0 == target_entity.0);
+            if graph.nodes.get(&graph.root).is_some() {
+                let is_doc_root = graph.root.0 == target_entity.0;
                 let mut applied_here = false;
                 if is_doc_root {
                     if let Ok(sc) = parse_sidecar_text(text) {
@@ -369,7 +367,7 @@ fn sync_snapshots_to_workspace(
                     }
                 } else {
                     // Check if the target entity exists as a node in this doc
-                    let target_id = crate::model::EntityId::Server(*target_entity);
+                    let target_id = *target_entity;
                     if graph.nodes.contains_key(&target_id) {
                         if let Ok(sc) = parse_sidecar_text(text) {
                             println!("[editor] applying extra sidecar (subtree {}) to doc {}", target_entity.0, doc_id.0);
@@ -388,35 +386,35 @@ fn sync_snapshots_to_workspace(
 
 fn convert_wire_graph_to_state_machine_graph(graph: serde_json::Value) -> Option<StateMachineGraph> {
     use crate::model as m;
-    use crate::types::ServerEntity;
+    use crate::types::EntityId;
     let root_s = graph.get("root").and_then(|v| v.as_str())?;
     let root_u = root_s.parse::<u64>().ok()?;
-    let mut out = m::StateMachineGraph::new(m::StateNode::new(m::EntityId::Server(ServerEntity(root_u))));
+    let mut out = m::StateMachineGraph::new(m::StateNode::new(EntityId(root_u)));
     // Nodes
     if let Some(nodes) = graph.get("nodes").and_then(|v| v.as_array()) {
         for n in nodes.iter() {
             let id_u = n.get("id").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok())?;
-            let id = m::EntityId::Server(ServerEntity(id_u));
+            let id = EntityId(id_u);
             let mut node = out.nodes.remove(&id).unwrap_or_else(|| m::StateNode::new(id));
-            if let Some(parent_s) = n.get("parent").and_then(|v| v.as_str()) { if let Ok(pu) = parent_s.parse::<u64>() { node.parent = Some(m::EntityId::Server(ServerEntity(pu))); } }
+            if let Some(parent_s) = n.get("parent").and_then(|v| v.as_str()) { if let Ok(pu) = parent_s.parse::<u64>() { node.parent = Some(EntityId(pu)); } }
             if let Some(comps) = n.get("components").and_then(|v| v.as_object()) {
                 for (k, v) in comps.iter() { node.components.insert(m::ComponentEntry::new(k.clone(), v.clone())); }
                 if let Some(name_v) = comps.get("Name") { if let Some(s) = name_v.as_str() { node.display_name = Some(s.to_string()); } }
                 if let Some(children_v) = comps.get("bevy_gearbox::Substates").and_then(|v| v.as_array()) {
-                    node.children = children_v.iter().filter_map(|vv| vv.as_str()).filter_map(|s| s.parse::<u64>().ok()).map(|u| m::EntityId::Server(ServerEntity(u))).collect();
+                    node.children = children_v.iter().filter_map(|vv| vv.as_str()).filter_map(|s| s.parse::<u64>().ok()).map(|u| EntityId(u)).collect();
                 }
                 // Build adjacency from relationships if provided
                 if let Some(out_v) = comps.get(bevy_gearbox_protocol::components::TRANSITIONS).and_then(|v| v.as_array()) {
                     let mut outs: Vec<m::EntityId> = Vec::new();
                     for s in out_v.iter().filter_map(|vv| vv.as_str()) {
-                        if let Ok(u) = s.parse::<u64>() { outs.push(m::EntityId::Server(ServerEntity(u))); }
+                        if let Ok(u) = s.parse::<u64>() { outs.push(EntityId(u)); }
                     }
                     if !outs.is_empty() { out.adjacency_out.insert(id, outs); }
                 }
                 if let Some(in_v) = comps.get(bevy_gearbox_protocol::components::TARGETED_BY).and_then(|v| v.as_array()) {
                     let mut ins: Vec<m::EntityId> = Vec::new();
                     for s in in_v.iter().filter_map(|vv| vv.as_str()) {
-                        if let Ok(u) = s.parse::<u64>() { ins.push(m::EntityId::Server(ServerEntity(u))); }
+                        if let Ok(u) = s.parse::<u64>() { ins.push(EntityId(u)); }
                     }
                     if !ins.is_empty() { out.adjacency_in.insert(id, ins); }
                 }
@@ -431,9 +429,9 @@ fn convert_wire_graph_to_state_machine_graph(graph: serde_json::Value) -> Option
             let src_u = e.get("source").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok())?;
             let tgt_u = e.get("target").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
             if tgt_u == 0 { continue; }
-            let id = m::EntityId::Server(ServerEntity(id_u));
-            let src = m::EntityId::Server(ServerEntity(src_u));
-            let tgt = m::EntityId::Server(ServerEntity(tgt_u));
+            let id = EntityId(id_u);
+            let src = EntityId(src_u);
+            let tgt = EntityId(tgt_u);
             let mut edge = m::Edge::new(id, src, tgt);
             if let Some(comps) = e.get("components").and_then(|v| v.as_object()) {
                 for (k, v) in comps.iter() { edge.components.insert(m::ComponentEntry::new(k.clone(), v.clone())); }
