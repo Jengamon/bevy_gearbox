@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use bevy::prelude::*;
 use bevy_egui::egui;
-use crate::model::{StateMachineGraph, EntityId};
+use crate::model::StateMachineGraph;
 use super::canvas::CanvasTransform;
+use crate::types::EntityId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiNodeKind { Leaf, Parent, Parallel }

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use bevy_egui::egui;
 
-use crate::model::EntityId as NodeId;
+use crate::types::EntityId as NodeId;
 
 use super::canvas::CanvasTransform;
 
@@ -85,23 +85,6 @@ impl NodeLayout {
         } else {
             Some(rect)
         }
-    }
-
-    /// Returns the world-space content min point inside a parent (padding + optional header).
-    pub fn content_min(&self, parent: &NodeId, cfg: &LayoutConfig) -> Option<egui::Pos2> {
-        let parent_rect = *self.node_rects.get(parent)?;
-        let header = if self.is_container(parent) { cfg.header_height_world } else { 0.0 };
-        Some(egui::pos2(
-            parent_rect.min.x + cfg.content_padding.x,
-            parent_rect.min.y + cfg.content_padding.y + header,
-        ))
-    }
-
-    /// Returns the world-space content rect inside a parent. Right/bottom equal to parent's current bounds.
-    pub fn content_rect(&self, parent: &NodeId, cfg: &LayoutConfig) -> Option<egui::Rect> {
-        let parent_rect = *self.node_rects.get(parent)?;
-        let min = self.content_min(parent, cfg)?;
-        Some(egui::Rect::from_min_max(min, parent_rect.max))
     }
 
     /// Compute node-only draw order: containers first, then descendants in DFS.

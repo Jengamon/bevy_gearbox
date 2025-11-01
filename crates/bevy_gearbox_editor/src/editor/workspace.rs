@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
-use crate::{model::EntityId, types::EntityId};
+use crate::types::EntityId;
 use super::view_model::GraphDoc;
 use bevy_egui::egui;
 

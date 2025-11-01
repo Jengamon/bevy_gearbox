@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 use crate::editor::model::store::EditorStore;
-use crate::editor::actions::{RefreshIndexRequested, OpenRequested};
+use crate::editor::actions::OpenRequested;
 
 pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands) {
     ui.horizontal(|ui| {

@@ -1,10 +1,7 @@
 use bevy::prelude::*;
-use bevy::scene::{DynamicScene, DynamicSceneRoot};
 use bevy_egui::egui;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io;
-use std::path::Path;
 
 // ======================
 // Editor sidecar schema
@@ -52,7 +49,8 @@ pub fn parse_sidecar_text(text: &str) -> std::io::Result<Sidecar> {
 // ======================
 
 use crate::editor::view_model::{GraphDoc, UiViewKind};
-use crate::model::{EntityId, StateMachineGraph};
+use crate::model::StateMachineGraph;
+use crate::types::EntityId;
 
 fn get_node_name(graph: &StateMachineGraph, id: &EntityId) -> String {
     graph

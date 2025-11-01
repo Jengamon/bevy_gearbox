@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
-use crate::model::{StateMachineGraph, EntityId};
+use crate::model::StateMachineGraph;
+use crate::types::EntityId;
 use bevy_gearbox_protocol::components as c;
 use super::view_model::{GraphDoc, UiNode, UiNodeKind, UiEdge, EdgePill, UiView, UiViewKind, PillData};
 
@@ -63,11 +64,11 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
     let (node_order, edge_order) = compute_draw_orders(&snapshot);
 
     // Build unified view structures alongside legacy maps
-    let mut views: std::collections::HashMap<crate::model::EntityId, UiView> = std::collections::HashMap::new();
-    let mut transform_parent: std::collections::HashMap<crate::model::EntityId, Option<crate::model::EntityId>> = std::collections::HashMap::new();
-    let mut transform_children: std::collections::HashMap<crate::model::EntityId, Vec<crate::model::EntityId>> = std::collections::HashMap::new();
-    let mut initial_substate_of: std::collections::HashMap<crate::model::EntityId, crate::model::EntityId> = std::collections::HashMap::new();
-    let mut is_initial_child: std::collections::HashSet<crate::model::EntityId> = std::collections::HashSet::new();
+    let mut views: std::collections::HashMap<EntityId, UiView> = std::collections::HashMap::new();
+    let mut transform_parent: std::collections::HashMap<EntityId, Option<EntityId>> = std::collections::HashMap::new();
+    let mut transform_children: std::collections::HashMap<EntityId, Vec<EntityId>> = std::collections::HashMap::new();
+    let mut initial_substate_of: std::collections::HashMap<EntityId, EntityId> = std::collections::HashMap::new();
+    let mut is_initial_child: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
 
     // Insert node views
     for (id, node) in node_views.iter() {
@@ -143,7 +144,7 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
 
     // Build transform_children: for each container node, include child nodes + edge pills whose pill_parent is this node
     for (id, node) in snapshot.nodes.iter() {
-        let mut children: Vec<crate::model::EntityId> = Vec::new();
+        let mut children: Vec<EntityId> = Vec::new();
         for &child in node.children.iter() { children.push(child); }
         for (eid, e) in edge_views.iter() {
             if e.pill_parent == Some(*id) { children.push(*eid); }
@@ -152,8 +153,8 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
     }
 
     // Unified draw_order: parents, edges, leaves in a deterministic sequence
-    let mut unified_order: Vec<crate::model::EntityId> = Vec::new();
-    let is_container = |nid: &crate::model::EntityId| -> bool { snapshot.nodes.get(nid).map(|n| !n.children.is_empty()).unwrap_or(false) };
+    let mut unified_order: Vec<EntityId> = Vec::new();
+    let is_container = |nid: &EntityId| -> bool { snapshot.nodes.get(nid).map(|n| !n.children.is_empty()).unwrap_or(false) };
     // Parents first
     for nid in node_order.iter() { if is_container(nid) { unified_order.push(*nid); } }
     // Then edges by edge_order

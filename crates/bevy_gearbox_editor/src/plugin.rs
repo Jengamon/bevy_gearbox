@@ -15,7 +15,6 @@ use crate::persistence::{apply_sidecar_to_doc, load_sidecar, parse_sidecar_text}
 use crate::editor::model::types::ConnectionState as EditorConnectionState;
 use crate::editor::model::types::{IndexItem};
 use bevy_gearbox_protocol::components as c;
-use crate::model::EntityId;
 use serde_json::Value as JsonValue;
 
 pub(crate) struct EditorPlugin;
@@ -405,14 +404,14 @@ fn convert_wire_graph_to_state_machine_graph(graph: serde_json::Value) -> Option
                 }
                 // Build adjacency from relationships if provided
                 if let Some(out_v) = comps.get(bevy_gearbox_protocol::components::TRANSITIONS).and_then(|v| v.as_array()) {
-                    let mut outs: Vec<m::EntityId> = Vec::new();
+                    let mut outs: Vec<EntityId> = Vec::new();
                     for s in out_v.iter().filter_map(|vv| vv.as_str()) {
                         if let Ok(u) = s.parse::<u64>() { outs.push(EntityId(u)); }
                     }
                     if !outs.is_empty() { out.adjacency_out.insert(id, outs); }
                 }
                 if let Some(in_v) = comps.get(bevy_gearbox_protocol::components::TARGETED_BY).and_then(|v| v.as_array()) {
-                    let mut ins: Vec<m::EntityId> = Vec::new();
+                    let mut ins: Vec<EntityId> = Vec::new();
                     for s in in_v.iter().filter_map(|vv| vv.as_str()) {
                         if let Ok(u) = s.parse::<u64>() { ins.push(EntityId(u)); }
                     }

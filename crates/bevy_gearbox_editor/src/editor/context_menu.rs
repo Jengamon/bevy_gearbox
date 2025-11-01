@@ -1,5 +1,6 @@
 use bevy_gearbox_protocol::components as c;
-use crate::model::{EntityId, StateMachineGraph};
+use crate::model::StateMachineGraph;
+use crate::types::EntityId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuItemKind {
@@ -46,7 +47,6 @@ pub fn build_context_menu(graph: &StateMachineGraph, id: EntityId) -> Vec<MenuIt
     let is_parallel = has_children && !has_initial_state;
     // Root node detection: server does not include an explicit bevy_gearbox::StateMachine marker
     // in the graph snapshot, so treat the graph root as the state machine owner.
-    let is_root_state_machine = id == graph.root;
     let has_state_children_capability = node.components.contains(c::STATE_CHILDREN);
 
     let parent_and_lacks_initial = node.parent.and_then(|pid| {

@@ -9,7 +9,7 @@ use bevy_egui::egui;
 pub fn draw_doc(
     ui: &mut egui::Ui,
     doc: &mut GraphDoc,
-    selection: &mut Option<crate::model::EntityId>,
+    selection: &mut Option<EntityId>,
     doc_id: EntityId,
     workspace: &mut Workspace,
 ) -> Option<MenuSelection> {
@@ -25,13 +25,13 @@ pub fn draw_doc(
     if animating { ui.ctx().request_repaint(); }
 
     // Build deterministic edge sequence for stable per-parent pill ordering
-    let mut edge_sequence: Vec<crate::model::EntityId> = Vec::new();
-    let mut node_rank: std::collections::HashMap<crate::model::EntityId, usize> = std::collections::HashMap::new();
+    let mut edge_sequence: Vec<EntityId> = Vec::new();
+    let mut node_rank: std::collections::HashMap<EntityId, usize> = std::collections::HashMap::new();
     if let Some(graph) = &doc.graph {
-        let mut stack: Vec<crate::model::EntityId> = Vec::new();
-        let mut seen: std::collections::HashSet<crate::model::EntityId> = std::collections::HashSet::new();
+        let mut stack: Vec<EntityId> = Vec::new();
+        let mut seen: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
         stack.push(graph.root);
-        let mut node_order: Vec<crate::model::EntityId> = Vec::new();
+        let mut node_order: Vec<EntityId> = Vec::new();
         while let Some(id) = stack.pop() {
             if !seen.insert(id) { continue; }
             node_order.push(id);
@@ -52,10 +52,10 @@ pub fn draw_doc(
     }
 
     // Construct NodeLayout with pills as children and containers defined by graph/view kind
-    let mut node_rects: std::collections::HashMap<crate::model::EntityId, egui::Rect> = std::collections::HashMap::new();
-    let mut parent_of: std::collections::HashMap<crate::model::EntityId, Option<crate::model::EntityId>> = std::collections::HashMap::new();
-    let mut children_of: std::collections::HashMap<crate::model::EntityId, Vec<crate::model::EntityId>> = std::collections::HashMap::new();
-    let mut container_nodes: std::collections::HashSet<crate::model::EntityId> = std::collections::HashSet::new();
+    let mut node_rects: std::collections::HashMap<EntityId, egui::Rect> = std::collections::HashMap::new();
+    let mut parent_of: std::collections::HashMap<EntityId, Option<EntityId>> = std::collections::HashMap::new();
+    let mut children_of: std::collections::HashMap<EntityId, Vec<EntityId>> = std::collections::HashMap::new();
+    let mut container_nodes: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
     for (id, view) in doc.views.iter() { node_rects.insert(*id, view.rect); }
     if let Some(graph) = &doc.graph {
         for (id, node) in graph.nodes.iter() {
@@ -125,7 +125,7 @@ pub fn draw_doc(
     let base_order = layout.compute_draw_order(selected_for_bias).to_vec();
 
     // Overlay edges: selected state's incoming ∪ outgoing, or the selected edge itself
-    let mut overlay_edges: std::collections::HashSet<crate::model::EntityId> = std::collections::HashSet::new();
+    let mut overlay_edges: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
     if let Some(sel) = effective_selected {
         match doc.views.get(&sel).map(|v| &v.kind) {
             Some(UiViewKind::Edge { .. }) => { overlay_edges.insert(sel); }
@@ -140,7 +140,7 @@ pub fn draw_doc(
     }
 
     // Draw each edge only once: remove overlay edges from base order, then append them on top
-    let mut order: Vec<crate::model::EntityId> = base_order
+    let mut order: Vec<EntityId> = base_order
         .into_iter()
         .filter(|id| !overlay_edges.contains(id))
         .collect();
@@ -151,7 +151,7 @@ pub fn draw_doc(
 
     // Interactions: node/pill dragging vs background pan; hit test in front-to-back order
     let pointer_pos = response.ctx.input(|i| i.pointer.hover_pos());
-    let mut hovered_entity: Option<crate::model::EntityId> = None;
+    let mut hovered_entity: Option<EntityId> = None;
     if let Some(pos) = pointer_pos {
         for eid in order.iter().rev() {
             if let Some(view) = doc.views.get(eid) {
@@ -856,7 +856,7 @@ pub fn draw_doc(
             // Determine preview end point: hovered node center (if valid) or cursor
             let cursor_opt = ui.ctx().input(|i| i.pointer.hover_pos());
             let end_screen = cursor_opt.unwrap_or(rect.center());
-            let mut snap_to_target: Option<crate::model::EntityId> = None;
+            let mut snap_to_target: Option<EntityId> = None;
             if let Some(hid) = hovered_entity {
                 if let Some(view) = doc.views.get(&hid) {
                     if !matches!(view.kind, UiViewKind::Edge { .. }) && hid != build.source {
@@ -1062,7 +1062,7 @@ fn draw_label_or_inline_editor(
     ui: &mut egui::Ui,
     workspace: &mut Workspace,
     doc_id: EntityId,
-    target_id: &crate::model::EntityId,
+    target_id: &EntityId,
     edit_rect: egui::Rect,
     painter: &egui::Painter,
     text_pos: egui::Pos2,
@@ -1097,7 +1097,7 @@ fn draw_label_or_inline_editor(
     }
 }
 
-fn is_direct_substate_of_parallel(doc: &GraphDoc, child_id: &crate::model::EntityId) -> bool {
+fn is_direct_substate_of_parallel(doc: &GraphDoc, child_id: &EntityId) -> bool {
     let parent_opt = doc.transform_parent.get(child_id).and_then(|p| *p);
     let by_view = parent_opt
         .and_then(|pid| doc.views.get(&pid))
