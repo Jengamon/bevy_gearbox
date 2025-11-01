@@ -176,36 +176,6 @@ impl StateMachineGraph {
             adjacency_in: HashMap::new(),
         }
     }
-
-    /// Returns all outgoing edges for a node.
-    pub(crate) fn outgoing(&self, node: &EntityId) -> &[EntityId] {
-        self.adjacency_out.get(node).map(|v| v.as_slice()).unwrap_or(&[])
-    }
-
-    /// Returns all incoming edges for a node.
-    pub(crate) fn incoming(&self, node: &EntityId) -> &[EntityId] {
-        self.adjacency_in.get(node).map(|v| v.as_slice()).unwrap_or(&[])
-    }
-}
-
-/// Mapping used to resolve local ids to server entities after creation.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub(crate) struct IdMapping {
-    pub(crate) local_to_server: HashMap<LocalId, ServerEntity>,
-}
-
-impl IdMapping {
-    pub(crate) fn resolve_entity(&self, id: &EntityId) -> EntityId {
-        match id {
-            EntityId::Server(_) => *id,
-            EntityId::Local(local) => self
-                .local_to_server
-                .get(local)
-                .copied()
-                .map(EntityId::Server)
-                .unwrap_or(EntityId::Local(*local)),
-        }
-    }
 }
 
 impl fmt::Display for StateMachineGraph {
