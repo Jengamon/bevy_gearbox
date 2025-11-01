@@ -8,6 +8,7 @@ pub enum MenuItemKind {
     MakeParallel,
     Rename,
     Save,
+    SaveSubstates,
     Delete,
     /// Parent is the owner of InitialState; this node becomes the new initial
     MakeInitial { parent: EntityId },
@@ -27,6 +28,7 @@ pub enum MenuSelection {
     MakeParallel { target: EntityId },
     RenameEntity { target: EntityId },
     SaveStateMachine { target: EntityId },
+    SaveSubstates { target: EntityId },
     DeleteEntity { target: EntityId },
     MakeInitial { parent: EntityId, new_initial: EntityId },
     AddChildStateMachine { target: EntityId },
@@ -70,9 +72,22 @@ pub fn build_context_menu(graph: &StateMachineGraph, id: EntityId) -> Vec<MenuIt
         items.push(MenuItem { label: "Make Parallel", kind: MenuItemKind::MakeParallel });
     }
 
-    // Save As (only on the root state machine entity)
-    if is_root_state_machine {
-        items.push(MenuItem { label: "Save As", kind: MenuItemKind::Save });
+    // Save As: available on any node; server will validate serializability/cross-boundary.
+    items.push(MenuItem { label: "Save As", kind: MenuItemKind::Save });
+
+    // Save Substates: available if any descendant has a StateMachineId
+    let mut has_descendant_with_id = false;
+    if !node.children.is_empty() {
+        let mut stack: Vec<EntityId> = node.children.clone();
+        while let Some(cid) = stack.pop() {
+            if let Some(n) = graph.nodes.get(&cid) {
+                if n.components.contains(c::STATE_MACHINE_ID) { has_descendant_with_id = true; break; }
+                if !n.children.is_empty() { stack.extend_from_slice(&n.children); }
+            }
+        }
+    }
+    if has_descendant_with_id {
+        items.push(MenuItem { label: "Save Substates", kind: MenuItemKind::SaveSubstates });
     }
 
     // Rename (always available; inserts/updates Name on write)

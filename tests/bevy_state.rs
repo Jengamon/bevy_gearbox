@@ -18,7 +18,7 @@ enum TestState {
     B,
 }
 
-#[derive(EntityEvent, Clone, SimpleTransition)]
+#[derive(EntityEvent, Reflect, Clone, SimpleTransition)]
 struct Go(Entity);
 
 #[test]

@@ -1,6 +1,7 @@
 // Ported from bevy_gearbox_editor/examples/custom_payload.rs
 // Uses protocol server to enable optional remote editor connection
 use bevy::prelude::*;
+use bevy_gearbox::RegistrationAppExt;
 use bevy_gearbox::StateMachineId;
 use bevy_gearbox::prelude::*;
 use bevy_gearbox::GearboxPlugin;
@@ -14,7 +15,7 @@ use bevy_gearbox_editor::ServerPlugin;
 
 // --- Events ---
 
-#[derive(EntityEvent, Clone)]
+#[derive(EntityEvent, Reflect, Clone)]
 #[register_transition]
 struct Attack {
     #[event_target]
@@ -23,7 +24,7 @@ struct Attack {
     pub damage: f32,
 }
 
-#[derive(EntityEvent, Clone)]
+#[derive(EntityEvent, Reflect, Clone)]
 #[register_transition]
 struct TryDamage {
     #[event_target]
@@ -31,14 +32,14 @@ struct TryDamage {
     pub amount: f32,
 }
 
-#[derive(EntityEvent, Clone)]
+#[derive(EntityEvent, Reflect, Clone)]
 struct TakeDamage {
     #[event_target]
     pub target: Entity,
     pub amount: f32,
 }
 
-#[derive(EntityEvent, Clone)]
+#[derive(EntityEvent, Reflect, Clone)]
 #[register_transition]
 struct Die {
     #[event_target]
@@ -63,31 +64,31 @@ impl TransitionEvent for Die {}
 
 // --- State markers ---
 
-#[derive(Component, Clone)]
+#[derive(Component, Reflect, Clone)]
 struct Waiting;
 
-#[derive(Component, Clone)]
+#[derive(Component, Reflect, Clone)]
 struct Attacking;
 
-#[derive(Component, Clone)]
+#[derive(Component, Reflect, Clone)]
 struct TargetWaiting;
 
-#[derive(Component, Clone)]
+#[derive(Component, Reflect, Clone)]
 struct TakingDamageState;
 
-#[derive(Component, Clone)]
+#[derive(Component, Reflect, Clone)]
 struct Dead;
 
-#[derive(Component)]
+#[derive(Component, Reflect, Clone)]
 struct DummyTarget;
 
-#[derive(Component)]
+#[derive(Component, Reflect, Clone)]
 struct Shooter;
 
-#[derive(Component)]
+#[derive(Component, Reflect, Clone)]
 struct DamageAmount(pub f32);
 
-#[derive(Component)]
+#[derive(Component, Reflect, Clone)]
 struct Life(pub f32);
 
 #[derive(Component)]
@@ -113,11 +114,11 @@ fn main() {
         .add_observer(do_damage_on_entry)
         .add_systems(Startup, setup)
         .add_systems(Update, (input_attack_event, drive_bounces, process_respawn_queue))
-        .add_state_component::<Waiting>()
-        .add_state_component::<Attacking>()
-        .add_state_component::<TargetWaiting>()
-        .add_state_component::<TakingDamageState>()
-        .add_state_component::<Dead>()
+        .register_state_component::<Waiting>()
+        .register_state_component::<Attacking>()
+        .register_state_component::<TargetWaiting>()
+        .register_state_component::<TakingDamageState>()
+        .register_state_component::<Dead>()
         .run();
 }
 

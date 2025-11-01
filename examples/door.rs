@@ -1,7 +1,7 @@
 // Ported from bevy_gearbox_editor/examples/door.rs
 // Uses protocol server to enable optional remote editor connection
 use bevy::prelude::*;
-use bevy_gearbox::prelude::*;
+use bevy_gearbox::{RegistrationAppExt, prelude::*};
 use bevy_gearbox::transitions::{Source, After, DeferEvent};
 use bevy_gearbox::GearboxPlugin;
 use std::time::Duration;
@@ -17,10 +17,10 @@ fn main() {
         .add_observer(print_enter_state_messages)
         .add_observer(print_exit_state_messages)
         .add_observer(replay_deferred_event::<RequestClose>)
-        .add_state_component::<DoorClosed>()
-        .add_state_component::<DoorOpening>()
-        .add_state_component::<DoorOpen>()
-        .add_state_component::<DoorClosing>()
+        .register_state_component::<DoorClosed>()
+        .register_state_component::<DoorOpening>()
+        .register_state_component::<DoorOpen>()
+        .register_state_component::<DoorClosing>()
         .run();
 }
 
@@ -33,32 +33,32 @@ struct DoorMachine;
 // --- State Marker Components ---
 
 /// Marker component for when the door is closed
-#[derive(Component, Clone)]
+#[derive(Component, Reflect, Clone)]
 struct DoorClosed;
 
 /// Marker component for when the door is opening
-#[derive(Component, Clone)]
+#[derive(Component, Reflect, Clone)]
 struct DoorOpening;
 
 /// Marker component for when the door is open
-#[derive(Component, Clone)]
+#[derive(Component, Reflect, Clone)]
 struct DoorOpen;
 
 /// Marker component for when the door is closing
-#[derive(Component, Clone)]
+#[derive(Component, Reflect, Clone)]
 struct DoorClosing;
 
 // --- Events ---
 
 /// Event triggered when requesting the door to open (W key)
-#[derive(SimpleTransition, EntityEvent, Clone)]
+#[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
 struct RequestOpen {
     #[event_target]
     pub target: Entity,
 }
 
 /// Event triggered when requesting the door to close (E key)
-#[derive(SimpleTransition, EntityEvent, Clone)]
+#[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
 struct RequestClose {
     #[event_target]
     pub target: Entity,

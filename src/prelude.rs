@@ -24,7 +24,6 @@ pub use crate::{
     history::History,
     // Traits
     guards::Guard,
-    state_component::StateComponentAppExt,
     // Systems
     get_all_leaf_states,
     state_component::state_component_enter,

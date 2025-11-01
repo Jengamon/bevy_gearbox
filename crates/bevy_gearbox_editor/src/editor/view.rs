@@ -272,6 +272,7 @@ pub fn draw_doc(
                                         MenuItemKind::MakeParent => MenuSelection::MakeParent { target: *eid },
                                         MenuItemKind::MakeParallel => MenuSelection::MakeParallel { target: *eid },
                                         MenuItemKind::Save => MenuSelection::SaveStateMachine { target: *eid },
+                                        MenuItemKind::SaveSubstates => MenuSelection::SaveSubstates { target: *eid },
                                         MenuItemKind::Rename => MenuSelection::RenameEntity { target: *eid },
                                         MenuItemKind::Delete => MenuSelection::DeleteEntity { target: *eid },
                                         MenuItemKind::MakeInitial { parent } => MenuSelection::MakeInitial { parent, new_initial: *eid },

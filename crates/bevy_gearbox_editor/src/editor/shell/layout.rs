@@ -33,13 +33,6 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
             let _resp = ui.allocate_ui_with_layout(desired_canvas, egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_min_size(desired_canvas);
 
-                // Choose an active doc if none set but some are open
-                if store.active_doc.is_none() {
-                    if let Some(first) = store.open_docs.keys().next().cloned() {
-                        store.active_doc = Some(first);
-                    }
-                }
-
                 if let Some(active) = store.active_doc {
                     // Ensure a doc entry exists, then temporarily remove it to avoid borrow conflicts
                     workspace.docs.entry(active).or_default();
@@ -47,8 +40,15 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                     let mut entry = workspace.docs.remove(&active).unwrap_or_default();
                     if let Some(selection) = crate::editor::view::draw_doc(ui, &mut entry, &mut sel_local, active, workspace) {
                         match selection {
-                            crate::editor::context_menu::MenuSelection::SaveStateMachine { .. } => {
-                                commands.trigger(crate::editor::actions::SaveAsRequested { entity: active });
+                            crate::editor::context_menu::MenuSelection::SaveStateMachine { target } => {
+                                if let crate::model::EntityId::Server(sid) = target {
+                                    commands.trigger(crate::editor::actions::SaveAsRequested { doc: active, target: sid });
+                                }
+                            }
+                            crate::editor::context_menu::MenuSelection::SaveSubstates { target } => {
+                                if let crate::model::EntityId::Server(sid) = target {
+                                    commands.trigger(crate::editor::actions::SaveSubstatesRequested { target: sid });
+                                }
                             }
                             crate::editor::context_menu::MenuSelection::RenameEntity { target } => {
                                 // Seed inline edit with current display name or current label

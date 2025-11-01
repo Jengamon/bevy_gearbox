@@ -153,6 +153,19 @@ impl Client {
 		Ok(())
 	}
 
+    pub async fn save_as(&self, entity: u64, path: &str) -> Result<String, Error> {
+        let params = json!({"entity": entity, "path": path});
+        let v = self.jsonrpc_call("editor.save_as", Some(params)).await?;
+        let p = v.get("result").and_then(|r| r.get("path")).and_then(|s| s.as_str()).unwrap_or("").to_string();
+        Ok(p)
+    }
+
+    pub async fn save_substates(&self, entity: u64) -> Result<serde_json::Value, Error> {
+        let params = json!({"entity": entity});
+        let v = self.jsonrpc_call("editor.save_substates", Some(params)).await?;
+        Ok(v.get("result").cloned().unwrap_or(v))
+    }
+
 	pub async fn save_sidecar(&self, path: &str, contents: &str) -> Result<(), Error> {
 		let params = json!({"path": path, "contents": contents});
 		let _ = self.jsonrpc_call(EDITOR_SAVE_SIDECAR, Some(params)).await?;

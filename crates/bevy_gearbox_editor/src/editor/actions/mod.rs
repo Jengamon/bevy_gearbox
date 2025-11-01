@@ -3,10 +3,7 @@ use crate::types::ServerEntity;
 use super::model::store::EditorStore;
 use super::model::types::{ConnectionState, IndexFilter};
 use bevy_gearbox_protocol::client::{ClientCommand, NetCommand};
-use super::model::store::OpenDocument;
-use super::model::types::{DocMode, DocId, TabId};
 use crate::editor::workspace::Workspace;
-use crate::persistence::extract_sidecar_from_doc;
 use rfd::FileDialog;
 
 #[derive(Debug, Clone)]
@@ -74,10 +71,6 @@ pub fn on_connect_requested(evt: On<ConnectRequested>, mut store: ResMut<EditorS
 pub fn on_disconnect_requested(_evt: On<DisconnectRequested>, mut store: ResMut<EditorStore>, mut proto_net: MessageWriter<NetCommand>) {
     // Stop discovery stream when disconnecting
     proto_net.write(NetCommand::StopDiscovery);
-    // Proactively unsubscribe from all open docs before disconnecting
-    for (id, _) in store.open_docs.iter() {
-        proto_net.write(NetCommand::StopMachine { id: id.0 });
-    }
     disconnect(&mut store);
 }
 
@@ -103,15 +96,6 @@ pub fn on_open_requested(
     mut proto_net: MessageWriter<NetCommand>,
     mut proto_cmd: MessageWriter<ClientCommand>,
 ) {
-    // Ensure an OpenDocument exists (UI metadata only)
-    store.open_docs.entry(evt.entity).or_insert_with(|| OpenDocument {
-        doc_id: DocId(evt.entity),
-        tab_id: TabId(evt.entity),
-        mode: DocMode::Live,
-        is_subscribed: false,
-        is_dirty: false,
-        error: None,
-    });
     // Ensure a doc entry exists immediately for drawing feedback
     let _ = workspace.docs.entry(evt.entity).or_default();
     // Promote to active first, then enqueue fetch
@@ -140,7 +124,7 @@ pub fn on_unsubscribe_requested(evt: On<UnsubscribeRequested>, mut proto_net: Me
 }
 
 #[derive(Debug, Clone, Event)]
-pub struct SaveAsRequested { pub entity: ServerEntity }
+pub struct SaveAsRequested { pub doc: ServerEntity, pub target: ServerEntity }
 
 pub fn on_save_as_requested(
     save_as_requested: On<SaveAsRequested>,
@@ -167,27 +151,43 @@ pub fn on_save_as_requested(
         // Extract and serialize current sidecar snapshot once (to upload only on success)
         let sidecar_text: Option<String> = workspace
             .docs
-            .get(&save_as_requested.entity)
+            .get(&save_as_requested.doc)
             .map(|doc| {
-                let sc = extract_sidecar_from_doc(doc);
+                let root = crate::model::EntityId::Server(save_as_requested.target);
+                let sc = crate::persistence::extract_sidecar_for_subtree(doc, &root);
                 let pretty = ron::ser::PrettyConfig::new();
                 ron::ser::to_string_pretty(&sc, pretty).ok()
             })
             .flatten();
 
-        let entity_bits = save_as_requested.entity.0;
+        let entity_bits = save_as_requested.target.0;
         let client_cloned = client.clone();
         rt.0.spawn(async move {
-            // 1) Insert StateMachineId(name) on the root
+            // Insert/ensure StateMachineId(name)
             if client_cloned.set_state_machine_id(entity_bits, &id_text).await.is_err() { return; }
-            // 2) Save scene under assets/<name>.scn.ron
-            if client_cloned.save_graph(entity_bits, &scn_path).await.is_err() { return; }
-            // 3) Only on success, save editor sidecar next to it as assets/<name>.sm.ron
+            // Save As via new RPC
+            if client_cloned.save_as(entity_bits, &scn_path).await.is_err() { return; }
+            // Save editor sidecar adjacent on success
             if let Some(txt) = sidecar_text {
                 let _ = client_cloned.save_sidecar(&sm_path, &txt).await;
             }
         });
     }
+}
+
+#[derive(Debug, Clone, Event)]
+pub struct SaveSubstatesRequested { pub target: ServerEntity }
+
+pub fn on_save_substates_requested(
+    req: On<SaveSubstatesRequested>,
+    client: Res<bevy_gearbox_protocol::client::Client>,
+    rt: Res<bevy_gearbox_protocol::client::TokioRuntime>,
+) {
+    let id = req.target.0;
+    let client_cloned = client.clone();
+    rt.0.spawn(async move {
+        let _ = client_cloned.save_substates(id).await;
+    });
 }
 
 

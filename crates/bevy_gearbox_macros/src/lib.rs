@@ -127,27 +127,31 @@ pub fn gearbox_param(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let sync_install = if let Some(src_ty) = source_path.clone() {
-        if kind == "bool" {
-            quote! { bevy_gearbox::registration::register_bool_param_binding::<#src_ty, #name> }
-        } else if kind == "int" {
+        if kind == "int" {
             quote! { bevy_gearbox::registration::register_int_param_binding::<#src_ty, #name> }
-        } else {
+        } else if kind == "float" {
             quote! { bevy_gearbox::registration::register_float_param_binding::<#src_ty, #name> }
+        } else {
+            // No bool binding registration function in the new API
+            quote!{}
         }
     } else {
         quote!{}
     };
 
     let binding_installer = if let Some(_) = source_path {
-        let ty = if kind == "bool" {
-            quote! { bevy_gearbox::registration::BoolParamBindingInstaller }
-        } else if kind == "int" {
-            quote! { bevy_gearbox::registration::IntParamBindingInstaller }
+        if kind == "int" || kind == "float" {
+            let ty = if kind == "int" {
+                quote! { bevy_gearbox::registration::IntParamBindingInstaller }
+            } else {
+                quote! { bevy_gearbox::registration::FloatParamBindingInstaller }
+            };
+            quote! {
+                bevy_gearbox::inventory::submit! { #ty { install: #sync_install } }
+            }
         } else {
-            quote! { bevy_gearbox::registration::FloatParamBindingInstaller }
-        };
-        quote! {
-            bevy_gearbox::inventory::submit! { #ty { install: #sync_install } }
+            // Skip bool bindings to match the available registration methods
+            quote!{}
         }
     } else { quote!{} };
 

@@ -3,7 +3,13 @@
 use bevy::{prelude::*, reflect::Reflect};
 use bevy::platform::collections::HashSet;
 
+// Re-exports
 use crate::{active::{Active, Inactive}, guards::Guards, history::{History, HistoryState}};
+pub use registration::RegistrationAppExt;
+pub use bevy_gearbox_macros::SimpleTransition;
+pub use transitions::{TransitionEvent, NoEvent};
+pub use inventory;
+pub use bevy_gearbox_macros::register_transition;
 
 pub mod active;
 pub mod guards;
@@ -15,12 +21,6 @@ pub mod transitions;
 pub mod bevy_state;
 pub mod registration;
 
-// Re-exports
-pub use bevy_gearbox_macros::SimpleTransition;
-pub use transitions::{TransitionEvent, NoEvent};
-pub use inventory;
-pub use bevy_gearbox_macros::register_transition;
-
 /// The main plugin for `bevy_gearbox`. Registers events and adds the core systems.
 pub struct GearboxPlugin;
 
@@ -30,6 +30,7 @@ impl Plugin for GearboxPlugin {
             .add_observer(active::add_inactive)
             .add_observer(transition_observer::<()>)
             .add_observer(initialize_state_machine)
+            .add_observer(auto_attach_state_machine_on_substates)
             .add_observer(reset_state_region)
             .add_observer(transitions::always_edge_listener)
             .add_observer(transitions::start_after_on_enter)
@@ -64,10 +65,12 @@ impl Plugin for GearboxPlugin {
         app.add_systems(Update, (
             transitions::check_always_on_guards_changed,
             transitions::tick_after_system,
+            attach_state_machine_to_roots,
+            auto_reparent_scene_substates,
         ));
 
         // Auto-register items discovered via inventory (transitions, states, params)
-        registration::run_auto_installers(app);
+        app.run_auto_installers();
     }
 }
 
@@ -585,4 +588,50 @@ fn reset_state_region(
     }
 
     commands.entity(root).remove::<StateMachine>().insert(StateMachine::new());
+}
+
+/// When `Substates` is added to a host that is not itself a substate of another entity,
+/// attach a `StateMachine` so the host becomes a parallel-region root/container.
+fn auto_attach_state_machine_on_substates(
+    add_substates: On<Add, Substates>,
+    q_substate_of: Query<&SubstateOf>,
+    q_state_machine: Query<&StateMachine>,
+    mut commands: Commands,
+) {
+    let host = add_substates.event().entity;
+    let is_root = q_substate_of.get(host).is_err();
+    let has_machine = q_state_machine.get(host).is_ok();
+    if is_root && !has_machine {
+        commands.entity(host).insert(StateMachine::new());
+    }
+}
+
+/// Backfill attachment when a relationship existed prior to the observer firing.
+fn attach_state_machine_to_roots(
+    q_roots: Query<Entity, (With<Substates>, Without<SubstateOf>, Without<StateMachine>)>,
+    mut commands: Commands,
+) {
+    for e in q_roots.iter() {
+        commands.entity(e).insert(StateMachine::new());
+    }
+}
+
+fn auto_reparent_scene_substates(
+    q_scene: Query<(Entity, &Children), (With<DynamicSceneRoot>, With<SubstateOf>)>,
+    q_substate_of: Query<&SubstateOf>,
+    mut commands: Commands,
+) {
+    for (entity, children) in q_scene.iter() {
+        let Ok(substate_of) = q_substate_of.get(entity) else {
+            continue;
+        };
+        for child in children.iter() {
+            commands.entity(child).insert(ChildOf(substate_of.0));
+            if q_substate_of.contains(child) {
+                continue;
+            }
+            commands.entity(child).insert(SubstateOf(substate_of.0));
+        }
+        commands.entity(entity).despawn();
+    }
 }

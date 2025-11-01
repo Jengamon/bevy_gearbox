@@ -3,7 +3,7 @@ use bevy::platform::collections::HashSet;
 use bevy::ecs::component::Mutable;
 use std::any::TypeId;
 
-use crate::{parameter, state_component::StateComponentAppExt};
+use crate::parameter;
 use crate::transitions::TransitionEvent;
 use crate::transitions::{edge_event_listener, PhaseEvents, tick_after_event_timers, cancel_pending_event_on_exit, replay_deferred_event};
 
@@ -54,89 +54,260 @@ inventory::collect!(IntParamBindingInstaller);
 pub struct BoolParamBindingInstaller { pub install: fn(&mut App) }
 inventory::collect!(BoolParamBindingInstaller);
 
-// Public helpers for macros to call
+/// Helper trait to register components and systems to an App.
+pub trait RegistrationAppExt {
+    fn register_transition<E>(&mut self) -> &mut Self
+    where
+        E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static + bevy::reflect::TypePath,
+        for<'a> <E as Event>::Trigger<'a>: Default,
+        for<'a> <<E as TransitionEvent>::ExitEvent as Event>::Trigger<'a>: Default,
+        for<'a> <<E as TransitionEvent>::EffectEvent as Event>::Trigger<'a>: Default,
+        for<'a> <<E as TransitionEvent>::EntryEvent as Event>::Trigger<'a>: Default,
+        <E as TransitionEvent>::Validator: bevy::reflect::TypePath + bevy::reflect::FromReflect + bevy::reflect::GetTypeRegistration + bevy::reflect::Typed;
+
+    fn register_state_component<T>(&mut self) -> &mut Self
+    where
+        T: Component<Mutability = Mutable> + Clone + Reflect + FromReflect + bevy::reflect::TypePath + bevy::reflect::GetTypeRegistration + bevy::reflect::Typed + 'static;
+
+    fn register_float_param<P>(&mut self) -> &mut Self
+    where
+        P: Send + Sync + 'static;
+
+    fn register_int_param<P>(&mut self) -> &mut Self
+    where
+        P: Send + Sync + 'static;
+
+
+    fn register_float_param_binding<T, P>(&mut self) -> &mut Self
+    where
+        T: Component + 'static,
+        P: parameter::FloatParamBinding<T> + Send + Sync + 'static;
+
+    fn register_int_param_binding<T, P>(&mut self) -> &mut Self
+    where
+        T: Component + 'static,
+        P: parameter::IntParamBinding<T> + Send + Sync + 'static;
+
+    fn register_bool_param<P>(&mut self) -> &mut Self
+    where
+        P: Send + Sync + 'static;
+
+    fn run_auto_installers(&mut self);
+}
+
+impl RegistrationAppExt for App {
+    fn register_transition<E>(&mut self) -> &mut Self
+    where
+        E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static + bevy::reflect::TypePath,
+        for<'a> <E as Event>::Trigger<'a>: Default,
+        for<'a> <<E as TransitionEvent>::ExitEvent as Event>::Trigger<'a>: Default,
+        for<'a> <<E as TransitionEvent>::EffectEvent as Event>::Trigger<'a>: Default,
+        for<'a> <<E as TransitionEvent>::EntryEvent as Event>::Trigger<'a>: Default,
+        <E as TransitionEvent>::Validator: bevy::reflect::TypePath + bevy::reflect::FromReflect + bevy::reflect::GetTypeRegistration + bevy::reflect::Typed 
+    {
+        if !self.world().contains_resource::<InstalledTransitions>() {
+            self.insert_resource(InstalledTransitions(HashSet::new()));
+        }
+    
+        let mut installed = self.world_mut().resource_mut::<InstalledTransitions>();
+        let already = !installed.0.insert(TypeId::of::<E>());
+        drop(installed);
+        if already { return self; }
+    
+        // Ensure reflect registrations for EventEdge<E> and validator type are present for scene I/O
+        self.register_type::<crate::transitions::EventEdge<E>>();
+        self.register_type::<<E as TransitionEvent>::Validator>();
+    
+        self.add_observer(edge_event_listener::<E>)
+            .add_observer(crate::transition_observer::<PhaseEvents<E::ExitEvent, E::EffectEvent, E::EntryEvent>>)
+            .add_systems(Update, tick_after_event_timers::<E>)
+            .add_observer(cancel_pending_event_on_exit::<E>)
+            .add_observer(replay_deferred_event::<E>);
+        self
+    }
+    
+    fn register_state_component<T>(&mut self) -> &mut Self
+    where
+        T: Component<Mutability = Mutable> + Clone + Reflect + FromReflect + bevy::reflect::TypePath + bevy::reflect::GetTypeRegistration + bevy::reflect::Typed + 'static 
+    {
+        if !self.world().contains_resource::<InstalledStateComponents>() {
+            self.insert_resource(InstalledStateComponents(HashSet::new()));
+        }
+        let mut installed = self.world_mut().resource_mut::<InstalledStateComponents>();
+        let already = !installed.0.insert(TypeId::of::<T>());
+        drop(installed);
+        if already { return self; }
+    
+        // Reflect register inner T and the component wrappers for scene I/O
+        self.register_type::<T>();
+        self.register_type::<crate::state_component::StateComponent<T>>();
+        self.register_type::<crate::state_component::StateInactiveComponent<T>>();
+        self.add_observer(crate::prelude::state_component_enter::<T>);
+        self.add_observer(crate::prelude::state_component_exit::<T>);
+        self.add_observer(crate::prelude::state_inactive_component_enter::<T>);
+        self.add_observer(crate::prelude::state_inactive_component_exit::<T>);
+        self
+    }
+
+    fn register_float_param<P>(&mut self) -> &mut Self
+    where
+        P: Send + Sync + 'static,
+    {
+        if !self.world().contains_resource::<InstalledFloatParams>() {
+            self.insert_resource(InstalledFloatParams(HashSet::new()));
+        }
+        let mut installed = self.world_mut().resource_mut::<InstalledFloatParams>();
+        let already = !installed.0.insert(TypeId::of::<P>());
+        drop(installed);
+        if already { return self; }
+    
+        self.add_systems(Update, parameter::apply_float_param_guards::<P>);
+        self
+    }
+
+    fn register_int_param<P>(&mut self) -> &mut Self
+    where
+        P: Send + Sync + 'static,
+    {
+        if !self.world().contains_resource::<InstalledIntParams>() {
+            self.insert_resource(InstalledIntParams(HashSet::new()));
+        }
+        let mut installed = self.world_mut().resource_mut::<InstalledIntParams>();
+        let already = !installed.0.insert(TypeId::of::<P>());
+        drop(installed);
+        if already { return self; }
+    
+        self.add_systems(Update, parameter::apply_int_param_guards::<P>);
+        self
+    }
+
+    fn register_bool_param<P>(&mut self) -> &mut Self
+    where
+        P: Send + Sync + 'static,
+    {
+        if !self.world().contains_resource::<InstalledBoolParams>() {
+            self.insert_resource(InstalledBoolParams(HashSet::new()));
+        }
+        let mut installed = self.world_mut().resource_mut::<InstalledBoolParams>();
+        let already = !installed.0.insert(TypeId::of::<P>());
+        drop(installed);
+        if already { return self; }
+    
+        self.add_systems(Update, parameter::apply_bool_param_guards::<P>);
+        self
+    }
+
+    fn register_float_param_binding<T, P>(&mut self) -> &mut Self
+    where
+        T: Component + 'static,
+        P: parameter::FloatParamBinding<T> + Send + Sync + 'static,
+    {
+        if !self.world().contains_resource::<InstalledFloatParamBindings>() {
+            self.insert_resource(InstalledFloatParamBindings(HashSet::new()));
+        }
+        let mut installed = self.world_mut().resource_mut::<InstalledFloatParamBindings>();
+        let already = !installed.0.insert((TypeId::of::<T>(), TypeId::of::<P>()));
+        drop(installed);
+        if already { return self; }
+    
+        self.add_systems(Update, parameter::sync_float_param::<T, P>);
+        self
+    }
+
+    fn register_int_param_binding<T, P>(&mut self) -> &mut Self
+    where
+        T: Component + 'static,
+        P: parameter::IntParamBinding<T> + Send + Sync + 'static,
+    {
+        if !self.world().contains_resource::<InstalledIntParamBindings>() {
+            self.insert_resource(InstalledIntParamBindings(HashSet::new()));
+        }
+        let mut installed = self.world_mut().resource_mut::<InstalledIntParamBindings>();
+        let already = !installed.0.insert((TypeId::of::<T>(), TypeId::of::<P>()));
+        drop(installed);
+        if already { return self; }
+    
+        self.add_systems(Update, parameter::sync_int_param::<T, P>);
+        self
+    }
+
+    fn run_auto_installers(&mut self) {
+        for installer in inventory::iter::<TransitionInstaller> {
+            (installer.install)(self);
+        }
+        for installer in inventory::iter::<StateInstaller> {
+            (installer.install)(self);
+        }
+        for installer in inventory::iter::<FloatParamInstaller> {
+            (installer.install)(self);
+        }
+        for installer in inventory::iter::<IntParamInstaller> {
+            (installer.install)(self);
+        }
+        for installer in inventory::iter::<BoolParamInstaller> {
+            (installer.install)(self);
+        }
+        for installer in inventory::iter::<FloatParamBindingInstaller> {
+            (installer.install)(self);
+        }
+        for installer in inventory::iter::<IntParamBindingInstaller> {
+            (installer.install)(self);
+        }
+        for installer in inventory::iter::<BoolParamBindingInstaller> {
+            (installer.install)(self);
+        }
+    }
+}
+
+// Free-function wrappers for macro-driven installers expecting `fn(&mut App)` symbols
+// These delegate to the corresponding `RegistrationAppExt` methods.
 pub fn register_transition<E>(app: &mut App)
 where
-    E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static,
+    E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static + bevy::reflect::TypePath,
     for<'a> <E as Event>::Trigger<'a>: Default,
     for<'a> <<E as TransitionEvent>::ExitEvent as Event>::Trigger<'a>: Default,
     for<'a> <<E as TransitionEvent>::EffectEvent as Event>::Trigger<'a>: Default,
     for<'a> <<E as TransitionEvent>::EntryEvent as Event>::Trigger<'a>: Default,
+    <E as TransitionEvent>::Validator: bevy::reflect::TypePath + bevy::reflect::FromReflect + bevy::reflect::GetTypeRegistration + bevy::reflect::Typed,
 {
-    if !app.world().contains_resource::<InstalledTransitions>() {
-        app.insert_resource(InstalledTransitions(HashSet::new()));
-    }
-
-    let mut installed = app.world_mut().resource_mut::<InstalledTransitions>();
-    let already = !installed.0.insert(TypeId::of::<E>());
-    drop(installed);
-    if already { return; }
-
-    app.add_observer(edge_event_listener::<E>)
-        .add_observer(crate::transition_observer::<PhaseEvents<E::ExitEvent, E::EffectEvent, E::EntryEvent>>)
-        .add_systems(Update, tick_after_event_timers::<E>)
-        .add_observer(cancel_pending_event_on_exit::<E>)
-        .add_observer(replay_deferred_event::<E>);
-}
-
-pub fn register_state_component<T>(app: &mut App)
-where
-    T: Component<Mutability = Mutable> + Clone + 'static,
-{
-    if !app.world().contains_resource::<InstalledStateComponents>() {
-        app.insert_resource(InstalledStateComponents(HashSet::new()));
-    }
-    let mut installed = app.world_mut().resource_mut::<InstalledStateComponents>();
-    let already = !installed.0.insert(TypeId::of::<T>());
-    drop(installed);
-    if already { return; }
-
-    app.add_state_component::<T>();
+    RegistrationAppExt::register_transition::<E>(app);
 }
 
 pub fn register_float_param<P>(app: &mut App)
 where
     P: Send + Sync + 'static,
 {
-    if !app.world().contains_resource::<InstalledFloatParams>() {
-        app.insert_resource(InstalledFloatParams(HashSet::new()));
-    }
-    let mut installed = app.world_mut().resource_mut::<InstalledFloatParams>();
-    let already = !installed.0.insert(TypeId::of::<P>());
-    drop(installed);
-    if already { return; }
-
-    app.add_systems(Update, parameter::apply_float_param_guards::<P>);
+    RegistrationAppExt::register_float_param::<P>(app);
 }
 
 pub fn register_int_param<P>(app: &mut App)
 where
     P: Send + Sync + 'static,
 {
-    if !app.world().contains_resource::<InstalledIntParams>() {
-        app.insert_resource(InstalledIntParams(HashSet::new()));
-    }
-    let mut installed = app.world_mut().resource_mut::<InstalledIntParams>();
-    let already = !installed.0.insert(TypeId::of::<P>());
-    drop(installed);
-    if already { return; }
-
-    app.add_systems(Update, parameter::apply_int_param_guards::<P>);
+    RegistrationAppExt::register_int_param::<P>(app);
 }
 
 pub fn register_bool_param<P>(app: &mut App)
 where
     P: Send + Sync + 'static,
 {
-    if !app.world().contains_resource::<InstalledBoolParams>() {
-        app.insert_resource(InstalledBoolParams(HashSet::new()));
-    }
-    let mut installed = app.world_mut().resource_mut::<InstalledBoolParams>();
-    let already = !installed.0.insert(TypeId::of::<P>());
-    drop(installed);
-    if already { return; }
+    RegistrationAppExt::register_bool_param::<P>(app);
+}
 
-    app.add_systems(Update, parameter::apply_bool_param_guards::<P>);
+pub fn register_float_param_binding<T, P>(app: &mut App)
+where
+    T: Component + 'static,
+    P: parameter::FloatParamBinding<T> + Send + Sync + 'static,
+{
+    RegistrationAppExt::register_float_param_binding::<T, P>(app);
+}
+
+pub fn register_int_param_binding<T, P>(app: &mut App)
+where
+    T: Component + 'static,
+    P: parameter::IntParamBinding<T> + Send + Sync + 'static,
+{
+    RegistrationAppExt::register_int_param_binding::<T, P>(app);
 }
 
 // Deduping for (T, P) bindings
@@ -149,86 +320,7 @@ pub struct InstalledIntParamBindings(pub HashSet<(TypeId, TypeId)>);
 #[derive(Resource, Default)]
 pub struct InstalledBoolParamBindings(pub HashSet<(TypeId, TypeId)>);
 
-pub fn register_float_param_binding<T, P>(app: &mut App)
-where
-    T: Component + 'static,
-    P: parameter::FloatParamBinding<T> + Send + Sync + 'static,
-{
-    if !app.world().contains_resource::<InstalledFloatParamBindings>() {
-        app.insert_resource(InstalledFloatParamBindings(HashSet::new()));
-    }
-    let mut installed = app.world_mut().resource_mut::<InstalledFloatParamBindings>();
-    let already = !installed.0.insert((TypeId::of::<T>(), TypeId::of::<P>()));
-    drop(installed);
-    if already { return; }
-
-    app.add_systems(Update, parameter::sync_float_param::<T, P>);
-}
-
-pub fn register_int_param_binding<T, P>(app: &mut App)
-where
-    T: Component + 'static,
-    P: parameter::IntParamBinding<T> + Send + Sync + 'static,
-{
-    if !app.world().contains_resource::<InstalledIntParamBindings>() {
-        app.insert_resource(InstalledIntParamBindings(HashSet::new()));
-    }
-    let mut installed = app.world_mut().resource_mut::<InstalledIntParamBindings>();
-    let already = !installed.0.insert((TypeId::of::<T>(), TypeId::of::<P>()));
-    drop(installed);
-    if already { return; }
-
-    app.add_systems(Update, parameter::sync_int_param::<T, P>);
-}
-
-pub fn register_bool_param_binding<T, P>(app: &mut App)
-where
-    T: Component + 'static,
-    P: parameter::BoolParamBinding<T> + Send + Sync + 'static,
-{
-    if !app.world().contains_resource::<InstalledBoolParamBindings>() {
-        app.insert_resource(InstalledBoolParamBindings(HashSet::new()));
-    }
-    let mut installed = app.world_mut().resource_mut::<InstalledBoolParamBindings>();
-    let already = !installed.0.insert((TypeId::of::<T>(), TypeId::of::<P>()));
-    drop(installed);
-    if already { return; }
-
-    app.add_systems(Update, parameter::sync_bool_param::<T, P>);
-}
-
-pub fn run_auto_installers(app: &mut App) {
-    // Existing transition auto-registration
-    for installer in inventory::iter::<TransitionInstaller> {
-        (installer.install)(app);
-    }
-    // New: state components and parameters
-    for installer in inventory::iter::<StateInstaller> {
-        (installer.install)(app);
-    }
-    for installer in inventory::iter::<FloatParamInstaller> {
-        (installer.install)(app);
-    }
-    for installer in inventory::iter::<IntParamInstaller> {
-        (installer.install)(app);
-    }
-    for installer in inventory::iter::<BoolParamInstaller> {
-        (installer.install)(app);
-    }
-    // Param bindings
-    for installer in inventory::iter::<FloatParamBindingInstaller> {
-        (installer.install)(app);
-    }
-    for installer in inventory::iter::<IntParamBindingInstaller> {
-        (installer.install)(app);
-    }
-    for installer in inventory::iter::<BoolParamBindingInstaller> {
-        (installer.install)(app);
-    }
-}
-
 /// Function-style plugin to run inventory-based auto-registrations without the full GearboxPlugin
 pub fn gearbox_auto_register_plugin(app: &mut App) {
-    run_auto_installers(app);
+    app.run_auto_installers();
 }
-

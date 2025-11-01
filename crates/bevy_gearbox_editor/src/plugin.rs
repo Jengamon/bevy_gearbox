@@ -11,7 +11,7 @@ use crate::editor::actions::{
     on_connect_requested, on_disconnect_requested, on_reconnect_requested, on_refresh_index_requested, on_open_requested,
 };
 use crate::editor::adapter::project_graph_into_doc;
-use crate::persistence::{apply_sidecar_to_doc, compute_graph_fingerprint, load_sidecar, parse_sidecar_text};
+use crate::persistence::{apply_sidecar_to_doc, load_sidecar, parse_sidecar_text};
 use crate::editor::model::types::ConnectionState as EditorConnectionState;
 use crate::editor::model::types::{IndexItem};
 use bevy_gearbox_protocol::components as c;
@@ -47,6 +47,7 @@ impl Plugin for EditorPlugin {
             .add_observer(on_open_requested)
             .add_observer(crate::editor::actions::on_unsubscribe_requested)
             .add_observer(crate::editor::actions::on_save_as_requested)
+            .add_observer(crate::editor::actions::on_save_substates_requested)
             ;
 
         use bevy_egui::EguiPrimaryContextPass;
@@ -116,19 +117,34 @@ fn poll_network(
             }
             ClientMessage::GraphResult { id, graph } => {
                 if let Some(sm_graph) = convert_wire_graph_to_state_machine_graph(graph.clone()) {
-                    let fp = compute_graph_fingerprint(&sm_graph);
                     let doc_id = ServerEntity(*id);
-                    ui.graphs.insert(doc_id, sm_graph);
-                    // Prefer server-resolved sidecar lookup by machine
+                    // Stash graph snapshot for projection
+                    ui.graphs.insert(doc_id, sm_graph.clone());
+                    // Request sidecar for the machine root
+                    println!("[editor] graph_result: requesting sidecar for root {}", id);
                     client_cmd.write(ClientCommand::SidecarForMachine { id: *id });
+                    // Also request sidecars for any substate nodes that declare a StateMachineId
+                    let mut requested = 0usize;
+                    for (nid, node) in sm_graph.nodes.iter() {
+                        if node.components.contains(c::STATE_MACHINE_ID) {
+                            if let crate::model::EntityId::Server(se) = nid {
+                                println!("[editor] graph_result: requesting sidecar for substate {}", se.0);
+                                client_cmd.write(ClientCommand::SidecarForMachine { id: se.0 });
+                                requested += 1;
+                            }
+                        }
+                    }
+                    println!("[editor] graph_result: requested {} substate sidecars", requested);
                 }
             }
             ClientMessage::SidecarFound { id, text } => {
                 let doc_id = ServerEntity(*id);
+                println!("[editor] sidecar_found: id={} ({} bytes)", id, text.len());
                 ui.sidecar_texts.insert(doc_id, text.clone());
                 processed += 1;
             }
             ClientMessage::SidecarMissing { .. } => {
+                println!("[editor] sidecar_missing");
                 // No-op; fallback to local disk/default layout in sync pass
                 processed += 1;
             }
@@ -292,15 +308,15 @@ fn sync_snapshots_to_workspace(
         // After mutation, avoid borrowing workspace again; use the entry we have
         to_remove.push(*id);
         // Try applying sidecar when: (a) first load, or (b) new sidecar text arrived
-        let fp = compute_graph_fingerprint(&graph);
         let mut applied = false;
         if let Some(text) = ui.sidecar_texts.get(id) {
             match parse_sidecar_text(text) {
                 Ok(sc) => {
+                    println!("[editor] applying sidecar to doc {}", id.0);
                     apply_sidecar_to_doc(entry, &sc);
                     applied = true;
                 }
-                Err(e) => (),
+                Err(e) => { println!("[editor] sidecar parse error for {}: {}", id.0, e); },
             }
             // mark for single-consume once attempted (avoid re-applying every frame)
             consume_sidecar_for.push(*id);
@@ -317,6 +333,7 @@ fn sync_snapshots_to_workspace(
                 tried.push(candidate_assets.clone());
                 for p in tried {
                     if p.exists() {
+                        println!("[editor] fallback loading sidecar: {}", p.to_string_lossy());
                         if let Ok(sc) = load_sidecar(&p) { apply_sidecar_to_doc(entry, &sc); applied = true; break; }
                     }
                 }
@@ -325,6 +342,7 @@ fn sync_snapshots_to_workspace(
                 // As a final fallback when no sidecar is found anywhere, ensure a derived default layout
                 // is applied so the editor shows states/edges at reasonable default positions.
                 if entry.graph.is_some() && entry.views.is_empty() {
+                    println!("[editor] no sidecar found; projecting default layout");
                     project_graph_into_doc(entry, graph.clone());
                 }
             }
@@ -335,16 +353,32 @@ fn sync_snapshots_to_workspace(
     // Apply any sidecars that arrived independently of new snapshots (decoupled from inbox)
     // Only apply if the doc already has a graph to target
     let extra_sidecars: Vec<(ServerEntity, String)> = ui.sidecar_texts.iter().map(|(k, v)| (*k, v.clone())).collect();
-    for (id, text) in extra_sidecars.iter() {
-        if let Some(doc) = workspace.docs.get_mut(id) {
-            if let Some(_graph) = &doc.graph {
-                match parse_sidecar_text(text) {
-                    Ok(sc) => {
+    for (target_entity, text) in extra_sidecars.iter() {
+        for (doc_id, doc) in workspace.docs.iter_mut() {
+            if doc.graph.is_none() { continue; }
+            let graph = doc.graph.as_ref().unwrap();
+            // If this sidecar targets the doc root, apply whole-doc overlay; otherwise, apply to subtree if present
+            if let Some(root_node) = graph.nodes.get(&graph.root) {
+                let is_doc_root = matches!(graph.root, crate::model::EntityId::Server(r) if r.0 == target_entity.0);
+                let mut applied_here = false;
+                if is_doc_root {
+                    if let Ok(sc) = parse_sidecar_text(text) {
+                        println!("[editor] applying extra sidecar (root) to doc {}", doc_id.0);
                         apply_sidecar_to_doc(doc, &sc);
-                        consume_sidecar_for.push(*id);
+                        applied_here = true;
                     }
-                    Err(e) => (),
+                } else {
+                    // Check if the target entity exists as a node in this doc
+                    let target_id = crate::model::EntityId::Server(*target_entity);
+                    if graph.nodes.contains_key(&target_id) {
+                        if let Ok(sc) = parse_sidecar_text(text) {
+                            println!("[editor] applying extra sidecar (subtree {}) to doc {}", target_entity.0, doc_id.0);
+                            crate::persistence::apply_sidecar_to_subtree(doc, &sc, &target_id);
+                            applied_here = true;
+                        }
+                    }
                 }
+                if applied_here { consume_sidecar_for.push(*target_entity); }
             }
         }
     }

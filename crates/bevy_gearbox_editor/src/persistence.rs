@@ -3,73 +3,8 @@ use bevy::scene::{DynamicScene, DynamicSceneRoot};
 use bevy_egui::egui;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-
-/// Spawn a loader entity to load a Bevy DynamicScene from an asset path.
-/// The asset path should be AssetServer-relative (e.g., "app_state.scn.ron").
-pub fn load_graph_from_file(commands: &mut Commands, asset_server: &AssetServer, file_path: impl Into<String>) -> Entity {
-    let path: String = file_path.into();
-    let handle: Handle<DynamicScene> = asset_server.load(path);
-    commands
-        .spawn((Name::new("State Machine (scene)"), DynamicSceneRoot(handle)))
-        .id()
-}
-
-// ============
-// Sidecar (.sm.ron) save
-// ============
-use std::fs;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-
-fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
-    let tmp_path: PathBuf = {
-        let mut p = path.to_path_buf();
-        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-            p.set_file_name(format!("{}.tmp", name));
-        } else {
-            p.set_file_name("sidecar.tmp");
-        }
-        p
-    };
-
-    {
-        let mut f = fs::File::create(&tmp_path)?;
-        f.write_all(contents.as_bytes())?;
-        f.flush()?;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        fs::rename(&tmp_path, path)?;
-        Ok(())
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = fs::remove_file(path);
-        fs::rename(&tmp_path, path)
-    }
-}
-
-fn to_sidecar_path(path_no_ext_or_full: impl AsRef<Path>) -> PathBuf {
-    let p = path_no_ext_or_full.as_ref();
-    let s = p.to_string_lossy();
-    if s.ends_with(".sm.ron") { return p.to_path_buf(); }
-    let mut out = p.to_path_buf();
-    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-        // If user passed a base without extension, append .sm.ron
-        if p.extension().is_none() || p.extension().and_then(|e| e.to_str()) != Some("sm.ron") {
-            out.set_file_name(format!("{}.sm.ron", stem));
-        }
-    } else {
-        out.set_file_name("state_machine.sm.ron");
-    }
-    out
-}
-
-pub fn save_sidecar_text(path_no_ext_or_full: impl AsRef<Path>, contents: &str) -> io::Result<()> {
-    let path = to_sidecar_path(path_no_ext_or_full);
-    if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
-    atomic_write(&path, contents)
-}
+use std::io;
+use std::path::Path;
 
 // ======================
 // Editor sidecar schema
@@ -101,20 +36,14 @@ impl Sidecar {
     }
 }
 
-pub fn save_sidecar(path: impl AsRef<Path>, sidecar: &Sidecar) -> io::Result<()> {
-    let pretty = ron::ser::PrettyConfig::new();
-    let text = ron::ser::to_string_pretty(sidecar, pretty).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("ron: {e}")))?;
-    save_sidecar_text(path, &text)
-}
-
-pub fn load_sidecar(path: impl AsRef<Path>) -> io::Result<Sidecar> {
+pub fn load_sidecar(path: impl AsRef<std::path::Path>) -> std::io::Result<Sidecar> {
     let text = std::fs::read_to_string(path)?;
-    let sidecar: Sidecar = ron::de::from_str(&text).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("ron: {e}")))?;
+    let sidecar: Sidecar = ron::de::from_str(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("ron: {e}")))?;
     Ok(sidecar)
 }
 
-pub fn parse_sidecar_text(text: &str) -> io::Result<Sidecar> {
-    let sidecar: Sidecar = ron::de::from_str(text).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("ron: {e}")))?;
+pub fn parse_sidecar_text(text: &str) -> std::io::Result<Sidecar> {
+    let sidecar: Sidecar = ron::de::from_str(text).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("ron: {e}")))?;
     Ok(sidecar)
 }
 
@@ -209,20 +138,59 @@ pub fn compute_graph_fingerprint(graph: &StateMachineGraph) -> String {
 // Apply/Extract
 // ===============
 
-pub fn extract_sidecar_from_doc(doc: &GraphDoc) -> Sidecar {
+/// Extract a sidecar limited to the subtree rooted at `root`.
+pub fn extract_sidecar_for_subtree(doc: &GraphDoc, root: &EntityId) -> Sidecar {
     let mut sc = Sidecar::new();
     if let Some(graph) = &doc.graph {
-        sc.graph_fingerprint = Some(compute_graph_fingerprint(graph));
+        // Compute a local origin for subtree serialization: the subtree root's current world min
+        let base_min = doc
+            .views
+            .get(root)
+            .map(|v| v.rect.min)
+            .unwrap_or(egui::pos2(0.0, 0.0));
+        // Collect subtree nodes (DFS) and internal edges
+        use std::collections::{HashSet, VecDeque};
+        let mut nodes_set: HashSet<EntityId> = HashSet::new();
+        let mut q: VecDeque<EntityId> = VecDeque::new();
+        q.push_back(*root);
+        while let Some(cur) = q.pop_front() {
+            if !nodes_set.insert(cur) { continue; }
+            if let Some(n) = graph.nodes.get(&cur) {
+                for child in n.children.iter() { q.push_back(*child); }
+            }
+        }
+        // Build a temporary subgraph for fingerprinting
+        let mut sub = crate::model::StateMachineGraph::new(crate::model::StateNode::new(*root));
+        // Insert nodes
+        for id in nodes_set.iter() {
+            if let Some(n) = graph.nodes.get(id) { sub.nodes.insert(*id, n.clone()); }
+        }
+        // Insert edges where both endpoints are within the subtree
+        for (eid, e) in graph.edges.iter() {
+            if nodes_set.contains(&e.source) && nodes_set.contains(&e.target) {
+                sub.edges.insert(*eid, e.clone());
+            }
+        }
+        sc.graph_fingerprint = Some(compute_graph_fingerprint(&sub));
+
+        // Capture views only for nodes/edges in the subtree
         for (id, view) in doc.views.iter() {
+            let include = match view.kind {
+                UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => nodes_set.contains(id),
+                UiViewKind::Edge { .. } => sub.edges.contains_key(id),
+            };
+            if !include { continue; }
             match view.kind {
                 UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => {
-                    let key = node_key(graph, id);
-                    sc.nodes.insert(key, NodeLayout { pos: (view.rect.min.x, view.rect.min.y), collapsed: false });
+                    let key = node_key(&sub, id);
+                    // Store positions relative to the subtree root so they compose correctly when embedded
+                    sc.nodes.insert(key, NodeLayout { pos: (view.rect.min.x - base_min.x, view.rect.min.y - base_min.y), collapsed: false });
                 }
                 UiViewKind::Edge { .. } => {
-                    let key = edge_key(graph, id);
+                    let key = edge_key(&sub, id);
                     let center = view.pill.as_ref().map(|p| p.center).unwrap_or(view.rect.center());
-                    sc.edges.insert(key, EdgeLayout { pill_center: (center.x, center.y) });
+                    // Store pill centers relative to the subtree root
+                    sc.edges.insert(key, EdgeLayout { pill_center: (center.x - base_min.x, center.y - base_min.y) });
                 }
             }
         }
@@ -266,6 +234,77 @@ pub fn apply_sidecar_to_doc(doc: &mut GraphDoc, sidecar: &Sidecar) {
         }
     }
     if let Some(vp) = &sidecar.viewport { doc.transform.pan = egui::vec2(vp.pan.0, vp.pan.1); doc.transform.zoom = vp.zoom; }
+}
+
+/// Apply a sidecar whose keys were generated relative to a subtree rooted at `root`.
+/// This matches keys using a temporary subgraph that contains only the subtree and
+/// overlays positions for nodes/edges within that subtree in the full document.
+pub fn apply_sidecar_to_subtree(doc: &mut GraphDoc, sidecar: &Sidecar, root: &EntityId) {
+    use std::collections::{HashSet, VecDeque};
+    if doc.graph.is_none() { return; }
+    let graph = doc.graph.clone().unwrap();
+    // World-space offset to place subtree-local positions: current subtree root min
+    let base_min = doc
+        .views
+        .get(root)
+        .map(|v| v.rect.min)
+        .unwrap_or(egui::pos2(0.0, 0.0));
+    // 1) Collect subtree node ids
+    let mut nodes_set: HashSet<EntityId> = HashSet::new();
+    let mut q: VecDeque<EntityId> = VecDeque::new();
+    q.push_back(*root);
+    while let Some(cur) = q.pop_front() {
+        if !nodes_set.insert(cur) { continue; }
+        if let Some(n) = graph.nodes.get(&cur) { for child in n.children.iter() { q.push_back(*child); } }
+    }
+    // 2) Build a temporary subgraph for key computation
+    let mut sub = crate::model::StateMachineGraph::new(crate::model::StateNode::new(*root));
+    for id in nodes_set.iter() {
+        if let Some(n) = graph.nodes.get(id) { sub.nodes.insert(*id, n.clone()); }
+    }
+    for (eid, e) in graph.edges.iter() {
+        if nodes_set.contains(&e.source) && nodes_set.contains(&e.target) { sub.edges.insert(*eid, e.clone()); }
+    }
+    // 3) Apply node/edge layouts using subtree-relative keys
+    for (id, view) in doc.views.iter_mut() {
+        let include = match view.kind {
+            UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => nodes_set.contains(id),
+            UiViewKind::Edge { .. } => sub.edges.contains_key(id),
+        };
+        if !include { continue; }
+        match view.kind {
+            UiViewKind::Leaf | UiViewKind::Parent | UiViewKind::Parallel => {
+                let key = node_key(&sub, id);
+                let mut found = sidecar.nodes.get(&key);
+                if found.is_none() {
+                    let legacy = legacy_node_key(&sub, id);
+                    found = sidecar.nodes.get(&legacy);
+                }
+                if let Some(n) = found {
+                    let size = view.rect.size();
+                    // Convert subtree-local position back to world by adding the current root's min
+                    view.rect = egui::Rect::from_min_size(egui::pos2(n.pos.0 + base_min.x, n.pos.1 + base_min.y), size);
+                }
+            }
+            UiViewKind::Edge { .. } => {
+                let key = edge_key(&sub, id);
+                let mut found = sidecar.edges.get(&key);
+                if found.is_none() {
+                    let legacy = legacy_edge_key(&sub, id);
+                    found = sidecar.edges.get(&legacy);
+                }
+                if let Some(e) = found {
+                    let size = view.rect.size();
+                    // Convert subtree-local pill center to world
+                    let center = egui::pos2(e.pill_center.0 + base_min.x, e.pill_center.1 + base_min.y);
+                    let min = egui::pos2(center.x - size.x * 0.5, center.y - size.y * 0.5);
+                    view.rect = egui::Rect::from_min_size(min, size);
+                    if let Some(p) = view.pill.as_mut() { p.center = center; }
+                }
+            }
+        }
+    }
+    // Do not apply viewport for subtree overlays; keep parent's viewport unchanged
 }
 
 

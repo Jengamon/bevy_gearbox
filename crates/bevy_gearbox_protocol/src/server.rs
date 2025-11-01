@@ -107,10 +107,132 @@ fn collect_state_machine_entities(world: &World, root: Entity) -> Vec<Entity> {
 fn build_scene_from_root(world: &mut World, root: Entity) -> bevy::scene::DynamicScene {
     use bevy::scene::DynamicSceneBuilder;
     let entities = collect_state_machine_entities(world, root);
-    let mut builder = DynamicSceneBuilder::from_world(world);
-    builder = builder.allow_all();
-    builder = builder.extract_entities(entities.into_iter());
-    builder.build()
+    let mut builder = DynamicSceneBuilder::from_world(world)
+        .allow_all()
+        .deny_component::<bevy::camera::visibility::VisibilityClass>()
+        .extract_entities(entities.into_iter())
+        .build();
+    builder
+}
+
+// =========================
+// Save As / Save Substates
+// =========================
+
+#[derive(Deserialize)]
+struct SaveAsParams { entity: Entity, path: String }
+
+fn ensure_absolute_assets_path(path: String) -> std::path::PathBuf {
+    let mut p = std::path::PathBuf::from(path);
+    if !p.is_absolute() { p = std::path::PathBuf::from("assets").join(p); }
+    if p.extension().and_then(|s| s.to_str()) != Some("ron") { p.set_extension("scn.ron"); }
+    p
+}
+
+fn find_unreflected_components(world: &World, entities: &[Entity]) -> Vec<String> {
+    let regs = world.resource::<AppTypeRegistry>().read();
+    let mut out: Vec<String> = Vec::new();
+    for &e in entities.iter() {
+        if !world.entities().contains(e) { continue; }
+        let original = world.entity(e);
+        for component_id in original.archetype().iter_components() {
+            if let Some(info) = world.components().get_info(component_id) {
+                if let Some(type_id) = info.type_id() {
+                    let has_refl = regs.get(type_id).and_then(|r| r.data::<bevy::ecs::reflect::ReflectComponent>()).is_some();
+                    if !has_refl { out.push(info.name().to_string()); }
+                }
+            }
+        }
+    }
+    out.sort(); out.dedup();
+    out
+}
+
+fn save_as_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: SaveAsParams = serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError { code: error_codes::INVALID_PARAMS, message: format!("invalid params: {e}"), data: None })?;
+    if !world.entities().contains(p.entity) {
+        return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
+    }
+    println!("[protocol] save_as: entity={} path={} (begin)", entity_to_bits(p.entity), p.path);
+    // Preflight: ensure all components in subtree are reflect-serializable
+    let set = collect_state_machine_entities(world, p.entity);
+    println!("[protocol] save_as: collected {} entities in subtree", set.len());
+    let bad = find_unreflected_components(world, &set);
+    if !bad.is_empty() {
+        println!("[protocol] save_as: failing due to unreflected components: {}", bad.join(", "));
+        return Err(BrpError { code: error_codes::INVALID_PARAMS, message: format!("unserializable components present: {}", bad.join(", ")), data: None });
+    }
+    let mut scene = build_scene_from_root(world, p.entity);
+    println!("[protocol] save_as: scene built");
+    // Remove SubstateOf on the selected root so it becomes a top-level root when loading
+    if let Some(ent) = scene.entities.iter_mut().find(|e| e.entity == p.entity) {
+        let before = ent.components.len();
+        ent.components.retain(|c| !c.represents::<gearbox::SubstateOf>());
+        let after = ent.components.len();
+        if before != after { println!("[protocol] save_as: stripped SubstateOf from root ({} -> {} comps)", before, after); }
+    }
+    let ron = serialize_scene(world, &scene).map_err(|msg| BrpError { code: error_codes::INTERNAL_ERROR, message: msg, data: None })?;
+    println!("[protocol] save_as: serialized RON ({} bytes)", ron.len());
+    let path = ensure_absolute_assets_path(p.path);
+    println!("[protocol] save_as: writing to {}", path.to_string_lossy());
+    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| BrpError { code: error_codes::INTERNAL_ERROR, message: format!("mkdirs: {e}"), data: None })?; }
+    atomic_write(&path, &ron).map_err(|e| BrpError { code: error_codes::INTERNAL_ERROR, message: format!("write: {e}"), data: None })?;
+    println!("[protocol] save_as: done -> {}", path.to_string_lossy());
+    Ok(serde_json::json!({"ok": true, "path": path.to_string_lossy().to_string()}))
+}
+
+#[derive(Deserialize)]
+struct SaveSubstatesParams { entity: Entity }
+
+fn iter_descendants_with_id(world: &mut World, root: Entity) -> Vec<(Entity, String)> {
+    let mut out: Vec<(Entity, String)> = Vec::new();
+    if !world.entities().contains(root) { return out; }
+    let mut q_children = world.query::<&gearbox::Substates>();
+    let mut stack: Vec<Entity> = vec![root];
+    while let Some(cur) = stack.pop() {
+        if let Some(id) = world.get::<gearbox::StateMachineId>(cur) { if !id.0.is_empty() { out.push((cur, id.0.clone())); } }
+        if let Ok(children) = q_children.get(world, cur) { for &c in children.into_iter() { stack.push(c); } }
+    }
+    // Exclude the root if it had an id; Substates save concerns descendants only
+    out.retain(|(e, _)| *e != root);
+    out
+}
+
+fn save_substates_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: SaveSubstatesParams = serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError { code: error_codes::INVALID_PARAMS, message: format!("invalid params: {e}"), data: None })?;
+    if !world.entities().contains(p.entity) {
+        return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
+    }
+    println!("[protocol] save_substates: root={} (begin)", entity_to_bits(p.entity));
+    let targets = iter_descendants_with_id(world, p.entity);
+    println!("[protocol] save_substates: found {} descendants with StateMachineId", targets.len());
+    let mut results: Vec<Value> = Vec::new();
+    for (ent, id) in targets.into_iter() {
+        println!("[protocol] save_substates: saving entity={} id={}", entity_to_bits(ent), id);
+        let path = ensure_absolute_assets_path(format!("{}.scn.ron", id));
+        let set = collect_state_machine_entities(world, ent);
+        let bad = find_unreflected_components(world, &set);
+        if !bad.is_empty() {
+            println!("[protocol] save_substates: FAIL entity={} id={} bad_components={}", entity_to_bits(ent), id, bad.join(", "));
+            results.push(serde_json::json!({"entity": entity_to_bits(ent), "id": id, "ok": false, "error": format!("unserializable components: {}", bad.join(", ")) }));
+            continue;
+        }
+        let mut scene = build_scene_from_root(world, ent);
+        // Remove SubstateOf on the saved sub-machine root
+        if let Some(e) = scene.entities.iter_mut().find(|e| e.entity == ent) { e.components.retain(|c| !c.represents::<gearbox::SubstateOf>()); }
+        match serialize_scene(world, &scene) {
+            Ok(ron) => {
+                if let Some(parent) = path.parent() { if let Err(e) = std::fs::create_dir_all(parent) { results.push(serde_json::json!({"entity": entity_to_bits(ent), "id": id, "ok": false, "error": format!("mkdirs: {}", e)})); continue; } }
+                match atomic_write(&path, &ron) {
+                    Ok(_) => { println!("[protocol] save_substates: OK entity={} -> {}", entity_to_bits(ent), path.to_string_lossy()); results.push(serde_json::json!({"entity": entity_to_bits(ent), "id": id, "ok": true, "path": path.to_string_lossy().to_string()})); },
+                    Err(e) => { println!("[protocol] save_substates: WRITE FAIL entity={} err={}", entity_to_bits(ent), e); results.push(serde_json::json!({"entity": entity_to_bits(ent), "id": id, "ok": false, "error": format!("write: {}", e)})); },
+                }
+            }
+            Err(msg) => { println!("[protocol] save_substates: SERIALIZE FAIL entity={} msg={}", entity_to_bits(ent), msg); results.push(serde_json::json!({"entity": entity_to_bits(ent), "id": id, "ok": false, "error": msg })); }
+        }
+    }
+    println!("[protocol] save_substates: done");
+    Ok(serde_json::json!({"results": results}))
 }
 
 fn save_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
@@ -118,14 +240,19 @@ fn save_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpRe
     if !world.entities().contains(p.entity) {
         return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
     }
+    println!("[protocol] save_graph: entity={} path={} (begin)", entity_to_bits(p.entity), p.path);
     // Ensure .scn.ron extension and assets path defaulting
     let mut path = std::path::PathBuf::from(p.path);
     if !path.is_absolute() { path = std::path::PathBuf::from("assets").join(path); }
     if path.extension().and_then(|s| s.to_str()) != Some("ron") { path.set_extension("scn.ron"); }
     let scene = build_scene_from_root(world, p.entity);
+    println!("[protocol] save_graph: scene built");
     let ron = serialize_scene(world, &scene).map_err(|msg| BrpError { code: error_codes::INTERNAL_ERROR, message: msg, data: None })?;
+    println!("[protocol] save_graph: serialized RON ({} bytes)", ron.len());
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| BrpError { code: error_codes::INTERNAL_ERROR, message: format!("mkdirs: {e}"), data: None })?; }
+    println!("[protocol] save_graph: writing to {}", path.to_string_lossy());
     atomic_write(&path, &ron).map_err(|e| BrpError { code: error_codes::INTERNAL_ERROR, message: format!("write: {e}"), data: None })?;
+    println!("[protocol] save_graph: done -> {}", path.to_string_lossy());
     Ok(serde_json::json!({"ok": true}))
 }
 
@@ -214,6 +341,8 @@ fn register_editor_file_rpcs(app: &mut App) {
     if !app.world().contains_resource::<RemoteMethods>() { return; }
     let world = app.main_mut().world_mut();
     let save_id = world.register_system(save_graph_handler);
+    let save_as_id = world.register_system(save_as_handler);
+    let save_subs_id = world.register_system(save_substates_handler);
     let save_sc_id = world.register_system(save_sidecar_handler);
     let load_sc_id = world.register_system(load_sidecar_handler);
     let find_sc_id = world.register_system(find_sidecar_by_fingerprint_handler);
@@ -221,6 +350,8 @@ fn register_editor_file_rpcs(app: &mut App) {
     let sidecar_for_machine_id = world.register_system(sidecar_for_machine_handler);
     let mut methods = world.resource_mut::<RemoteMethods>();
     methods.insert("editor.save_graph", RemoteMethodSystemId::Instant(save_id));
+    methods.insert("editor.save_as", RemoteMethodSystemId::Instant(save_as_id));
+    methods.insert("editor.save_substates", RemoteMethodSystemId::Instant(save_subs_id));
     methods.insert("editor.save_sidecar", RemoteMethodSystemId::Instant(save_sc_id));
     methods.insert("editor.load_sidecar", RemoteMethodSystemId::Instant(load_sc_id));
     methods.insert("editor.find_sidecar_by_fingerprint", RemoteMethodSystemId::Instant(find_sc_id));

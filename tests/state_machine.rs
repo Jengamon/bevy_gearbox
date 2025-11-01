@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bevy::prelude::*;
-use bevy_gearbox::{prelude::*, transitions::{After, ResetEdge, ResetScope}, GearboxPlugin};
+use bevy_gearbox::{GearboxPlugin, RegistrationAppExt, prelude::*, transitions::{After, ResetEdge, ResetScope}};
 
 fn test_app() -> App {
     let mut app = App::new();
@@ -38,7 +38,7 @@ fn init_enters_initial_chain_and_sets_active_sets() {
 }
 
 
-#[derive(SimpleTransition, EntityEvent, Clone)]
+#[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
 struct TestEvt { #[event_target] target: Entity }
 
 #[test]
@@ -147,7 +147,7 @@ fn lifecycle_exit_then_transition_actions_then_enter_ordering() {
     assert!(sequence.find("actions:e_b_to_c").unwrap() < sequence.find("enter:C").unwrap(), "actions before enter C: {}", sequence);
 }
 
-#[derive(SimpleTransition, EntityEvent, Clone)]
+#[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
 struct EvtP1 { #[event_target] target: Entity }
 
 #[test]
@@ -198,9 +198,9 @@ fn events_root_propagation_one_per_parallel_region() {
     assert!(!sm.active_leaves.contains(&s2));
 }
 
-#[derive(SimpleTransition, EntityEvent, Clone)]
+#[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
 struct EvtGoOut { #[event_target] target: Entity }
-#[derive(SimpleTransition, EntityEvent, Clone)]
+#[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
 struct EvtGoBack { #[event_target] target: Entity }
 
 #[test]
@@ -247,7 +247,7 @@ fn history_shallow_saves_immediate_children_under_parallel_and_restores() {
     assert!(sm.active.contains(&b));
 }
 
-#[derive(SimpleTransition, EntityEvent, Clone)]
+#[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
 struct EvtDefer { #[event_target] target: Entity }
 
 #[test]
@@ -293,11 +293,11 @@ fn defer_defers_when_active_and_replays_on_exit_without_consuming_region() {
 
 #[test]
 fn state_component_adds_on_enter_removes_on_exit() {
-    #[derive(Component, Clone, PartialEq, Eq, Debug)]
+    #[derive(Component, Reflect, Clone, PartialEq, Eq, Debug)]
     struct Foo(i32);
 
     let mut app = test_app();
-    app.add_state_component::<Foo>();
+    app.register_state_component::<Foo>();
 
     // root -> S (adds Foo)
     let root = app.world_mut().spawn_empty().id();
@@ -310,7 +310,7 @@ fn state_component_adds_on_enter_removes_on_exit() {
     assert_eq!(app.world().get::<Foo>(root).cloned(), Some(Foo(7)));
 
     // Transition to sibling T to exit S
-    #[derive(SimpleTransition, EntityEvent, Clone)]
+    #[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
     struct Go { #[event_target] target: Entity }
     let t = app.world_mut().spawn_empty().id();
     app.world_mut().entity_mut(t).insert(SubstateOf(root));
@@ -457,8 +457,8 @@ fn history_deep_restores_exact_leaves() {
     app.world_mut().entity_mut(a).insert(InitialState(a1));
 
     // Outside Z and edges to go out/in
-    #[derive(SimpleTransition, EntityEvent, Clone)] struct Out { #[event_target] target: Entity }
-    #[derive(SimpleTransition, EntityEvent, Clone)] struct Back { #[event_target] target: Entity }
+    #[derive(SimpleTransition, EntityEvent, Reflect, Clone)] struct Out { #[event_target] target: Entity }
+    #[derive(SimpleTransition, EntityEvent, Reflect, Clone)] struct Back { #[event_target] target: Entity }
     let z = app.world_mut().spawn_empty().id();
     app.world_mut().entity_mut(z).insert(SubstateOf(root));
     app.world_mut().spawn((Source(p), Target(z), EventEdge::<Out>::default()));
@@ -477,7 +477,7 @@ fn history_deep_restores_exact_leaves() {
     assert!(sm.active_leaves.contains(&a1), "deep history should restore exact leaf A1");
 }
 
-#[derive(SimpleTransition, EntityEvent, Clone)]
+#[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
 struct EvtDelayed { #[event_target] target: Entity }
 
 #[test]
@@ -551,7 +551,7 @@ fn event_after_delays_and_fires() {
     assert!(sm.active_leaves.contains(&t), "delayed event edge should fire after duration");
 }
 
-#[derive(SimpleTransition, EntityEvent, Clone)]
+#[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
 struct GoTalents { #[event_target] target: Entity }
 
 #[test]
@@ -613,9 +613,9 @@ fn transitioning_parent_with_parallel_child_exits_all_descendant_leaves() {
     assert!(!sm.active.contains(&panels), "Panels parent must not remain active under InGame");
 }
 
-#[derive(SimpleTransition, EntityEvent, Clone)]
+#[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
 struct EvtDelayed2 { #[event_target] target: Entity }
-#[derive(SimpleTransition, EntityEvent, Clone)]
+#[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
 struct EvtNow { #[event_target] target: Entity }
 
 #[test]
@@ -718,10 +718,10 @@ fn reset_edge_triggers_scope_target() {
 
 #[test]
 fn state_inactive_component_removes_on_enter_restores_on_exit() {
-    #[derive(Component, Clone, PartialEq, Eq, Debug)]
+    #[derive(Component, Reflect, Clone, PartialEq, Eq, Debug)]
     struct Bar(&'static str);
     let mut app = test_app();
-    app.add_state_inactive_component::<Bar>();
+    app.register_state_component::<Bar>();
 
     let root = app.world_mut().spawn((Bar("present"),)).id();
     let s = app.world_mut().spawn((StateInactiveComponent(Bar("present")),)).id();
@@ -735,7 +735,7 @@ fn state_inactive_component_removes_on_enter_restores_on_exit() {
     assert!(app.world().get::<Bar>(root).is_none());
 
     // Transition S->T
-    #[derive(SimpleTransition, EntityEvent, Clone)] struct Go { #[event_target] target: Entity }
+    #[derive(SimpleTransition, EntityEvent, Reflect, Clone)] struct Go { #[event_target] target: Entity }
     app.world_mut().spawn((Source(s), Target(t), EventEdge::<Go>::default()));
     app.world_mut().commands().trigger(Go { target: root });
     app.update();
@@ -814,7 +814,7 @@ fn after_timer_handles_missing_target_during_delay() {
     assert!(!sm.active_leaves.contains(&t), "should not transition when target is missing");
 }
 
-#[derive(SimpleTransition, EntityEvent, Clone)]
+#[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
 struct DelayedTestEvt { #[event_target] target: Entity }
 
 #[test]
