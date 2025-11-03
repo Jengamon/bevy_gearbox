@@ -242,7 +242,7 @@ impl Client {
     }
 
     pub async fn rename(&self, entity: u64, name: &str) -> Result<(), Error> {
-        let params = json!({ "entity": entity, "components": { wire::NAME_REFLECT: name } });
+        let params = json!({ "entity": entity, "components": { wire::NAME: name } });
         let _ = self.jsonrpc_call(WORLD_INSERT_COMPONENTS, Some(params)).await?;
         Ok(())
     }
@@ -362,10 +362,10 @@ async fn list_state_machines(client: &Client) -> Result<Vec<MachineSummary>, Str
     for row in rows.into_iter() {
         if let Some(id) = row.get("entity").and_then(|e| e.as_u64()) {
             let comps = client
-                .get_components(id, Some(&[crate::components::NAME_REFLECT]))
+                .get_components(id, Some(&[crate::components::NAME]))
                 .await
                 .unwrap_or_default();
-            let name = comps.get(crate::components::NAME_REFLECT).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let name = comps.get(crate::components::NAME).and_then(|v| v.as_str()).map(|s| s.to_string());
             out.push(MachineSummary { id, name });
         }
     }

@@ -98,11 +98,11 @@ pub struct AlwaysEdge;
 /// Delayed transition configuration: fire after `duration` has elapsed while the source is active.
 #[derive(Component, Reflect, Default)]
 #[reflect(Component, Default)]
-pub struct After {
+pub struct Delay {
     pub duration: Duration,
 }
 
-impl After {
+impl Delay {
     #[inline]
     pub fn new(duration: Duration) -> Self { Self { duration } }
 
@@ -284,7 +284,7 @@ fn try_fire_first_matching_edge_generic<E: TransitionEvent + RegisteredTransitio
     q_substate_of: &Query<&SubstateOf>,
     q_defer: &mut Query<&mut DeferEvent<E>>,
     q_sm: &Query<&StateMachine>,
-    q_after: &Query<&After>,
+    q_delay: &Query<&Delay>,
     q_timer: &mut Query<&mut EdgeTimer>,
     commands: &mut Commands,
 ) -> bool {
@@ -313,7 +313,7 @@ fn try_fire_first_matching_edge_generic<E: TransitionEvent + RegisteredTransitio
         }
 
         // If edge is delayed, schedule timer and store pending event
-        if let Ok(after) = q_after.get(edge) {
+        if let Ok(after) = q_delay.get(edge) {
             if let Ok(mut timer) = q_timer.get_mut(edge) {
                 timer.0.set_duration(after.duration);
                 timer.0.reset();
@@ -407,7 +407,7 @@ pub fn always_edge_listener(
     q_always: Query<(), With<AlwaysEdge>>,
     q_edge_target: Query<&Target>,
     q_guards: Query<&Guards>,
-    q_after: Query<&After>,
+    q_delay: Query<&Delay>,
     q_substate_of: Query<&SubstateOf>,
     mut commands: Commands,
 ){
@@ -419,7 +419,7 @@ pub fn always_edge_listener(
         if q_always.get(edge).is_err() { continue; }
 
         // Skip transitions with After component - let the timer system handle them
-        if q_after.get(edge).is_ok() { continue; }
+        if q_delay.get(edge).is_ok() { continue; }
 
         // Validate edge (guards and target)
         if !validate_edge_basic(edge, &q_guards, &q_edge_target, &q_substate_of) { continue; }
@@ -471,7 +471,7 @@ pub(crate) fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent
     mut q_defer: Query<&mut DeferEvent<E>>,
     q_initial_state: Query<&InitialState>,
     q_children: Query<&Substates>,
-    q_after: Query<&After>,
+    q_delay: Query<&Delay>,
     mut q_timer: Query<&mut EdgeTimer>,
     mut commands: Commands,
 ) {
@@ -491,7 +491,7 @@ pub(crate) fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent
             if try_fire_first_matching_edge_on_branch(
                 leaf, event, machine_root,
                 &q_transitions, &q_listener, &q_edge_target, &q_guards,
-                &q_substate_of, &mut q_defer, &q_sm, &q_after,
+                &q_substate_of, &mut q_defer, &q_sm, &q_delay,
                 &mut q_timer, &mut visited, &mut commands,
             ) {
                 fired_regions.insert(region_root);
@@ -503,7 +503,7 @@ pub(crate) fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent
             let _ = try_fire_first_matching_edge(
                 machine_root, event, &q_transitions, &q_listener, &q_edge_target,
                 &q_guards, &q_substate_of, &mut q_defer, &q_sm,
-                &q_after, &mut q_timer, &mut commands,
+                &q_delay, &mut q_timer, &mut commands,
             );
         }
         return;
@@ -513,7 +513,7 @@ pub(crate) fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent
     try_fire_first_matching_edge(
         machine_root, event, &q_transitions, &q_listener, &q_edge_target,
         &q_guards, &q_substate_of, &mut q_defer, &q_sm, 
-        &q_after, &mut q_timer, &mut commands,
+        &q_delay, &mut q_timer, &mut commands,
     );
 }
 
@@ -527,13 +527,13 @@ fn try_fire_first_matching_edge<E: TransitionEvent + RegisteredTransitionEvent +
     q_substate_of: &Query<&SubstateOf>,
     q_defer: &mut Query<&mut DeferEvent<E>>,
     q_sm: &Query<&StateMachine>,
-    q_after: &Query<&After>,
+    q_delay: &Query<&Delay>,
     q_timer: &mut Query<&mut EdgeTimer>,
     commands: &mut Commands,
 ) -> bool {
     try_fire_first_matching_edge_generic(
         source, event, q_transitions, q_listener, q_edge_target,
-        q_guards, q_substate_of, q_defer, q_sm, q_after,
+        q_guards, q_substate_of, q_defer, q_sm, q_delay,
         q_timer, commands,
     )
 }
@@ -549,7 +549,7 @@ fn try_fire_first_matching_edge_on_branch<E: EntityEvent + Clone + TransitionEve
     q_substate_of: &Query<&SubstateOf>,
     q_defer: &mut Query<&mut DeferEvent<E>>,
     q_sm: &Query<&StateMachine>,
-    q_after: &Query<&After>,
+    q_delay: &Query<&Delay>,
     q_timer: &mut Query<&mut EdgeTimer>,
     visited: &mut HashSet<Entity>,
     commands: &mut Commands,
@@ -573,7 +573,7 @@ fn try_fire_first_matching_edge_on_branch<E: EntityEvent + Clone + TransitionEve
             q_substate_of,
             q_defer,
             q_sm,
-            q_after,
+            q_delay,
             q_timer,
             commands,
         ) {
@@ -592,7 +592,7 @@ pub fn check_always_on_guards_changed(
     q_transitions: Query<&Transitions>,
     q_substate_of: Query<&SubstateOf>,
     q_sm: Query<&StateMachine>,
-    q_after: Query<&After>,
+    q_delay: Query<&Delay>,
     mut commands: Commands,
 ) {
     for (edge, guards, source, edge_target) in q_guards_changed.iter() {
@@ -613,8 +613,8 @@ pub fn check_always_on_guards_changed(
         // Ensure edge has a valid target; then fire (or arm timer if delayed)
         if !edge_target { continue; }
         let root = q_substate_of.root_ancestor(source);
-        if q_after.get(edge).is_ok() {
-            let after = q_after.get(edge).unwrap();
+        if q_delay.get(edge).is_ok() {
+            let after = q_delay.get(edge).unwrap();
             commands.entity(edge).insert(EdgeTimer(Timer::new(after.duration, TimerMode::Once)));
         } else {
             commands.trigger(Transition { machine: root, source, edge, payload: () });
@@ -626,15 +626,15 @@ pub fn check_always_on_guards_changed(
 pub fn start_after_on_enter(
     enter_state: On<EnterState>,
     q_transitions: Query<&Transitions>,
-    q_after: Query<&After>,
+    q_delay: Query<&Delay>,
     q_always: Query<(), With<AlwaysEdge>>,
     mut commands: Commands,
 ) {
     let source = enter_state.target;
     let Ok(transitions) = q_transitions.get(source) else { return; };
     for edge in transitions.into_iter().copied() {
-        if q_after.get(edge).is_ok() && q_always.get(edge).is_ok() {
-            let after = q_after.get(edge).unwrap();
+        if q_delay.get(edge).is_ok() && q_always.get(edge).is_ok() {
+            let after = q_delay.get(edge).unwrap();
             commands.entity(edge).insert(EdgeTimer(Timer::new(after.duration, TimerMode::Once)));
         }
     }
@@ -644,13 +644,13 @@ pub fn start_after_on_enter(
 pub fn cancel_after_on_exit(
     exit_state: On<crate::ExitState>,
     q_transitions: Query<&Transitions>,
-    q_after: Query<&After>,
+    q_delay: Query<&Delay>,
     mut commands: Commands,
 ) {
     let source = exit_state.target;
     let Ok(transitions) = q_transitions.get(source) else { return; };
     for edge in transitions.into_iter().copied() {
-        if q_after.get(edge).is_ok() {
+        if q_delay.get(edge).is_ok() {
             commands.entity(edge).remove::<EdgeTimer>();
         }
     }
@@ -698,7 +698,7 @@ pub fn tick_after_system(
     time: Res<Time>,
     q_transitions: Query<(Entity, &Transitions)>,
     mut q_timer: Query<&mut EdgeTimer>,
-    q_after: Query<&After>,
+    q_delay: Query<&Delay>,
     q_always: Query<(), With<AlwaysEdge>>,
     q_guards: Query<&Guards>,
     q_edge_target: Query<&Target>,
@@ -712,7 +712,7 @@ pub fn tick_after_system(
         if !sm.is_active(&source) { continue; }
         // Walk edges in priority order; fire first eligible
         for edge in transitions.into_iter().copied() {
-            if q_after.get(edge).is_err() { continue; }
+            if q_delay.get(edge).is_err() { continue; }
             if q_always.get(edge).is_err() { continue; }
             let Ok(mut timer) = q_timer.get_mut(edge) else { continue; };
             timer.0.tick(time.delta());
@@ -758,7 +758,7 @@ where
 pub fn tick_after_event_timers<E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static>(
     time: Res<Time>,
     mut q_timer: Query<(Entity, &mut EdgeTimer, &PendingEvent<E>, &EventEdge<E>)>,
-    q_after: Query<&After>,
+    q_delay: Query<&Delay>,
     q_guards: Query<&Guards>,
     q_edge_target: Query<&Target>,
     q_edge_source: Query<&Source>,
@@ -768,7 +768,7 @@ pub fn tick_after_event_timers<E: TransitionEvent + RegisteredTransitionEvent + 
 ) {
     for (edge, mut timer, pending, listener) in q_timer.iter_mut() {
         // Only consider edges that still have After
-        if q_after.get(edge).is_err() { continue; }
+        if q_delay.get(edge).is_err() { continue; }
 
         // If the source is no longer active, cancel the pending event
         let Ok(Source(source)) = q_edge_source.get(edge) else { continue; };

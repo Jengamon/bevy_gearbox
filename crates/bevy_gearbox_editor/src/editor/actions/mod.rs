@@ -124,26 +124,37 @@ pub fn on_unsubscribe_requested(evt: On<UnsubscribeRequested>, mut proto_net: Me
 #[derive(Debug, Clone, Event)]
 pub struct CloseRequested { pub entity: EntityId }
 
+/// Close an open document and unsubscribe from all related server-side feeds.
+pub fn close_doc_and_unsubscribe(
+    entity: EntityId,
+    workspace: &mut Workspace,
+    docs: &mut Docs,
+    proto_net: &mut MessageWriter<NetCommand>,
+)
+{
+    // Stop server-side feeds for this machine and any node/edge component watches if known
+    if let Some(doc) = docs.map.get(&entity) {
+        if let Some(g) = &doc.graph {
+            for nid in g.nodes.keys() { proto_net.write(NetCommand::StopComponents { id: nid.0 }); }
+            for eid in g.edges.keys() { proto_net.write(NetCommand::StopComponents { id: eid.0 }); }
+        }
+    }
+    proto_net.write(NetCommand::StopComponents { id: entity.0 });
+    proto_net.write(NetCommand::StopMachine { id: entity.0 });
+    // Drop editor-side state after stopping watches
+    let _ = docs.map.remove(&entity);
+    if let Some((d, _)) = workspace.global_selection {
+        if d == entity { workspace.global_selection = None; }
+    }
+}
+
 pub fn on_close_requested(
     evt: On<CloseRequested>,
     mut workspace: ResMut<Workspace>,
     mut docs: ResMut<Docs>,
     mut proto_net: MessageWriter<NetCommand>,
 ) {
-    // Stop server-side feeds for this machine and any node/edge component watches if known
-    if let Some(doc) = docs.map.get(&evt.entity) {
-        if let Some(g) = &doc.graph {
-            for nid in g.nodes.keys() { proto_net.write(NetCommand::StopComponents { id: nid.0 }); }
-            for eid in g.edges.keys() { proto_net.write(NetCommand::StopComponents { id: eid.0 }); }
-        }
-    }
-    proto_net.write(NetCommand::StopComponents { id: evt.entity.0 });
-    proto_net.write(NetCommand::StopMachine { id: evt.entity.0 });
-    // Drop editor-side state after stopping watches
-    let _ = docs.map.remove(&evt.entity);
-    if let Some((d, _)) = workspace.global_selection {
-        if d == evt.entity { workspace.global_selection = None; }
-    }
+    close_doc_and_unsubscribe(evt.entity, &mut workspace, &mut docs, &mut proto_net);
 }
 
 #[derive(Debug, Clone, Event)]

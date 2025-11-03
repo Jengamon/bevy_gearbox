@@ -2,7 +2,7 @@
 // Uses protocol server to enable optional remote editor connection
 use bevy::prelude::*;
 use bevy_gearbox::prelude::*;
-use bevy_gearbox::transitions::{Source, After, DeferEvent};
+use bevy_gearbox::transitions::{Source, Delay, DeferEvent};
 use bevy_gearbox::GearboxPlugin;
 use std::time::Duration;
 use bevy_gearbox_editor::ServerPlugin;
@@ -121,7 +121,7 @@ fn setup(mut commands: Commands) {
             Name::new("Always"),
             Target(open),
             Source(opening),
-            After { duration: Duration::from_secs(1) }, // 1 second opening delay
+            Delay { duration: Duration::from_secs(1) }, // 1 second opening delay
             AlwaysEdge,
         ));
 
@@ -137,7 +137,7 @@ fn setup(mut commands: Commands) {
             Name::new("Always"),
             Target(closed),
             Source(closing),
-            After { duration: Duration::from_secs(1) }, // 1 second closing delay
+            Delay { duration: Duration::from_secs(1) }, // 1 second closing delay
             AlwaysEdge,
         ));
 

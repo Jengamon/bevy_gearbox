@@ -17,7 +17,7 @@ pub use crate::{
     InitialState,
     state_component::StateComponent,
     state_component::StateInactiveComponent,
-    transitions::After,
+    transitions::Delay,
     // Enums
     history::History,
     // Traits

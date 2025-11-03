@@ -48,7 +48,7 @@ impl Plugin for GearboxPlugin {
             .register_type::<ExitState>()
             .register_type::<ResetRegion>()
             .register_type::<TransitionActions>()
-            .register_type::<transitions::After>()
+            .register_type::<transitions::Delay>()
             .register_type::<transitions::Source>()
             .register_type::<transitions::Transitions>()
             .register_type::<transitions::Target>()

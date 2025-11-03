@@ -89,10 +89,7 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                     }
                 }
 
-                if docs.map.is_empty() {
-                    let hint = "No document open. Select a state machine from the left.";
-                    board_painter.text(board_rect.center(), egui::Align2::CENTER_CENTER, hint, egui::FontId::proportional(14.0), egui::Color32::from_gray(160));
-                } else {
+                if !docs.map.is_empty() {
                     let mut ids: Vec<crate::types::EntityId> = docs.map.keys().copied().collect();
                     ids.sort_by_key(|e| e.0);
                     for doc_id in ids {

@@ -5,7 +5,7 @@ use bevy_gearbox::StateMachineId;
 use bevy_gearbox::prelude::*;
 use bevy_gearbox::GearboxPlugin;
 use bevy::math::primitives::{Plane3d, Sphere, Cuboid};
-use bevy_gearbox::transitions::{AlwaysEdge, After};
+use bevy_gearbox::transitions::{AlwaysEdge, Delay};
 use bevy_gearbox::transitions::EdgeKind;
 use bevy_gearbox_editor::ServerPlugin;
 
@@ -453,7 +453,7 @@ fn spawn_defender(world: &mut World, position: Vec3) -> Entity {
         Source(taking_damage),
         Target(target_waiting),
         AlwaysEdge,
-        After { duration: std::time::Duration::from_millis(200) },
+        Delay { duration: std::time::Duration::from_millis(200) },
     ));
 
     world.entity_mut(defender).insert(InitialState(target_waiting));

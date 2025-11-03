@@ -1,6 +1,6 @@
 
 // Stable component keys used on the wire (Phase 1 minimal)
-pub const NAME_REFLECT: &str = "bevy_ecs::name::Name";
+pub const NAME: &str = "bevy_ecs::name::Name";
 
 // Phase 1: reflect type-path strings used by BRP world.* queries
 // State machine domain types in bevy_gearbox
@@ -10,7 +10,7 @@ pub const TRANSITIONS: &str = "bevy_gearbox::transitions::Transitions";
 pub const TARGET: &str = "bevy_gearbox::transitions::Target";
 pub const TARGETED_BY: &str = "bevy_gearbox::transitions::TargetedBy";
 pub const ALWAYS_EDGE: &str = "bevy_gearbox::transitions::AlwaysEdge";
-pub const AFTER: &str = "bevy_gearbox::transitions::After";
+pub const DELAY: &str = "bevy_gearbox::transitions::Delay";
 pub const INITIAL_STATE: &str = "bevy_gearbox::InitialState";
 pub const STATE_MACHINE_ID: &str = "bevy_gearbox::StateMachineId";
 

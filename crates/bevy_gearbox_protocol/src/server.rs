@@ -928,7 +928,7 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
         if !visited.insert(cur) { continue; }
         // Collect node fields (string-centric)
         let mut components: BTreeMap<String, Value> = BTreeMap::new();
-        if let Some(name) = q_name.get(world, cur).ok() { components.insert(crate::components::NAME_REFLECT.to_string(), Value::String(name.as_str().to_string())); }
+        if let Some(name) = q_name.get(world, cur).ok() { components.insert(crate::components::NAME.to_string(), Value::String(name.as_str().to_string())); }
         if let Some(init) = q_initial.get(world, cur).ok().flatten() {
             // InitialState points to a child; serialize as string of entity bits for simplicity
             components.insert(crate::components::INITIAL_STATE.to_string(), Value::String(init.0.to_bits().to_string()));
@@ -986,7 +986,7 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
                     ecomps.insert(crate::components::ALWAYS_EDGE.to_string(), Value::String("true".to_string()));
                 }
                 if let Some(name) = world.get::<Name>(edge) {
-                    ecomps.insert(crate::components::NAME_REFLECT.to_string(), Value::String(name.as_str().to_string()));
+                    ecomps.insert(crate::components::NAME.to_string(), Value::String(name.as_str().to_string()));
                 }
                 edges.push(serde_json::json!({
                     "id": edge.to_bits().to_string(),

@@ -10,6 +10,7 @@ use crate::editor::docs::Docs;
 use crate::editor::model::store::EditorStore;
 use crate::editor::actions::{
     on_connect_requested, on_disconnect_requested, on_reconnect_requested, on_refresh_index_requested, on_open_requested,
+    close_doc_and_unsubscribe,
 };
 use crate::editor::adapter::project_graph_into_doc;
 use crate::persistence::{apply_sidecar_to_doc, load_sidecar, parse_sidecar_text};
@@ -83,7 +84,7 @@ fn setup_watch_root(net_cmd: &mut MessageWriter<NetCommand>, id: u64) {
     net_cmd.write(NetCommand::StartMachine { id });
     net_cmd.write(NetCommand::StopComponents { id });
     net_cmd.write(NetCommand::StartComponents { id, components: vec![
-        bevy_gearbox_protocol::components::NAME_REFLECT.to_string(),
+        bevy_gearbox_protocol::components::NAME.to_string(),
         bevy_gearbox_protocol::components::STATE_MACHINE.to_string(),
     ] });
 }
@@ -91,14 +92,14 @@ fn setup_watch_root(net_cmd: &mut MessageWriter<NetCommand>, id: u64) {
 /// Start minimal watch for a state node (currently Name only).
 fn setup_watch_state(net_cmd: &mut MessageWriter<NetCommand>, id: u64) {
     net_cmd.write(NetCommand::StartComponents { id, components: vec![
-        bevy_gearbox_protocol::components::NAME_REFLECT.to_string(),
+        bevy_gearbox_protocol::components::NAME.to_string(),
     ] });
 }
 
 /// Start minimal watch for an edge (currently Name only).
 fn setup_watch_edge(net_cmd: &mut MessageWriter<NetCommand>, id: u64) {
     net_cmd.write(NetCommand::StartComponents { id, components: vec![
-        bevy_gearbox_protocol::components::NAME_REFLECT.to_string(),
+        bevy_gearbox_protocol::components::NAME.to_string(),
     ] });
 }
 
@@ -113,7 +114,7 @@ fn on_spawn_state_machine(
     let mut comps: JsonMap<String, JsonValue> = JsonMap::new();
     // Insert StateMachine marker with default value and a Name
     comps.insert(bevy_gearbox_protocol::components::STATE_MACHINE.to_string(), JsonValue::Object(JsonMap::new()));
-    comps.insert(bevy_gearbox_protocol::components::NAME_REFLECT.to_string(), JsonValue::String(name));
+    comps.insert(bevy_gearbox_protocol::components::NAME.to_string(), JsonValue::String(name));
     rt.0.spawn(async move {
         if let Ok(id) = client_cloned.spawn(comps).await {
             // Ask server to instruct the client to open this machine via control channel
@@ -161,6 +162,12 @@ fn poll_network(
                 store.index.is_loading = false;
                 store.index.error = None;
                 store.index.items = list.iter().map(|m| IndexItem { name: m.name.clone(), entity: EntityId(m.id) }).collect();
+                // Auto-close any open docs whose entities are no longer in the index
+                {
+                    let valid: std::collections::HashSet<EntityId> = store.index.items.iter().map(|it| it.entity).collect();
+                    let to_close: Vec<EntityId> = docs.map.keys().copied().filter(|id| !valid.contains(id)).collect();
+                    for id in to_close.into_iter() { close_doc_and_unsubscribe(id, &mut workspace, &mut docs, &mut net_cmd); }
+                }
                 // Mark connected for UI button logic
                 let ep = store.last_endpoint.clone().unwrap_or_else(|| "http://127.0.0.1:15703".to_string());
                 store.connection = EditorConnectionState::Connected { session_id: store.session_id, endpoint: ep };
@@ -236,6 +243,12 @@ fn poll_network(
                 }
                 ui.machines.sort_by_key(|(id, _)| id.0);
                 store.index.items = ui.machines.iter().map(|(id, name)| IndexItem { name: name.clone(), entity: *id }).collect();
+                // Auto-close any open docs whose entities are no longer in the index
+                {
+                    let valid: std::collections::HashSet<EntityId> = store.index.items.iter().map(|it| it.entity).collect();
+                    let to_close: Vec<EntityId> = docs.map.keys().copied().filter(|id| !valid.contains(id)).collect();
+                    for id in to_close.into_iter() { close_doc_and_unsubscribe(id, &mut workspace, &mut docs, &mut net_cmd); }
+                }
                 processed += 1;
             }
             NetMessage::ControlOpen { id } => {
@@ -267,7 +280,7 @@ fn poll_network(
             NetMessage::Components { id, components, removed } => {
                 // Apply Name changes to any open doc containing this entity
                 let target = EntityId(id);
-                let name_key = bevy_gearbox_protocol::components::NAME_REFLECT;
+                let name_key = bevy_gearbox_protocol::components::NAME;
                 let name_opt = components.get(name_key).and_then(|v| v.as_str()).map(|s| s.to_string());
                 // Debug: log entity name and full packet contents from watch
                 {

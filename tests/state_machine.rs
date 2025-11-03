@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bevy::prelude::*;
-use bevy_gearbox::{GearboxPlugin, RegistrationAppExt, prelude::*, transitions::{After, ResetEdge, ResetScope}};
+use bevy_gearbox::{GearboxPlugin, RegistrationAppExt, prelude::*, transitions::{Delay, ResetEdge, ResetScope}};
 
 fn test_app() -> App {
     let mut app = App::new();
@@ -415,7 +415,7 @@ fn after_starts_on_enter_ticks_and_fires_once() {
         Source(s),
         Target(t),
         AlwaysEdge,
-        After { duration: Duration::from_millis(50) },
+        Delay { duration: Duration::from_millis(50) },
         EdgeKind::External,
     ));
 
@@ -487,7 +487,7 @@ fn event_after_does_not_auto_fire_without_event() {
         Source(s),
         Target(t),
         EventEdge::<EvtDelayed>::default(),
-        After { duration: Duration::from_millis(50) },
+        Delay { duration: Duration::from_millis(50) },
     ));
 
     app.world_mut().entity_mut(root).insert((InitialState(s), StateMachine::new()));
@@ -519,7 +519,7 @@ fn event_after_delays_and_fires() {
         Source(s),
         Target(t),
         EventEdge::<EvtDelayed>::default(),
-        After { duration: Duration::from_millis(50) },
+        Delay { duration: Duration::from_millis(50) },
     ));
 
     app.world_mut().entity_mut(root).insert((InitialState(s), StateMachine::new()));
@@ -627,7 +627,7 @@ fn event_after_cancels_when_source_exits_before_timer() {
         Source(s),
         Target(t),
         EventEdge::<EvtDelayed2>::default(),
-        After { duration: Duration::from_millis(200) },
+        Delay { duration: Duration::from_millis(200) },
     ));
     // Immediate edge s --(EvtNow)--> u
     app.world_mut().spawn((Source(s), Target(u), EventEdge::<EvtNow>::default()));
@@ -750,7 +750,7 @@ fn after_timer_respects_guards_added_during_delay() {
         Source(s),
         Target(t),
         AlwaysEdge,
-        After { duration: Duration::from_millis(50) },
+        Delay { duration: Duration::from_millis(50) },
     )).id();
 
     app.world_mut().entity_mut(root).insert((InitialState(s), StateMachine::new()));
@@ -786,7 +786,7 @@ fn after_timer_handles_missing_target_during_delay() {
         Source(s),
         Target(t),
         AlwaysEdge,
-        After { duration: Duration::from_millis(50) },
+        Delay { duration: Duration::from_millis(50) },
     )).id();
 
     app.world_mut().entity_mut(root).insert((InitialState(s), StateMachine::new()));
@@ -823,7 +823,7 @@ fn event_after_timer_respects_guards_added_during_delay() {
         Source(s),
         Target(t),
         EventEdge::<DelayedTestEvt>::default(),
-        After { duration: Duration::from_millis(50) },
+        Delay { duration: Duration::from_millis(50) },
     )).id();
 
     app.world_mut().entity_mut(root).insert((InitialState(s), StateMachine::new()));
@@ -863,7 +863,7 @@ fn event_after_timer_handles_missing_target_during_delay() {
         Source(s),
         Target(t),
         EventEdge::<DelayedTestEvt>::default(),
-        After { duration: Duration::from_millis(50) },
+        Delay { duration: Duration::from_millis(50) },
     )).id();
 
     app.world_mut().entity_mut(root).insert((InitialState(s), StateMachine::new()));
