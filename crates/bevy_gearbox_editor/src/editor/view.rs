@@ -27,6 +27,7 @@ pub struct DocEvents {
     pub delay_edit: Option<crate::editor::workspace::DelayInline>,
     pub delay_commit: Option<crate::editor::workspace::DelayInline>,
     pub delay_cancel: Option<(EntityId, EntityId)>,
+    pub set_edge_kind: Option<(EntityId, EntityId, bool)>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -255,6 +256,27 @@ pub fn draw_doc_on_board(
                         }
                     } else {
                         // Edge context menu
+                        // EdgeKind toggle
+                        let mut is_internal_now = false;
+                        if let Some(graph) = &doc.graph {
+                            if let Some(bag) = graph.component_bag(eid) {
+                                if let Some(entry) = bag.get(bevy_gearbox_protocol::components::EDGE_KIND) {
+                                    is_internal_now = edge_kind_is_internal(&entry.value_json);
+                                }
+                            }
+                        }
+                        if is_internal_now {
+                            if menu_ui.button("Mark External").clicked() {
+                                _events.set_edge_kind = Some((doc_id, *eid, false));
+                                menu_ui.close();
+                            }
+                        } else {
+                            if menu_ui.button("Mark Internal").clicked() {
+                                _events.set_edge_kind = Some((doc_id, *eid, true));
+                                menu_ui.close();
+                            }
+                        }
+                        menu_ui.separator();
                         // Edit delay inline
                         if menu_ui.button("Edit Delay…").clicked() {
                             // Seed buffer from current delay if present
@@ -783,6 +805,34 @@ pub fn draw_doc_on_board(
                 let pill_fill_col = lerp_color(bright_yellow, base_fill, alpha);
                 let pill_text_col = lerp_color(egui::Color32::BLACK, egui::Color32::WHITE, alpha);
 
+                // Determine if EdgeKind is Internal for dashed rendering
+                let mut is_internal = false;
+                if let Some(graph) = &doc.graph {
+                    if let Some(bag) = graph.component_bag(id) {
+                        if let Some(entry) = bag.get(bevy_gearbox_protocol::components::EDGE_KIND) {
+                            is_internal = edge_kind_is_internal(&entry.value_json);
+                        }
+                    }
+                }
+
+                // Helper: dashed straight line
+                let draw_dashed_line = |a: egui::Pos2, b: egui::Pos2, color: egui::Color32| {
+                    let total = (b - a).length();
+                    if total <= 0.0 { return; }
+                    let dir = (b - a) / total;
+                    let dash = 6.0 * zoom;
+                    let gap = 4.0 * zoom;
+                    let stroke_w = 2.0;
+                    let mut t = 0.0f32;
+                    while t < total {
+                        let seg = dash.min(total - t);
+                        let p0 = a + dir * t;
+                        let p1 = a + dir * (t + seg);
+                        painter.line_segment([p0, p1], egui::Stroke::new(stroke_w, color));
+                        t += dash + gap;
+                    }
+                };
+
                 if is_ancestor_edge {
                     // Determine outward normal based on which side a_start lies on
                     let eps = 0.5;
@@ -806,16 +856,21 @@ pub fn draw_doc_on_board(
                         let x = omt * omt * a_start.x + 2.0 * omt * t * p_out.x + t * t * a_end.x;
                         let y = omt * omt * a_start.y + 2.0 * omt * t * p_out.y + t * t * a_end.y;
                         let p = egui::pos2(x, y);
-                        painter.line_segment([prev, p], egui::Stroke::new(2.0, edge_line_col));
+                        if is_internal {
+                            // draw every other segment to emulate dashed curve
+                            if i % 2 == 1 { painter.line_segment([prev, p], egui::Stroke::new(2.0, edge_line_col)); }
+                        } else {
+                            painter.line_segment([prev, p], egui::Stroke::new(2.0, edge_line_col));
+                        }
                         prev = p;
                     }
                 } else {
-                painter.line_segment([a_start, a_end], egui::Stroke::new(2.0, edge_line_col));
+                if is_internal { draw_dashed_line(a_start, a_end, edge_line_col); } else { painter.line_segment([a_start, a_end], egui::Stroke::new(2.0, edge_line_col)); }
                 }
 
                 let b_end = rect_from_inside_toward(dst_rect_s, pill_center_s);
                 let b_start = rect_from_outside_toward_center(pill_rect_s, b_end);
-                painter.line_segment([b_start, b_end], egui::Stroke::new(2.0, edge_line_col));
+                if is_internal { draw_dashed_line(b_start, b_end, edge_line_col); } else { painter.line_segment([b_start, b_end], egui::Stroke::new(2.0, edge_line_col)); }
 
                 let dir = (b_end - b_start).normalized();
                 let arrow_len = 10.0 * zoom;
@@ -1190,6 +1245,16 @@ fn draw_delay_inline_editor(
         // Fallback draw (should not be called when not editing, caller draws read-only text)
         painter.text(text_pos, egui::Align2::CENTER_TOP, "", font_id.clone(), color);
     }
+}
+
+fn edge_kind_is_internal(v: &serde_json::Value) -> bool {
+    // Accept common shapes: "Internal", {"Internal": {...}}, {"variant":"Internal"}
+    if let Some(s) = v.as_str() { return s.eq_ignore_ascii_case("Internal"); }
+    if let Some(obj) = v.as_object() {
+        if obj.contains_key("Internal") { return true; }
+        if let Some(variant) = obj.get("variant").and_then(|x| x.as_str()) { return variant.eq_ignore_ascii_case("Internal"); }
+    }
+    false
 }
 
 

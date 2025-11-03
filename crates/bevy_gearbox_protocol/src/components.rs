@@ -11,6 +11,7 @@ pub const TARGET: &str = "bevy_gearbox::transitions::Target";
 pub const TARGETED_BY: &str = "bevy_gearbox::transitions::TargetedBy";
 pub const ALWAYS_EDGE: &str = "bevy_gearbox::transitions::AlwaysEdge";
 pub const DELAY: &str = "bevy_gearbox::transitions::Delay";
+pub const EDGE_KIND: &str = "bevy_gearbox::transitions::EdgeKind";
 pub const INITIAL_STATE: &str = "bevy_gearbox::InitialState";
 pub const STATE_MACHINE_ID: &str = "bevy_gearbox::StateMachineId";
 

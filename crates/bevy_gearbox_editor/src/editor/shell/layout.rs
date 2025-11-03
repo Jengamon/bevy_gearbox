@@ -169,6 +169,7 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                         if let Some(req) = ev.pending_edge_create { workspace.pending_edge_create = Some(req); }
                         if let Some((doc, edge, secs)) = ev.set_edge_delay { commands.trigger(crate::editor::actions::SetEdgeDelayRequested { target: edge, seconds: secs }); workspace.pending_fetch_docs.push(doc); }
                         if let Some((doc, edge)) = ev.clear_edge_delay { commands.trigger(crate::editor::actions::ClearEdgeDelayRequested { target: edge }); workspace.pending_fetch_docs.push(doc); }
+                        if let Some((doc, edge, internal)) = ev.set_edge_kind { commands.trigger(crate::editor::actions::SetEdgeKindRequested { target: edge, internal }); workspace.pending_fetch_docs.push(doc); }
                         if let Some(pe) = ev.preview_edge_remove { workspace.preview_edges.retain(|x| !(x.doc == pe.doc && x.source == pe.source && x.target == pe.target)); }
                         // Apply rename inline events
                         if let Some(start) = ev.rename_start { workspace.rename_inline = Some(start); }

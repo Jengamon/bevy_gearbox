@@ -53,6 +53,7 @@ impl Plugin for EditorPlugin {
             .add_observer(crate::editor::actions::on_save_substates_requested)
             .add_observer(on_set_edge_delay_requested)
             .add_observer(on_clear_edge_delay_requested)
+            .add_observer(on_set_edge_kind_requested)
             .add_observer(on_spawn_state_machine)
             .add_observer(on_spawn_substate)
             ;
@@ -103,6 +104,7 @@ fn setup_watch_edge(net_cmd: &mut MessageWriter<NetCommand>, id: u64) {
     net_cmd.write(NetCommand::StartComponents { id, components: vec![
         bevy_gearbox_protocol::components::NAME.to_string(),
         bevy_gearbox_protocol::components::DELAY.to_string(),
+        bevy_gearbox_protocol::components::EDGE_KIND.to_string(),
     ] });
 }
 
@@ -172,6 +174,22 @@ fn on_clear_edge_delay_requested(
     let client_cloned = client.clone();
     rt.0.spawn(async move {
         let _ = client_cloned.remove_components(id as u64, &[bevy_gearbox_protocol::components::DELAY]).await;
+    });
+}
+
+fn on_set_edge_kind_requested(
+    req: On<crate::editor::actions::SetEdgeKindRequested>,
+    client: Res<bevy_gearbox_protocol::client::Client>,
+    rt: Res<bevy_gearbox_protocol::client::TokioRuntime>,
+) {
+    let id = req.target.0;
+    let mut comps = JsonMap::new();
+    // Use the same shape the server sends back over watch (plain string variant)
+    let variant = if req.internal { "Internal" } else { "External" };
+    comps.insert(bevy_gearbox_protocol::components::EDGE_KIND.to_string(), JsonValue::String(variant.to_string()));
+    let client_cloned = client.clone();
+    rt.0.spawn(async move {
+        let _ = client_cloned.insert_components(id as u64, comps).await;
     });
 }
 
@@ -478,7 +496,11 @@ fn sync_snapshots_to_workspace(
         // After projecting the graph, start a Name component watch on all nodes and edges
         if let Some(g) = entry.graph.as_ref() {
             for nid in g.nodes.keys() { setup_watch_state(&mut net_cmd, nid.0); }
-            for eid in g.edges.keys() { setup_watch_edge(&mut net_cmd, eid.0); }
+            for eid in g.edges.keys() {
+                // Re-arm edge component watch with the extended set (Name, Delay, EdgeKind)
+                net_cmd.write(NetCommand::StopComponents { id: eid.0 });
+                setup_watch_edge(&mut net_cmd, eid.0);
+            }
         }
         // Reapply previous active set from old graph so colors persist
         if let (Some(prev), Some(g)) = (prev_active, entry.graph.as_mut()) {
