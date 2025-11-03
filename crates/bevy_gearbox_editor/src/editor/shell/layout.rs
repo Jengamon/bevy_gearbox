@@ -103,6 +103,7 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                             available_event_edges: workspace.available_event_edges.clone(),
                             preview_edges: workspace.preview_edges.clone(),
                             rename_inline: workspace.rename_inline.clone(),
+                            delay_inline: workspace.delay_inline.clone(),
                         };
                         // Draw using a scoped mutable borrow to this document
                         let ev = {
@@ -128,6 +129,7 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                                     }
                                     workspace.rename_inline = Some(crate::editor::workspace::RenameInline { doc: doc_id, target, text: default_text });
                                 }
+                                // No direct menu selection for delay (handled in view context menu)
                                 crate::editor::context_menu::MenuSelection::MakeLeaf { target } => {
                                     let e = bevy::prelude::Entity::from_bits(target.0);
                                     commands.trigger(bevy_gearbox_protocol::events::ChangeNodeType { target: e, to: bevy_gearbox_protocol::events::NodeType::Leaf });
@@ -165,12 +167,19 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                         if let Some(m) = ev.edge_menu_open { workspace.edge_menu = Some(m); }
                         if ev.edge_menu_close { workspace.edge_menu = None; }
                         if let Some(req) = ev.pending_edge_create { workspace.pending_edge_create = Some(req); }
+                        if let Some((doc, edge, secs)) = ev.set_edge_delay { commands.trigger(crate::editor::actions::SetEdgeDelayRequested { target: edge, seconds: secs }); workspace.pending_fetch_docs.push(doc); }
+                        if let Some((doc, edge)) = ev.clear_edge_delay { commands.trigger(crate::editor::actions::ClearEdgeDelayRequested { target: edge }); workspace.pending_fetch_docs.push(doc); }
                         if let Some(pe) = ev.preview_edge_remove { workspace.preview_edges.retain(|x| !(x.doc == pe.doc && x.source == pe.source && x.target == pe.target)); }
                         // Apply rename inline events
                         if let Some(start) = ev.rename_start { workspace.rename_inline = Some(start); }
                         if let Some(edit) = ev.rename_edit { workspace.rename_inline = Some(edit); }
                         if let Some(commit) = ev.rename_commit { workspace.pending_rename_commit = Some(commit); workspace.rename_inline = None; }
                         if let Some((d, t)) = ev.rename_cancel { if workspace.rename_inline.as_ref().map(|r| r.doc == d && r.target == t).unwrap_or(false) { workspace.rename_inline = None; } }
+                        // Apply delay inline events
+                        if let Some(start) = ev.delay_start { workspace.delay_inline = Some(start); }
+                        if let Some(edit) = ev.delay_edit { workspace.delay_inline = Some(edit); }
+                        if let Some(commit) = ev.delay_commit { workspace.pending_delay_commit = Some(commit); }
+                        if let Some((d, t)) = ev.delay_cancel { if workspace.delay_inline.as_ref().map(|r| r.doc == d && r.target == t).unwrap_or(false) { workspace.delay_inline = None; } }
                         // Reconcile global selection based on this doc's local selection delta
                         match (prev_global, sel_local) {
                             (_, Some(t)) => workspace.global_selection = Some((doc_id, t)),
@@ -183,6 +192,15 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                     if let Some(commit) = workspace.pending_rename_commit.take() {
                         let e = bevy::prelude::Entity::from_bits(commit.target.0);
                         commands.trigger(bevy_gearbox_protocol::events::Rename { target: e, name: commit.text.clone() });
+                    }
+                    if let Some(commit) = workspace.pending_delay_commit.take() {
+                        if let Ok(secs) = commit.text.trim().parse::<f32>() {
+                            commands.trigger(crate::editor::actions::SetEdgeDelayRequested { target: commit.target, seconds: secs });
+                            workspace.delay_inline = None;
+                        } else {
+                            // Invalid input: do nothing, keep inline open
+                            workspace.delay_inline = Some(commit);
+                        }
                     }
                     if let Some(req) = workspace.pending_edge_create.take() {
                         let m = bevy::prelude::Entity::from_bits(req.doc.0);

@@ -20,6 +20,13 @@ pub struct DocEvents {
     pub rename_edit: Option<RenameInline>,
     pub rename_commit: Option<RenameInline>,
     pub rename_cancel: Option<(EntityId, EntityId)>,
+    pub set_edge_delay: Option<(EntityId, EntityId, f32)>,
+    pub clear_edge_delay: Option<(EntityId, EntityId)>,
+    // Inline delay editing lifecycle
+    pub delay_start: Option<crate::editor::workspace::DelayInline>,
+    pub delay_edit: Option<crate::editor::workspace::DelayInline>,
+    pub delay_commit: Option<crate::editor::workspace::DelayInline>,
+    pub delay_cancel: Option<(EntityId, EntityId)>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -29,6 +36,7 @@ pub struct ViewBoardCtx {
     pub available_event_edges: Vec<String>,
     pub preview_edges: Vec<crate::editor::workspace::PreviewEdge>,
     pub rename_inline: Option<RenameInline>,
+    pub delay_inline: Option<crate::editor::workspace::DelayInline>,
 }
 
 /// Minimal read-only view with pan/zoom and basic nodes/edges rendering.
@@ -246,6 +254,26 @@ pub fn draw_doc_on_board(
                             menu_ui.close();
                         }
                     } else {
+                        // Edge context menu
+                        // Edit delay inline
+                        if menu_ui.button("Edit Delay…").clicked() {
+                            // Seed buffer from current delay if present
+                            let mut seed = String::new();
+                            if let Some(graph) = &doc.graph {
+                                if let Some(bag) = graph.component_bag(eid) {
+                                    if let Some(entry) = bag.get(bevy_gearbox_protocol::components::DELAY) {
+                                        if let Some(secs) = extract_delay_secs(&entry.value_json) { seed = format!("{}", secs); }
+                                    }
+                                }
+                            }
+                            _events.delay_start = Some(crate::editor::workspace::DelayInline { doc: doc_id, target: *eid, text: seed });
+                            menu_ui.close();
+                        }
+                        if menu_ui.button("Clear Delay").clicked() {
+                            _events.clear_edge_delay = Some((doc_id, *eid));
+                            menu_ui.close();
+                        }
+                        menu_ui.separator();
                         if menu_ui.button("Rename").clicked() {
                             context_menu_selection = Some(MenuSelection::RenameEntity { target: *eid });
                             menu_ui.close();
@@ -695,12 +723,25 @@ pub fn draw_doc_on_board(
                 let dst_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(dst_rect_w.min), doc.transform.to_screen(dst_rect_w.max));
 
             let pill_center_s = doc.transform.to_screen(doc.scene.node_rects.get(id).map(|r| r.center()).unwrap_or(ev.rect.center()));
-            let label_dyn = doc.graph.as_ref().map(|g| g.get_label_for(id)).unwrap_or(ev.label.clone());
-            let text_size_s = doc.cached_label_size_screen(&label_dyn, zoom, &painter);
-                let pill_pad_x = 10.0 * zoom;
-                let pill_pad_y = 6.0 * zoom;
-                let pill_size_s = egui::vec2(text_size_s.x + 2.0 * pill_pad_x, text_size_s.y + 2.0 * pill_pad_y);
-                let pill_rect_s = egui::Rect::from_center_size(pill_center_s, pill_size_s);
+            let base_label = doc.graph.as_ref().map(|g| g.get_label_for(id)).unwrap_or(ev.label.clone());
+            // Optional second line for Delay
+            let mut delay_line: Option<String> = None;
+            if let Some(graph) = &doc.graph {
+                if let Some(bag) = graph.component_bag(id) {
+                    if let Some(entry) = bag.get(bevy_gearbox_protocol::components::DELAY) {
+                        delay_line = format_delay_tag(&entry.value_json);
+                    }
+                }
+            }
+            let name_size_s = doc.cached_label_size_screen(&base_label, zoom, &painter);
+            let delay_size_s = delay_line.as_ref().map(|s| doc.cached_label_size_screen(s, zoom, &painter)).unwrap_or(egui::vec2(0.0, 0.0));
+            let line_gap = 2.0 * zoom;
+            let total_text_h = if delay_line.is_some() { name_size_s.y + line_gap + delay_size_s.y } else { name_size_s.y };
+            let text_w = name_size_s.x.max(delay_size_s.x);
+            let pill_pad_x = 10.0 * zoom;
+            let pill_pad_y = 6.0 * zoom;
+            let pill_size_s = egui::vec2(text_w + 2.0 * pill_pad_x, total_text_h + 2.0 * pill_pad_y);
+            let pill_rect_s = egui::Rect::from_center_size(pill_center_s, pill_size_s);
 
                 // Selection halo around pill (drawn before pill border)
                 let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);
@@ -798,22 +839,55 @@ pub fn draw_doc_on_board(
                     egui::Stroke::new(1.0, edge_col),
                     egui::StrokeKind::Outside,
                 );
-                // Inline rename for edge pills
-                let edit_rect = pill_rect_s.shrink2(egui::vec2(6.0 * zoom, 4.0 * zoom));
+                // Inline rename for edge pills (first line: Name)
+                let edit_inset = egui::vec2(6.0 * zoom, 4.0 * zoom);
+                let edit_rect_full = pill_rect_s.shrink2(edit_inset);
+                let name_top = edit_rect_full.center().y - total_text_h * 0.5;
+                let name_center = egui::pos2(edit_rect_full.center().x, name_top);
+                // Allocate a rect just tall enough for the first line for text edit hitbox
+                let name_edit_rect = egui::Rect::from_min_size(
+                    egui::pos2(edit_rect_full.min.x, name_top),
+                    egui::vec2(edit_rect_full.width(), name_size_s.y),
+                );
                 draw_label_or_inline_editor(
                     ui,
                     ctx,
                     doc_id,
                     id,
-                    edit_rect,
+                    name_edit_rect,
                     &painter,
-                    pill_rect_s.center(),
-                    egui::Align2::CENTER_CENTER,
-                    &label_dyn,
+                    name_center,
+                    egui::Align2::CENTER_TOP,
+                    &base_label,
                     &font_id,
                     pill_text_col,
                     &mut _events,
                 );
+                // Second line: Delay text or inline editor
+                let delay_top = name_top + name_size_s.y + line_gap;
+                let delay_center = egui::pos2(edit_rect_full.center().x, delay_top);
+                let delay_edit_rect = egui::Rect::from_min_size(
+                    egui::pos2(edit_rect_full.min.x, delay_top),
+                    egui::vec2(edit_rect_full.width(), delay_size_s.y.max(name_size_s.y)),
+                );
+                // If this edge is in delay-inline edit mode, draw input; else draw read-only text when present
+                let in_delay_edit = ctx.delay_inline.as_ref().map(|d| d.doc == doc_id && d.target == *id).unwrap_or(false);
+                if in_delay_edit {
+                    draw_delay_inline_editor(
+                        ui,
+                        ctx,
+                        doc_id,
+                        id,
+                        delay_edit_rect,
+                        &painter,
+                        delay_center,
+                        &font_id,
+                        pill_text_col,
+                        &mut _events,
+                    );
+                } else if let Some(ref dl) = delay_line {
+                    painter.text(delay_center, egui::Align2::CENTER_TOP, dl, font_id.clone(), pill_text_col);
+                }
         }
     }
 
@@ -1040,6 +1114,82 @@ fn is_direct_substate_of_parallel(doc: &GraphDoc, child_id: &EntityId) -> bool {
         if has_children && !has_initial { return true; }
     }
     false
+}
+
+fn format_delay_tag(v: &serde_json::Value) -> Option<String> {
+    // Expect object { duration: { secs, nanos } } or { duration: { secs_f64 } } or direct seconds number
+    if let Some(obj) = v.as_object() {
+        if let Some(dur) = obj.get("duration") {
+            if let Some(d) = dur.as_object() {
+                let secs = d.get("secs").and_then(|x| x.as_u64()).unwrap_or(0) as f64;
+                let nanos = d.get("nanos").and_then(|x| x.as_u64()).unwrap_or(0) as f64;
+                if secs > 0.0 || nanos > 0.0 {
+                    let total = secs + nanos / 1_000_000_000.0;
+                    return Some(format!("Delay: {:.2}s", total));
+                }
+                if let Some(sf) = d.get("secs_f64").and_then(|x| x.as_f64()) {
+                    return Some(format!("Delay: {:.2}s", sf));
+                }
+                if let Some(sf) = d.get("secs_f32").and_then(|x| x.as_f64()) {
+                    return Some(format!("Delay: {:.2}s", sf));
+                }
+            }
+        }
+    }
+    if let Some(n) = v.as_f64() { return Some(format!("Delay: {:.2}s", n)); }
+    None
+}
+
+fn extract_delay_secs(v: &serde_json::Value) -> Option<f64> {
+    if let Some(obj) = v.as_object() {
+        if let Some(dur) = obj.get("duration") {
+            if let Some(d) = dur.as_object() {
+                let secs = d.get("secs").and_then(|x| x.as_u64()).unwrap_or(0) as f64;
+                let nanos = d.get("nanos").and_then(|x| x.as_u64()).unwrap_or(0) as f64;
+                if secs > 0.0 || nanos > 0.0 { return Some(secs + nanos / 1_000_000_000.0); }
+                if let Some(sf) = d.get("secs_f64").and_then(|x| x.as_f64()) { return Some(sf); }
+                if let Some(sf) = d.get("secs_f32").and_then(|x| x.as_f64()) { return Some(sf); }
+            }
+        }
+    }
+    v.as_f64()
+}
+
+fn draw_delay_inline_editor(
+    ui: &mut egui::Ui,
+    ctx: &ViewBoardCtx,
+    doc_id: EntityId,
+    target_id: &EntityId,
+    edit_rect: egui::Rect,
+    painter: &egui::Painter,
+    text_pos: egui::Pos2,
+    font_id: &egui::FontId,
+    color: egui::Color32,
+    events: &mut DocEvents,
+) {
+    let is_editing = ctx.delay_inline.as_ref().map(|r| r.doc == doc_id && r.target == *target_id).unwrap_or(false);
+    let current = ctx.delay_inline.as_ref().map(|r| r.text.clone()).unwrap_or_default();
+    if is_editing {
+        let mut buf = current;
+        let mut commit = false;
+        let mut cancelled = false;
+        let id = egui::Id::new(("inline_delay", doc_id, target_id.0));
+        let resp = ui.interact(edit_rect, id, egui::Sense::click());
+        let response = ui.put(edit_rect, egui::TextEdit::singleline(&mut buf).hint_text("seconds"));
+        if ui.input(|i| i.key_pressed(egui::Key::Enter)) { commit = true; }
+        let clicked_outside = ui.input(|i| i.pointer.any_pressed()) && !resp.clicked() && !response.hovered();
+        if clicked_outside { cancelled = true; }
+        if commit {
+            events.delay_commit = Some(crate::editor::workspace::DelayInline { doc: doc_id, target: *target_id, text: buf.clone() });
+        } else if cancelled {
+            events.delay_cancel = Some((doc_id, *target_id));
+        } else if response.changed() {
+            events.delay_edit = Some(crate::editor::workspace::DelayInline { doc: doc_id, target: *target_id, text: buf });
+        }
+    } else {
+        // Fallback draw (should not be called when not editing, caller draws read-only text)
+        painter.text(text_pos, egui::Align2::CENTER_TOP, "", font_id.clone(), color);
+    }
 }
 
 

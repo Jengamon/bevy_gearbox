@@ -15,6 +15,10 @@ pub struct Workspace {
     pub rename_inline: Option<RenameInline>,
     /// One-shot commit captured during draw; consumed by shell
     pub pending_rename_commit: Option<RenameInline>,
+    /// Inline delay editor state for an edge
+    pub delay_inline: Option<DelayInline>,
+    /// One-shot delay commit captured during draw
+    pub pending_delay_commit: Option<DelayInline>,
     /// Transition builder ephemeral state
     pub edge_build: Option<EdgeBuildState>,
     /// Edge kind chooser menu (opened when user picks a valid target during build)
@@ -43,3 +47,6 @@ pub struct PreviewEdge { pub doc: EntityId, pub source: EntityId, pub target: En
 
 #[derive(Debug, Clone)]
 pub struct PendingEdgeCreate { pub doc: EntityId, pub source: EntityId, pub target: EntityId, pub kind: String }
+
+#[derive(Debug, Clone)]
+pub struct DelayInline { pub doc: EntityId, pub target: EntityId, pub text: String }

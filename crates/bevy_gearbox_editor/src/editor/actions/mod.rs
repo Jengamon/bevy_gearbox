@@ -225,5 +225,11 @@ pub fn on_save_substates_requested(
     });
 }
 
+#[derive(Debug, Clone, Event)]
+pub struct SetEdgeDelayRequested { pub target: EntityId, pub seconds: f32 }
+
+#[derive(Debug, Clone, Event)]
+pub struct ClearEdgeDelayRequested { pub target: EntityId }
+
 
 

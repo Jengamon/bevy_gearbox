@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_gearbox"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bevy",
  "bevy-inspector-egui",
@@ -921,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_gearbox_macros"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "proc-macro2",
  "quote",

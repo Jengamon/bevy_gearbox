@@ -51,6 +51,8 @@ impl Plugin for EditorPlugin {
             .add_observer(crate::editor::actions::on_unsubscribe_requested)
             .add_observer(crate::editor::actions::on_save_as_requested)
             .add_observer(crate::editor::actions::on_save_substates_requested)
+            .add_observer(on_set_edge_delay_requested)
+            .add_observer(on_clear_edge_delay_requested)
             .add_observer(on_spawn_state_machine)
             .add_observer(on_spawn_substate)
             ;
@@ -100,6 +102,7 @@ fn setup_watch_state(net_cmd: &mut MessageWriter<NetCommand>, id: u64) {
 fn setup_watch_edge(net_cmd: &mut MessageWriter<NetCommand>, id: u64) {
     net_cmd.write(NetCommand::StartComponents { id, components: vec![
         bevy_gearbox_protocol::components::NAME.to_string(),
+        bevy_gearbox_protocol::components::DELAY.to_string(),
     ] });
 }
 
@@ -135,6 +138,40 @@ fn on_spawn_substate(
     let client_cloned = client.clone();
     rt.0.spawn(async move {
         let _ = client_cloned.spawn_substate(parent, Some(&name)).await;
+    });
+}
+
+fn on_set_edge_delay_requested(
+    req: On<crate::editor::actions::SetEdgeDelayRequested>,
+    client: Res<bevy_gearbox_protocol::client::Client>,
+    rt: Res<bevy_gearbox_protocol::client::TokioRuntime>,
+) {
+    let id = req.target.0;
+    let secs_f32 = req.seconds.max(0.0);
+    let secs_u64 = secs_f32.floor() as u64;
+    let nanos_u32 = ((secs_f32 - secs_u64 as f32) * 1_000_000_000.0).round().clamp(0.0, 999_999_999.0) as u32;
+    let mut duration = JsonMap::new();
+    duration.insert("secs".to_string(), JsonValue::Number(serde_json::Number::from(secs_u64)));
+    duration.insert("nanos".to_string(), JsonValue::Number(serde_json::Number::from(nanos_u32)));
+    let mut delay_obj = JsonMap::new();
+    delay_obj.insert("duration".to_string(), JsonValue::Object(duration));
+    let mut comps = JsonMap::new();
+    comps.insert(bevy_gearbox_protocol::components::DELAY.to_string(), JsonValue::Object(delay_obj));
+    let client_cloned = client.clone();
+    rt.0.spawn(async move {
+        let _ = client_cloned.insert_components(id as u64, comps).await;
+    });
+}
+
+fn on_clear_edge_delay_requested(
+    req: On<crate::editor::actions::ClearEdgeDelayRequested>,
+    client: Res<bevy_gearbox_protocol::client::Client>,
+    rt: Res<bevy_gearbox_protocol::client::TokioRuntime>,
+) {
+    let id = req.target.0;
+    let client_cloned = client.clone();
+    rt.0.spawn(async move {
+        let _ = client_cloned.remove_components(id as u64, &[bevy_gearbox_protocol::components::DELAY]).await;
     });
 }
 
