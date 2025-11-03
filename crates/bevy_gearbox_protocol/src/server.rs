@@ -47,7 +47,12 @@ impl Plugin for ServerPlugin {
         register_editor_convenience_rpcs(app);
         register_editor_transition_rpcs(app);
         register_editor_machine_graph_rpc(app);
+        register_editor_node_rpcs(app);
+        register_editor_control_rpcs(app);
         register_version_rpc(app);
+        // Observers for control bus triggers (usable from game code via events)
+        app.add_observer(on_open_on_client_event)
+            .add_observer(on_open_if_related_event);
     }
 }
 
@@ -472,6 +477,62 @@ fn register_editor_watch_rpcs(app: &mut App) {
 }
 
 // =========================
+// Control RPCs and +watch
+// =========================
+
+#[derive(Deserialize)]
+struct OpenOnClientParams { entity: Entity }
+
+#[derive(Deserialize)]
+struct OpenIfRelatedParams { target: Entity, related: Entity }
+
+fn control_watch_handler(_in: In<Option<Value>>, world: &mut World) -> BrpResult<Option<Value>> {
+    // Drain any queued control events as a batch
+    if !world.contains_resource::<ControlBus>() { world.insert_resource(ControlBus::default()); }
+    let mut bus = world.resource_mut::<ControlBus>();
+    if bus.queue.is_empty() { return Ok(None); }
+    let mut events: Vec<Value> = Vec::new();
+    while let Some(ev) = bus.queue.pop_front() { events.push(ev); }
+    Ok(Some(serde_json::json!({"events": events})))
+}
+
+fn open_on_client_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: OpenOnClientParams = serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError { code: error_codes::INVALID_PARAMS, message: format!("invalid params: {e}"), data: None })?;
+    if !world.entities().contains(p.entity) { return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None }); }
+    if !world.contains_resource::<ControlBus>() { world.insert_resource(ControlBus::default()); }
+    let mut bus = world.resource_mut::<ControlBus>();
+    bus.queue.push_back(serde_json::json!({"kind":"open","entity": entity_to_bits(p.entity)}));
+    Ok(serde_json::json!({"ok": true}))
+}
+
+fn open_if_related_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: OpenIfRelatedParams = serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError { code: error_codes::INVALID_PARAMS, message: format!("invalid params: {e}"), data: None })?;
+    if !world.entities().contains(p.target) || !world.entities().contains(p.related) { return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None }); }
+    // Consider 'related is open' as 'machine watch is active' using Subscriptions counts
+    if let Some(subs) = world.get_resource::<Subscriptions>() {
+        if subs.counts.get(&p.related).copied().unwrap_or(0) > 0 {
+            if !world.contains_resource::<ControlBus>() { world.insert_resource(ControlBus::default()); }
+            let mut bus = world.resource_mut::<ControlBus>();
+            bus.queue.push_back(serde_json::json!({"kind":"open","entity": entity_to_bits(p.target)}));
+        }
+    }
+    Ok(serde_json::json!({"ok": true}))
+}
+
+fn register_editor_control_rpcs(app: &mut App) {
+    if !app.world().contains_resource::<RemoteMethods>() { return; }
+    if !app.world().contains_resource::<ControlBus>() { app.insert_resource(ControlBus::default()); }
+    let world = app.main_mut().world_mut();
+    let control_watch_id = world.register_system(control_watch_handler);
+    let open_id = world.register_system(open_on_client_handler);
+    let open_if_id = world.register_system(open_if_related_handler);
+    let mut methods = world.resource_mut::<RemoteMethods>();
+    methods.insert("editor.control+watch", RemoteMethodSystemId::Watching(control_watch_id));
+    methods.insert("editor.open_on_client", RemoteMethodSystemId::Instant(open_id));
+    methods.insert("editor.open_if_related", RemoteMethodSystemId::Instant(open_if_id));
+}
+
+// =========================
 // Protocol version RPC
 // =========================
 fn version_handler(_in: In<Option<Value>>, _world: &World) -> BrpResult {
@@ -557,6 +618,26 @@ struct MachineTrackers {
 }
 
 // =========================
+// Control bus (+watch) to send one-shot editor control messages to clients
+// =========================
+
+#[derive(Default, Resource)]
+struct ControlBus {
+    // Simple FIFO of control events; broadcast to any client listening
+    queue: VecDeque<serde_json::Value>,
+}
+
+fn on_open_on_client_event(evt: On<crate::events::OpenOnClient>, mut bus: ResMut<ControlBus>) {
+    bus.queue.push_back(serde_json::json!({"kind":"open","entity": entity_to_bits(evt.target)}));
+}
+
+fn on_open_if_related_event(evt: On<crate::events::OpenIfRelated>, subs: Res<Subscriptions>, mut bus: ResMut<ControlBus>) {
+    if subs.counts.get(&evt.related).copied().unwrap_or(0) > 0 {
+        bus.queue.push_back(serde_json::json!({"kind":"open","entity": entity_to_bits(evt.target)}));
+    }
+}
+
+// =========================
 // Convenience editor RPCs (minimal)
 // =========================
 #[derive(serde::Deserialize)]
@@ -581,6 +662,136 @@ fn register_editor_convenience_rpcs(app: &mut App) {
     let reset_id = world.register_system(reset_region_handler);
     let mut methods = world.resource_mut::<RemoteMethods>();
     methods.insert(EDITOR_RESET_REGION, RemoteMethodSystemId::Instant(reset_id));
+}
+
+// =========================
+// Node mutation RPCs (spawn substate, delete subtree of states)
+// =========================
+
+#[derive(Deserialize)]
+struct SpawnSubstateParams { parent: Entity, #[serde(default)] name: Option<String> }
+
+fn spawn_substate_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: SpawnSubstateParams = serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError { code: error_codes::INVALID_PARAMS, message: format!("invalid params: {e}"), data: None })?;
+    if !world.entities().contains(p.parent) {
+        return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
+    }
+    let entity = {
+        let mut e = world.spawn_empty();
+        if let Some(name) = p.name.as_ref() { e.insert(Name::new(name.clone())); }
+        e.insert(gearbox::SubstateOf(p.parent));
+        e.id()
+    };
+    Ok(serde_json::json!({"entity": entity.to_bits()}))
+}
+
+#[derive(Deserialize)]
+struct DeleteSubtreeParams { root: Entity }
+
+fn delete_subtree_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: DeleteSubtreeParams = serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError { code: error_codes::INVALID_PARAMS, message: format!("invalid params: {e}"), data: None })?;
+    if !world.entities().contains(p.root) {
+        return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
+    }
+    // Collect descendant states
+    let mut q_children_state = world.query::<&gearbox::Substates>();
+    let q_children = q_children_state.query(world);
+    let mut to_delete_states: Vec<Entity> = Vec::new();
+    for cur in q_children.iter_descendants(p.root) { to_delete_states.push(cur); }
+    if to_delete_states.is_empty() { return Ok(serde_json::json!({"ok": true, "deleted": 0u32})); }
+    // Collect related transition edges for those states
+    use std::collections::HashSet;
+    let mut edges: HashSet<Entity> = HashSet::new();
+    for s in to_delete_states.iter().copied() {
+        if let Some(ts) = world.get::<gearbox::transitions::Transitions>(s) { for &e in ts.into_iter() { edges.insert(e); } }
+        if let Some(incoming) = world.get::<gearbox::transitions::TargetedBy>(s) { for &e in incoming.into_iter() { edges.insert(e); } }
+    }
+    // Despawn edges first, then states
+    for e in edges.into_iter() { let _ = world.despawn(e); }
+    for s in to_delete_states.into_iter() { let _ = world.despawn(s); }
+    Ok(serde_json::json!({"ok": true}))
+}
+
+fn register_editor_node_rpcs(app: &mut App) {
+    if !app.world().contains_resource::<RemoteMethods>() { return; }
+    let world = app.main_mut().world_mut();
+    let spawn_id = world.register_system(spawn_substate_handler);
+    let del_id = world.register_system(delete_subtree_handler);
+    let make_leaf_id = world.register_system(make_leaf_handler);
+    let make_parent_id = world.register_system(make_parent_handler);
+    let make_parallel_id = world.register_system(make_parallel_handler);
+    let mut methods = world.resource_mut::<RemoteMethods>();
+    methods.insert(crate::methods::EDITOR_SPAWN_SUBSTATE, RemoteMethodSystemId::Instant(spawn_id));
+    methods.insert(crate::methods::EDITOR_DELETE_SUBTREE, RemoteMethodSystemId::Instant(del_id));
+    methods.insert(crate::methods::EDITOR_MAKE_LEAF, RemoteMethodSystemId::Instant(make_leaf_id));
+    methods.insert(crate::methods::EDITOR_MAKE_PARENT, RemoteMethodSystemId::Instant(make_parent_id));
+    methods.insert(crate::methods::EDITOR_MAKE_PARALLEL, RemoteMethodSystemId::Instant(make_parallel_id));
+}
+
+#[derive(Deserialize)]
+struct MakeLeafParams { target: Entity }
+
+fn make_leaf_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: MakeLeafParams = serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError { code: error_codes::INVALID_PARAMS, message: format!("invalid params: {e}"), data: None })?;
+    if !world.entities().contains(p.target) { return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None }); }
+    // Despawn all descendants
+    let _ = delete_subtree_handler(In(Some(serde_json::json!({"root": p.target}))), world);
+    // Remove components on the target
+    let mut e = world.entity_mut(p.target);
+    if e.get::<gearbox::InitialState>().is_some() { e.remove::<gearbox::InitialState>(); }
+    if e.get::<gearbox::Substates>().is_some() { e.remove::<gearbox::Substates>(); }
+    Ok(serde_json::json!({"ok": true}))
+}
+
+#[derive(Deserialize)]
+struct MakeParentParams { target: Entity, #[serde(default)] name: Option<String> }
+
+fn make_parent_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: MakeParentParams = serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError { code: error_codes::INVALID_PARAMS, message: format!("invalid params: {e}"), data: None })?;
+    if !world.entities().contains(p.target) { return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None }); }
+    // Ensure a child exists
+    let mut has_child = false;
+    if let Some(children) = world.get::<gearbox::Substates>(p.target) { for _ in children.into_iter() { has_child = true; break; } }
+    let child = if has_child {
+        // Pick first child as initial
+        world.get::<gearbox::Substates>(p.target).and_then(|c| c.into_iter().next().copied())
+    } else {
+        // Spawn a child
+        let mut e = world.spawn_empty();
+        if let Some(name) = p.name.as_ref() { e.insert(Name::new(name.clone())); }
+        e.insert((
+            Name::new("New State"),
+            gearbox::SubstateOf(p.target)
+        ));
+        Some(e.id())
+    };
+    if let Some(cid) = child {
+        world.entity_mut(p.target).insert(gearbox::InitialState(cid));
+    }
+    Ok(serde_json::json!({"ok": true}))
+}
+
+#[derive(Deserialize)]
+struct MakeParallelParams { target: Entity, #[serde(default)] name: Option<String> }
+
+fn make_parallel_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: MakeParallelParams = serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|e| BrpError { code: error_codes::INVALID_PARAMS, message: format!("invalid params: {e}"), data: None })?;
+    if !world.entities().contains(p.target) { return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None }); }
+    // Ensure a child exists to keep it a parent node
+    let mut has_child = false;
+    if let Some(children) = world.get::<gearbox::Substates>(p.target) { for _ in children.into_iter() { has_child = true; break; } }
+    if !has_child {
+        let mut e = world.spawn_empty();
+        if let Some(name) = p.name.as_ref() { e.insert(Name::new(name.clone())); }
+        e.insert((
+            Name::new("New State"),
+            gearbox::SubstateOf(p.target)
+        ));
+    }
+    // Remove InitialState to make parallel
+    let mut parent = world.entity_mut(p.target);
+    if parent.get::<gearbox::InitialState>().is_some() { parent.remove::<gearbox::InitialState>(); }
+    Ok(serde_json::json!({"ok": true}))
 }
 
 // =========================
@@ -717,14 +928,14 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
         if !visited.insert(cur) { continue; }
         // Collect node fields (string-centric)
         let mut components: BTreeMap<String, Value> = BTreeMap::new();
-        if let Some(name) = q_name.get(world, cur).ok() { components.insert("Name".to_string(), Value::String(name.as_str().to_string())); }
+        if let Some(name) = q_name.get(world, cur).ok() { components.insert(crate::components::NAME_REFLECT.to_string(), Value::String(name.as_str().to_string())); }
         if let Some(init) = q_initial.get(world, cur).ok().flatten() {
             // InitialState points to a child; serialize as string of entity bits for simplicity
-            components.insert("bevy_gearbox::InitialState".to_string(), Value::String(init.0.to_bits().to_string()));
+            components.insert(crate::components::INITIAL_STATE.to_string(), Value::String(init.0.to_bits().to_string()));
         }
         // Include StateMachineId if present to allow clients to resolve sidecar path
         if let Some(id) = world.get::<gearbox::StateMachineId>(cur) {
-            components.insert("bevy_gearbox::StateMachineId".to_string(), Value::String(id.0.clone()));
+            components.insert(crate::components::STATE_MACHINE_ID.to_string(), Value::String(id.0.clone()));
         }
         // Children
         let mut children_ids: Vec<String> = Vec::new();
@@ -732,7 +943,7 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
             for c in children.into_iter().copied() { children_ids.push(c.to_bits().to_string()); queue.push_back((Some(cur), c)); }
         }
         if !children_ids.is_empty() {
-            components.insert("bevy_gearbox::Substates".to_string(), Value::Array(children_ids.into_iter().map(|s| Value::String(s)).collect()));
+            components.insert(crate::components::STATE_CHILDREN.to_string(), Value::Array(children_ids.into_iter().map(|s| Value::String(s)).collect()));
         }
 
         // Relationships for edges (provide adjacency directly on nodes)
@@ -769,18 +980,18 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
                 // Minimal edge fields: id/source/target and a few components as strings
                 let mut ecomps: BTreeMap<String, Value> = BTreeMap::new();
                 if let Some(t) = world.get::<gearbox::transitions::Target>(edge) {
-                    ecomps.insert("bevy_gearbox::transitions::Target".to_string(), Value::String(t.0.to_bits().to_string()));
+                    ecomps.insert(crate::components::TARGET.to_string(), Value::String(t.0.to_bits().to_string()));
                 }
                 if world.get::<gearbox::transitions::AlwaysEdge>(edge).is_some() {
-                    ecomps.insert("bevy_gearbox::transitions::AlwaysEdge".to_string(), Value::String("true".to_string()));
+                    ecomps.insert(crate::components::ALWAYS_EDGE.to_string(), Value::String("true".to_string()));
                 }
                 if let Some(name) = world.get::<Name>(edge) {
-                    ecomps.insert("Name".to_string(), Value::String(name.as_str().to_string()));
+                    ecomps.insert(crate::components::NAME_REFLECT.to_string(), Value::String(name.as_str().to_string()));
                 }
                 edges.push(serde_json::json!({
                     "id": edge.to_bits().to_string(),
                     "source": cur.to_bits().to_string(),
-                    "target": ecomps.get("bevy_gearbox::transitions::Target").cloned().unwrap_or(Value::Null),
+                    "target": ecomps.get(crate::components::TARGET).cloned().unwrap_or(Value::Null),
                     "components": ecomps,
                 }));
             }

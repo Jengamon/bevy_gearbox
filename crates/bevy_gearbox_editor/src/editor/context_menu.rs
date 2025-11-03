@@ -61,7 +61,7 @@ pub fn build_context_menu(graph: &StateMachineGraph, id: EntityId) -> Vec<MenuIt
     }
 
     // Make Parallel (only when it has children and is not already parallel)
-    if has_children && !is_parallel {
+    if !is_parallel {
         items.push(MenuItem { label: "Make Parallel", kind: MenuItemKind::MakeParallel });
     }
 

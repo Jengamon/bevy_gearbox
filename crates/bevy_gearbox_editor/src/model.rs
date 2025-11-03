@@ -166,7 +166,7 @@ impl StateMachineGraph {
         if let Some(bag) = self.entity_data.get(id) {
             if let Some(name) = extract_name_from_bag(bag) { return name; }
             let edge_label = choose_edge_label_bag(bag);
-            if edge_label != "Edge" { return edge_label; }
+            return edge_label;
         }
         format!("{}", id.0)
     }
@@ -301,7 +301,7 @@ impl fmt::Display for StateMachineGraph {
 }
 
 fn extract_name_from_bag(bag: &ComponentBag) -> Option<String> {
-    let val = bag.entries.get(c::NAME)?.value_json.clone();
+    let val = bag.entries.get(c::NAME_REFLECT)?.value_json.clone();
     if let Some(s) = val.as_str() { return Some(s.to_string()); }
     if let JsonValue::Object(obj) = val {
         for v in obj.values() { if let Some(s) = v.as_str() { return Some(s.to_string()); } }
@@ -311,7 +311,7 @@ fn extract_name_from_bag(bag: &ComponentBag) -> Option<String> {
 
 pub(crate) fn choose_edge_label_bag(bag: &ComponentBag) -> String {
     // 1) Prefer explicit Name text if present
-    if let Some(name_val) = bag.entries.get(c::NAME).map(|e| e.value_json.clone()) {
+    if let Some(name_val) = bag.entries.get(c::NAME_REFLECT).map(|e| e.value_json.clone()) {
         if let Some(s) = name_val.as_str() {
             let text = s.trim();
             if !text.is_empty() { return text.to_string(); }

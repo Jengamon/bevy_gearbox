@@ -531,12 +531,22 @@ pub fn draw_doc_on_board(
                 // Arrow-handle to start edge building when selected and not already building
                 if is_selected && ctx.edge_build.is_none() {
                     let handle_r = 6.0 * zoom;
-                    let handle_center = egui::pos2(rect_screen.max.x + handle_r + 2.0 * zoom, rect_screen.center().y);
+                    let margin = 4.0 * zoom;
+                    let handle_center = egui::pos2(
+                        rect_screen.max.x - (handle_r + margin),
+                        rect_screen.min.y + (handle_r + margin),
+                    );
                     let handle_rect = egui::Rect::from_center_size(handle_center, egui::vec2(handle_r * 2.0, handle_r * 2.0));
                     let hid = egui::Id::new(("edge_handle", doc_id, "node")).with(*id);
                     let hresp = ui.interact(handle_rect, hid, egui::Sense::click());
+                    // Blue circle
                     painter.circle_filled(handle_center, handle_r, egui::Color32::from_rgb(110, 190, 255));
-                    painter.circle_stroke(handle_center, handle_r, egui::Stroke::new(1.0, egui::Color32::from_gray(240)));
+                    // White plus
+                    let plus_len = handle_r * 1.0;
+                    let half = plus_len * 0.5;
+                    let stroke = egui::Stroke::new(1.5 * zoom.max(1.0), egui::Color32::WHITE);
+                    painter.line_segment([egui::pos2(handle_center.x - half, handle_center.y), egui::pos2(handle_center.x + half, handle_center.y)], stroke);
+                    painter.line_segment([egui::pos2(handle_center.x, handle_center.y - half), egui::pos2(handle_center.x, handle_center.y + half)], stroke);
                     if hresp.clicked() {
                         _events.edge_build_set = Some(EdgeBuildState { doc: doc_id, source: *id, just_started: true });
                     }
@@ -603,9 +613,24 @@ pub fn draw_doc_on_board(
                 // Arrow-handle to start edge building when selected and not already building
                 if is_selected && ctx.edge_build.is_none() {
                     let handle_r = 6.0 * zoom;
-                    let handle_center = egui::pos2(rect_screen.max.x + handle_r + 2.0 * zoom, rect_screen.center().y);
-                    let hresp = ui.interact(egui::Rect::from_center_size(handle_center, egui::vec2(handle_r * 2.0, handle_r * 2.0)), egui::Id::new(("edge_handle", doc_id, *id)), egui::Sense::click());
-                    painter.circle_stroke(handle_center, handle_r, egui::Stroke::new(1.0, egui::Color32::from_gray(240)));
+                    let margin = 4.0 * zoom;
+                    let handle_center = egui::pos2(
+                        rect_screen.max.x - (handle_r + margin),
+                        rect_screen.min.y + (handle_r + margin),
+                    );
+                    let hresp = ui.interact(
+                        egui::Rect::from_center_size(handle_center, egui::vec2(handle_r * 2.0, handle_r * 2.0)),
+                        egui::Id::new(("edge_handle", doc_id, *id)),
+                        egui::Sense::click(),
+                    );
+                    // Blue circle
+                    painter.circle_filled(handle_center, handle_r, egui::Color32::from_rgb(110, 190, 255));
+                    // White plus
+                    let plus_len = handle_r * 1.0;
+                    let half = plus_len * 0.5;
+                    let stroke = egui::Stroke::new(1.5 * zoom.max(1.0), egui::Color32::WHITE);
+                    painter.line_segment([egui::pos2(handle_center.x - half, handle_center.y), egui::pos2(handle_center.x + half, handle_center.y)], stroke);
+                    painter.line_segment([egui::pos2(handle_center.x, handle_center.y - half), egui::pos2(handle_center.x, handle_center.y + half)], stroke);
                     if hresp.clicked() {
                         _events.edge_build_set = Some(EdgeBuildState { doc: doc_id, source: *id, just_started: true });
                     }
@@ -803,6 +828,43 @@ pub fn draw_doc_on_board(
             // Determine preview end point: hovered node center (if valid) or cursor
             let cursor_opt = response.ctx.input(|i| i.pointer.hover_pos());
             let mut snap_to_target: Option<EntityId> = None;
+            // Draw a dotted preview from source to cursor while building
+            if let (Some(cursor), Some(src_view)) = (cursor_opt, doc.scene.states.get(&build.source)) {
+                let src_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(src_view.rect.min), doc.transform.to_screen(src_view.rect.max));
+                let start = rect_from_inside_toward(src_rect_s, cursor);
+                let end = cursor;
+                let color = egui::Color32::from_rgb(160, 220, 255);
+                let stroke_w = 2.0;
+                // simple dashed line
+                let draw_dashed_line = |a: egui::Pos2, b: egui::Pos2, dash: f32, gap: f32| {
+                    let total = (b - a).length();
+                    if total <= 0.0 { return; }
+                    let dir = (b - a) / total;
+                    let mut t = 0.0f32;
+                    while t < total {
+                        let seg = dash.min(total - t);
+                        let p0 = a + dir * t;
+                        let p1 = a + dir * (t + seg);
+                        painter.line_segment([p0, p1], egui::Stroke::new(stroke_w, color));
+                        t += dash + gap;
+                    }
+                };
+                draw_dashed_line(start, end, 6.0, 4.0);
+                // Arrow head at cursor
+                let dir = (end - start).normalized();
+                let arrow_len = 10.0 * doc.transform.zoom;
+                let arrow_w = 8.0 * doc.transform.zoom;
+                let tip = end;
+                let base = tip - dir * arrow_len;
+                let perp = egui::pos2(-dir.y, dir.x);
+                let left = base + perp.to_vec2() * (arrow_w * 0.5);
+                let right = base - perp.to_vec2() * (arrow_w * 0.5);
+                painter.add(egui::Shape::convex_polygon(
+                    vec![tip, left, right],
+                    color,
+                    egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
+                ));
+            }
             if let Some(cursor) = cursor_opt {
                 for eid in order.iter().rev() {
                     if let Some(sv) = doc.scene.states.get(eid) {
@@ -813,9 +875,9 @@ pub fn draw_doc_on_board(
             }
             // Cancel build on escape
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) { _stop_dashed_build = true; }
-            // Confirm by clicking
-            if !ui.ctx().wants_pointer_input() { if cursor_opt.is_some() { /* preview drawing omitted */ } }
-            if !ui.ctx().wants_pointer_input() {
+            // Only confirm target selection on explicit click over a node
+            let pressed = ui.input(|i| i.pointer.primary_pressed());
+            if pressed {
                 if let (Some(cursor), Some(target)) = (cursor_opt, snap_to_target) {
                     _open_edge_menu = Some(EdgeMenuState { doc: doc_id, source: build.source, target, pos: cursor, just_opened: true, filter: String::new() });
                     _stop_dashed_build = true;
@@ -940,23 +1002,25 @@ fn draw_label_or_inline_editor(
     if is_renaming {
         // Work on a local buffer, then write back depending on commit/cancel
         let mut buf = ctx.rename_inline.as_ref().map(|r| r.text.clone()).unwrap_or_else(|| label.to_string());
-        let mut edited = false;
+        let mut commit = false;
         let mut cancelled = false;
         let id = egui::Id::new(("inline_rename", doc_id, target_id.0));
         let resp = ui.interact(edit_rect, id, egui::Sense::click());
         let response = ui.put(edit_rect, egui::TextEdit::singleline(&mut buf));
-        if response.changed() { edited = true; }
-        if ui.input(|i| i.key_pressed(egui::Key::Enter)) { edited = true; }
+        // Commit only on Enter
+        if ui.input(|i| i.key_pressed(egui::Key::Enter)) { commit = true; }
         // click outside to cancel
         let clicked_outside = ui.input(|i| i.pointer.any_pressed()) && !resp.clicked() && !response.hovered();
         if clicked_outside { cancelled = true; }
-        if edited {
+        if commit {
             events.rename_commit = Some(RenameInline { doc: doc_id, target: *target_id, text: buf.clone() });
         } else if cancelled {
             events.rename_cancel = Some((doc_id, *target_id));
         } else {
-            // Persist ongoing edit
-            events.rename_edit = Some(RenameInline { doc: doc_id, target: *target_id, text: buf });
+            // Persist ongoing edit while typing
+            if response.changed() {
+                events.rename_edit = Some(RenameInline { doc: doc_id, target: *target_id, text: buf });
+            }
         }
     } else {
         painter.text(text_pos, align, label, font_id.clone(), color);

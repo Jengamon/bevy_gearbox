@@ -17,6 +17,7 @@ use crate::editor::model::types::ConnectionState as EditorConnectionState;
 use crate::editor::model::types::{IndexItem};
 use bevy_gearbox_protocol::components as c;
 use serde_json::Value as JsonValue;
+use serde_json::Map as JsonMap;
 
 pub(crate) struct EditorPlugin;
 
@@ -49,6 +50,8 @@ impl Plugin for EditorPlugin {
             .add_observer(crate::editor::actions::on_unsubscribe_requested)
             .add_observer(crate::editor::actions::on_save_as_requested)
             .add_observer(crate::editor::actions::on_save_substates_requested)
+            .add_observer(on_spawn_state_machine)
+            .add_observer(on_spawn_substate)
             ;
 
         use bevy_egui::EguiPrimaryContextPass;
@@ -73,6 +76,65 @@ pub(crate) struct UiState {
 
 fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
+}
+
+/// Start watches for a machine root: machine events plus StateMachine and Name components.
+fn setup_watch_root(net_cmd: &mut MessageWriter<NetCommand>, id: u64) {
+    net_cmd.write(NetCommand::StartMachine { id });
+    net_cmd.write(NetCommand::StopComponents { id });
+    net_cmd.write(NetCommand::StartComponents { id, components: vec![
+        bevy_gearbox_protocol::components::NAME_REFLECT.to_string(),
+        bevy_gearbox_protocol::components::STATE_MACHINE.to_string(),
+    ] });
+}
+
+/// Start minimal watch for a state node (currently Name only).
+fn setup_watch_state(net_cmd: &mut MessageWriter<NetCommand>, id: u64) {
+    net_cmd.write(NetCommand::StartComponents { id, components: vec![
+        bevy_gearbox_protocol::components::NAME_REFLECT.to_string(),
+    ] });
+}
+
+/// Start minimal watch for an edge (currently Name only).
+fn setup_watch_edge(net_cmd: &mut MessageWriter<NetCommand>, id: u64) {
+    net_cmd.write(NetCommand::StartComponents { id, components: vec![
+        bevy_gearbox_protocol::components::NAME_REFLECT.to_string(),
+    ] });
+}
+
+fn on_spawn_state_machine(
+    evt: On<bevy_gearbox_protocol::events::SpawnStateMachine>,
+    client: Res<bevy_gearbox_protocol::client::Client>,
+    rt: Res<bevy_gearbox_protocol::client::TokioRuntime>,
+    mut client_cmd: MessageWriter<bevy_gearbox_protocol::client::ClientCommand>,
+) {
+    let name = evt.name.clone().unwrap_or_else(|| "New State Machine".to_string());
+    let client_cloned = client.clone();
+    let mut comps: JsonMap<String, JsonValue> = JsonMap::new();
+    // Insert StateMachine marker with default value and a Name
+    comps.insert(bevy_gearbox_protocol::components::STATE_MACHINE.to_string(), JsonValue::Object(JsonMap::new()));
+    comps.insert(bevy_gearbox_protocol::components::NAME_REFLECT.to_string(), JsonValue::String(name));
+    rt.0.spawn(async move {
+        if let Ok(id) = client_cloned.spawn(comps).await {
+            // Ask server to instruct the client to open this machine via control channel
+            let _ = client_cloned.open_on_client(id).await;
+        }
+    });
+    // Prompt a quick index refresh; discovery will also pick it up shortly
+    client_cmd.write(bevy_gearbox_protocol::client::ClientCommand::RefreshMachines);
+}
+
+fn on_spawn_substate(
+    evt: On<bevy_gearbox_protocol::events::SpawnSubstate>,
+    client: Res<bevy_gearbox_protocol::client::Client>,
+    rt: Res<bevy_gearbox_protocol::client::TokioRuntime>,
+) {
+    let parent = evt.parent.to_bits();
+    let name = evt.name.clone().unwrap_or_else(|| "New State".to_string());
+    let client_cloned = client.clone();
+    rt.0.spawn(async move {
+        let _ = client_cloned.spawn_substate(parent, Some(&name)).await;
+    });
 }
 
 fn poll_network(
@@ -104,6 +166,8 @@ fn poll_network(
                 store.connection = EditorConnectionState::Connected { session_id: store.session_id, endpoint: ep };
                 // Now that the refresh succeeded, start discovery watch
                 net_cmd.write(NetCommand::StartDiscovery);
+                // And start control watch for server-initiated editor commands
+                net_cmd.write(NetCommand::StartControl);
                 processed += 1;
             }
             ClientMessage::RefreshResult(Err(e)) => {
@@ -120,10 +184,7 @@ fn poll_network(
                     // Stash graph snapshot for projection
                     ui.graphs.insert(doc_id, sm_graph.clone());
                     // Begin watches for this machine: transitions/name via machine watch; active via StateMachine component
-                    net_cmd.write(NetCommand::StartMachine { id: *id });
-                    // Force a fresh StateMachine components watch so we always receive an initial snapshot
-                    net_cmd.write(NetCommand::StopComponents { id: *id });
-                    net_cmd.write(NetCommand::StartComponents { id: *id, components: vec![bevy_gearbox_protocol::components::STATE_MACHINE.to_string()] });
+                    setup_watch_root(&mut net_cmd, *id);
                     // Active visualization will be driven by StateMachine component snapshots
                     // Request sidecar for the machine root
                     println!("[editor] graph_result: requesting sidecar for root {}", id);
@@ -175,6 +236,17 @@ fn poll_network(
                 }
                 ui.machines.sort_by_key(|(id, _)| id.0);
                 store.index.items = ui.machines.iter().map(|(id, name)| IndexItem { name: name.clone(), entity: *id }).collect();
+                processed += 1;
+            }
+            NetMessage::ControlOpen { id } => {
+                let entity = EntityId(id);
+                // Ensure a doc entry exists and seed its transform
+                let doc = docs.map.entry(entity).or_default();
+                doc.transform.pan = workspace.board_transform.pan;
+                doc.transform.zoom = workspace.board_transform.zoom;
+                // Begin watches and request graph snapshot
+                setup_watch_root(&mut net_cmd, id);
+                client_cmd.write(ClientCommand::FetchGraph { id });
                 processed += 1;
             }
             NetMessage::Machine { id, events } => {
@@ -318,7 +390,6 @@ fn ui_system(
 }
 
 fn sync_snapshots_to_workspace(
-    _workspace: ResMut<Workspace>,
     mut docs: ResMut<Docs>,
     mut ui: ResMut<UiState>,
     mut net_cmd: MessageWriter<NetCommand>,
@@ -356,9 +427,8 @@ fn sync_snapshots_to_workspace(
         project_graph_into_doc(entry, graph.clone());
         // After projecting the graph, start a Name component watch on all nodes and edges
         if let Some(g) = entry.graph.as_ref() {
-            let name_comp = bevy_gearbox_protocol::components::NAME_REFLECT.to_string();
-            for nid in g.nodes.keys() { net_cmd.write(NetCommand::StartComponents { id: nid.0, components: vec![name_comp.clone()] }); }
-            for eid in g.edges.keys() { net_cmd.write(NetCommand::StartComponents { id: eid.0, components: vec![name_comp.clone()] }); }
+            for nid in g.nodes.keys() { setup_watch_state(&mut net_cmd, nid.0); }
+            for eid in g.edges.keys() { setup_watch_edge(&mut net_cmd, eid.0); }
         }
         // Reapply previous active set from old graph so colors persist
         if let (Some(prev), Some(g)) = (prev_active, entry.graph.as_mut()) {

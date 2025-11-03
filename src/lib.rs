@@ -145,7 +145,7 @@ pub struct InitialState(#[entities] pub Entity);
 /// - `active` contains all active states (root, ancestors, and leaves)
 /// - `active_leaves` contains only the active leaf states
 #[derive(Component, Reflect, Default)]
-#[reflect(Component)]
+#[reflect(Component, Default)]
 pub struct StateMachine {
     #[entities]
     pub active: HashSet<Entity>,

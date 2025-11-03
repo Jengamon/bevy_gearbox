@@ -5,7 +5,7 @@ use crate::editor::actions::{OpenRequested, CloseRequested};
 use crate::editor::workspace::Workspace;
 use crate::editor::docs::Docs;
 
-pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands, _workspace: &Workspace, docs: &Docs) {
+pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands, docs: &Docs) {
     ui.horizontal(|ui| {
         ui.text_edit_singleline(&mut store.index.filter.query);
     });

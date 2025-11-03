@@ -198,6 +198,41 @@ impl Client {
 		Ok(())
 	}
 
+    pub async fn spawn_substate(&self, parent: u64, name: Option<&str>) -> Result<u64, Error> {
+        let params = match name {
+            Some(n) => json!({"parent": parent, "name": n}),
+            None => json!({"parent": parent}),
+        };
+        let v = self.jsonrpc_call(crate::methods::EDITOR_SPAWN_SUBSTATE, Some(params)).await?;
+        if let Some(id) = v.get("result").and_then(|r| r.get("entity")).and_then(|n| n.as_u64()) { return Ok(id); }
+        if let Some(id) = v.get("entity").and_then(|n| n.as_u64()) { return Ok(id); }
+        Err(Error::Rpc { code: -32603, message: "unexpected response for editor.spawn_substate".to_string(), data: Some(v) })
+    }
+
+    pub async fn delete_subtree(&self, root: u64) -> Result<(), Error> {
+        let params = json!({"root": root});
+        let _ = self.jsonrpc_call(crate::methods::EDITOR_DELETE_SUBTREE, Some(params)).await?;
+        Ok(())
+    }
+
+    pub async fn make_leaf(&self, target: u64) -> Result<(), Error> {
+        let params = json!({"target": target});
+        let _ = self.jsonrpc_call(crate::methods::EDITOR_MAKE_LEAF, Some(params)).await?;
+        Ok(())
+    }
+
+    pub async fn make_parent(&self, target: u64) -> Result<(), Error> {
+        let params = json!({"target": target});
+        let _ = self.jsonrpc_call(crate::methods::EDITOR_MAKE_PARENT, Some(params)).await?;
+        Ok(())
+    }
+
+    pub async fn make_parallel(&self, target: u64) -> Result<(), Error> {
+        let params = json!({"target": target});
+        let _ = self.jsonrpc_call(crate::methods::EDITOR_MAKE_PARALLEL, Some(params)).await?;
+        Ok(())
+    }
+
     pub async fn create_transition(&self, source: u64, target: u64, kind: &str) -> Result<u64, Error> {
         let params = json!({"source": source, "target": target, "kind": kind});
         let v = self.jsonrpc_call(crate::methods::EDITOR_CREATE_TRANSITION, Some(params)).await?;
@@ -215,6 +250,18 @@ impl Client {
     pub async fn version(&self) -> Result<u32, Error> {
         let v = self.jsonrpc_call(PROTOCOL_VERSION, None).await?;
         Ok(v.get("result").and_then(|r| r.get("version")).and_then(|n| n.as_u64()).unwrap_or(0) as u32)
+    }
+
+    pub async fn open_on_client(&self, entity: u64) -> Result<(), Error> {
+        let params = json!({"entity": entity});
+        let _ = self.jsonrpc_call("editor.open_on_client", Some(params)).await?;
+        Ok(())
+    }
+
+    pub async fn open_if_related(&self, target: u64, related: u64) -> Result<(), Error> {
+        let params = json!({"target": target, "related": related});
+        let _ = self.jsonrpc_call("editor.open_if_related", Some(params)).await?;
+        Ok(())
     }
 }
 
@@ -264,6 +311,24 @@ pub fn on_create_transition(
         let _ = client_cloned.create_transition(source, target, &kind).await;
     });
     writer.write(ClientCommand::FetchGraph { id: machine });
+}
+
+pub fn on_change_node_type(
+    ev: On<crate::events::ChangeNodeType>,
+    client: Res<Client>,
+    rt: Res<TokioRuntime>,
+) {
+    let target = ev.target.to_bits();
+    let to = ev.to;
+    let client_cloned = client.clone();
+    let rt = rt.0.clone();
+    rt.spawn(async move {
+        match to {
+            crate::events::NodeType::Leaf => { let _ = client_cloned.make_leaf(target).await; }
+            crate::events::NodeType::Parent => { let _ = client_cloned.make_parent(target).await; }
+            crate::events::NodeType::Parallel => { let _ = client_cloned.make_parallel(target).await; }
+        }
+    });
 }
 
 // =========================
@@ -404,6 +469,7 @@ impl Plugin for ClientPlugin {
         app.add_observer(on_create_transition);
 		app.add_observer(on_despawn);
 		app.add_observer(on_reset_region);
+        app.add_observer(on_change_node_type);
         app.add_systems(Startup, version_check_startup);
         app.add_systems(Update, (connection_guard, net_commands, watch_events, client_commands));
     }
@@ -444,6 +510,7 @@ enum WatchCtl {
     StopMachine { url: String, id: u64 },
     StartComponents { url: String, id: u64, components: Vec<String> },
     StopComponents { url: String, id: u64 },
+    StartControl { url: String },
 }
 
 #[derive(Debug, Clone)]
@@ -455,6 +522,7 @@ enum WatchEvt {
     Machine { id: u64, events: Vec<Value> },
     Error(String),
     Components { id: u64, components: serde_json::Map<String, Value>, removed: Vec<String> },
+    ControlOpen(u64),
 }
 
 fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
@@ -471,6 +539,7 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
         let mut discovery_handle: Option<tokio::task::JoinHandle<()>> = None;
         let mut machine_handles: HashMap<u64, tokio::task::JoinHandle<()>> = HashMap::new();
         let mut component_handles: HashMap<u64, tokio::task::JoinHandle<()>> = HashMap::new();
+        let mut control_handle: Option<tokio::task::JoinHandle<()>> = None;
         while let Some(cmd) = ctl_rx.recv().await {
             match cmd {
                 WatchCtl::StartDiscovery { url } => {
@@ -664,6 +733,43 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                 WatchCtl::StopComponents { url: _url, id } => {
                     if let Some(h) = component_handles.remove(&id) { h.abort(); }
                 }
+                WatchCtl::StartControl { url } => {
+                    if control_handle.is_none() {
+                        let tx = evt_tx.clone();
+                        let client_clone = client.clone();
+                        control_handle = Some(tokio::spawn(async move {
+                            loop {
+                                let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"editor.control+watch","params":null});
+                                let resp = match client_clone.post(&url).json(&req).send().await { Ok(r) => r, Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch control http: {}", e))); tokio::time::sleep(std::time::Duration::from_millis(300)).await; continue; } };
+                                let mut stream = resp.bytes_stream();
+                                while let Some(chunk) = stream.next().await {
+                                    match chunk {
+                                        Ok(bytes) => {
+                                            if let Ok(text) = std::str::from_utf8(&bytes) {
+                                                for line in text.split('\n') {
+                                                    let line = line.trim_start();
+                                                    if !line.starts_with("data: ") { continue; }
+                                                    let json_str = &line[6..];
+                                                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                                        if let Some(events) = v.get("result").and_then(|r| r.get("events")).and_then(|e| e.as_array()) {
+                                                            for ev in events.iter() {
+                                                                let kind = ev.get("kind").and_then(|s| s.as_str()).unwrap_or("");
+                                                                if kind == "open" {
+                                                                    if let Some(id) = ev.get("entity").and_then(|v| v.as_u64()) { let _ = tx.send(WatchEvt::ControlOpen(id)); }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch control stream: {}", e))); break; }
+                                    }
+                                }
+                            }
+                        }));
+                    }
+                }
             }
         }
     });
@@ -674,6 +780,7 @@ pub enum NetMessage {
     Discovery(Vec<MachineSummary>),
     Machine { id: u64, events: Vec<Value> },
     Components { id: u64, components: serde_json::Map<String, Value>, removed: Vec<String> },
+    ControlOpen { id: u64 },
 }
 
 #[derive(Message)]
@@ -684,6 +791,7 @@ pub enum NetCommand {
     StopMachine { id: u64 },
     StartComponents { id: u64, components: Vec<String> },
     StopComponents { id: u64 },
+    StartControl,
 }
 
 fn net_commands(
@@ -700,6 +808,9 @@ fn net_commands(
             }
             NetCommand::StopDiscovery => {
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopDiscovery); }
+            }
+            NetCommand::StartControl => {
+                if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartControl { url: client.base_url.clone() }); }
             }
             NetCommand::StartMachine { id } => {
                 let lt = mgr.cursors.get(&id).copied().unwrap_or(0);
@@ -765,6 +876,7 @@ fn watch_events(
                 WatchEvt::Components { id, components, removed } => {
                     writer.write(NetMessage::Components { id, components, removed });
                 }
+                WatchEvt::ControlOpen(id) => { writer.write(NetMessage::ControlOpen { id }); }
             }
         }
         if drained > 0 { /* optional log */ }

@@ -24,7 +24,7 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
             let _resp = ui.allocate_ui_with_layout(desired_left, egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_width(left_width);
                 ui.heading("Explorer");
-                panels::explorer::draw(ui, store, commands, workspace, docs);
+                panels::explorer::draw(ui, store, commands, docs);
             });
 
             ui.separator();
@@ -37,6 +37,16 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                 let (board_rect, board_resp) = ui.allocate_exact_size(board_size, egui::Sense::click_and_drag());
                 let board_painter = ui.painter_at(board_rect);
                 board_painter.rect_filled(board_rect, 0.0, egui::Color32::from_gray(20));
+
+                // Background context menu (workspace)
+                board_resp.context_menu(|menu_ui| {
+                    menu_ui.set_min_width(180.0);
+                    if menu_ui.button("New State Machine").clicked() {
+                        // Spawn a new state machine with an initial Name; server/watch will update the index
+                        commands.trigger(bevy_gearbox_protocol::events::SpawnStateMachine { name: Some("New State Machine".to_string()) });
+                        menu_ui.close();
+                    }
+                });
 
                 // Board-level zoom: apply wheel zoom to all documents once per frame and persist to workspace.board_transform
                 let scroll_y = ui.ctx().input(|i| i.smooth_scroll_delta.y);
@@ -120,6 +130,26 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                                         }
                                     }
                                     workspace.rename_inline = Some(crate::editor::workspace::RenameInline { doc: doc_id, target, text: default_text });
+                                }
+                                crate::editor::context_menu::MenuSelection::MakeLeaf { target } => {
+                                    let e = bevy::prelude::Entity::from_bits(target.0);
+                                    commands.trigger(bevy_gearbox_protocol::events::ChangeNodeType { target: e, to: bevy_gearbox_protocol::events::NodeType::Leaf });
+                                    workspace.pending_fetch_docs.push(doc_id);
+                                }
+                                crate::editor::context_menu::MenuSelection::MakeParent { target } => {
+                                    let e = bevy::prelude::Entity::from_bits(target.0);
+                                    commands.trigger(bevy_gearbox_protocol::events::ChangeNodeType { target: e, to: bevy_gearbox_protocol::events::NodeType::Parent });
+                                    workspace.pending_fetch_docs.push(doc_id);
+                                }
+                                crate::editor::context_menu::MenuSelection::MakeParallel { target } => {
+                                    let e = bevy::prelude::Entity::from_bits(target.0);
+                                    commands.trigger(bevy_gearbox_protocol::events::ChangeNodeType { target: e, to: bevy_gearbox_protocol::events::NodeType::Parallel });
+                                    workspace.pending_fetch_docs.push(doc_id);
+                                }
+                                crate::editor::context_menu::MenuSelection::AddChildStateMachine { target } => {
+                                    let e = bevy::prelude::Entity::from_bits(target.0);
+                                    commands.trigger(bevy_gearbox_protocol::events::SpawnSubstate { parent: e, name: Some("New State".to_string()) });
+                                    workspace.pending_fetch_docs.push(doc_id);
                                 }
                                 crate::editor::context_menu::MenuSelection::DeleteEntity { target } => {
                                     let e = bevy::prelude::Entity::from_bits(target.0);

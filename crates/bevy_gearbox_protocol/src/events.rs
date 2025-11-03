@@ -35,3 +35,9 @@ pub struct MachineSubscribed { #[event_target] pub target: Entity }
 pub struct CreateTransition { pub machine: Entity, pub source: Entity, pub target: Entity, pub kind: String }
 
 
+#[derive(EntityEvent, Debug, Clone)]
+pub struct OpenOnClient { #[event_target] pub target: Entity }
+
+#[derive(EntityEvent, Debug, Clone)]
+pub struct OpenIfRelated { #[event_target] pub target: Entity, pub related: Entity }
+
