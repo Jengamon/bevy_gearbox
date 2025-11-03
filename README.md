@@ -85,11 +85,6 @@ commands.spawn((
 ));
 ```
 
-### State Charts (Nested state machines)
-```rust
-// TODO: Simple statechart example
-```
-
 ### States
 ```rust
 commands.spawn((
@@ -123,7 +118,7 @@ commands.spawn((
 ));
 ```
 
-You can alternatively skip `SimpleTransition` and manually implement `TransitionEvent`, then add `#[register_transition]` to the type. Either path participates in inventory-based auto-registration: you don't need to call any explicit app registration for transition events.
+You can alternatively skip `SimpleTransition` and manually implement `TransitionEvent`, then add `#[transition_event]` to the type (make sure `use bevy_gearbox::prelude::*;` is in scope). Either path participates in inventory-based auto-registration: you don't need to call any explicit app registration for transition events.
 
 ### Triggering transitions
 ```rust
@@ -161,7 +156,7 @@ fn count_ready_entities(
 
 ## Your first State Machine/Chart
 Inside [DOCS.md](DOCS.md) you'll find an in-depth step by step guide into everything you need to build your first
-State Machine/Chart, interact with it through the ECS and explanations for every mechanism there's to it.
+State Machine, interact with it through the ECS and explanations for every how different parts of the API can be used.
 Don't worry, gearbox is pretty simple and intuitive to use, so it isn't as daunting as it sounds!
 
 <!-- TODO: Maybe move this section and everything regarding to the
@@ -169,14 +164,11 @@ editor into the editor repository and link to it.-->
 ## Using the editor (optional)
 
 ### Installing the editor
-1. Run `cargo add bevy_gearbox_editor bevy_egui bevy-inspector-egui`
-2. Add `GearboxEditorPlugin`, `EguiPlugin` and `DefaultInspectorConfigPlugin` to your app
+1. Run `cargo add bevy_gearbox_editor`
+2. Add the server plugin to your app
 ```rust
 use bevy::prelude::*;
 use bevy_gearbox::GearboxPlugin;
-use bevy_gearbox_editor::GearboxEditorPlugin;
-use bevy_inspector_egui::bevy_egui::EguiPlugin;
-use bevy_inspector_egui::DefaultInspectorConfigPlugin;
 
 fn main() {
     let mut app = App::new();
@@ -184,28 +176,22 @@ fn main() {
     app.add_plugins((
         DefaultPlugins,
         GearboxPlugin,
-        GearboxEditorPlugin,
-        EguiPlugin::default(),
-        DefaultInspectorConfigPlugin,
+        bevy_gearbox_editor::ServerPlugin::default(),
     ));
 
     app.run();
 }
 ```
 3. Run your app `cargo run`
-4. press `ctrl-o` to start the editor
-
-> [!NOTE]  
-> Reworking the editor to be a standalone process that uses BRP to inspect your app at runtime
-> is a future goal, and should make adding and using the editor much more straightforward. 
+4. Launch the editor as a separate process and connect to your running app (see the editor repository for launch instructions).
 
 ### Creating an state machine in the editor
 Coming soon.
 
 ## Future goals
-- Improve usability and erogonomics
+- Improve usability and erogonomics  
   Through user experimentation new edgecases and api ergonomic gotchas are bound to be discovered and improved.
-- Integrate with `bsn!` and `Scenes V2`
+- Integrate with `bsn!` and `Scenes V2`  
   This will make defining state machines in code much more powerful, and the entity patching will massively improve usability of statemachine scene assets. Fingers crossed for 0.18!
 - Use inventory more liberally to get rid of other component registration requirements, such as for state components and parameters.
 - Make the editor completely standalone through [BRP](https://docs.rs/bevy/0.17.2/bevy/remote) (Bevy Remote Protocol).
@@ -219,13 +205,14 @@ Coming soon.
 > You can author statechart scenes using the [editor](https://github.com/DEMIURGE-studio/bevy_gearbox_editor).
 > In the future this will be solved by building state machines through bsn.
 >
-> **TLDR:** Insert the StateMachine component as the last one of the State Machine entity.
+> **TLDR:** Insert the StateMachine component after the rest of the state machine has been built.
 
 ## Version Table
-| Bevy    | Gearbox |
-| ------- | ------ |
-| 0.17    | 0.4    |
-| 0.16    | 0.3*    |
+| Bevy    | Gearbox
+| ------- | ------ 
+| 0.17    | 0.5
+| 0.17    | 0.4
+| 0.16    | 0.3*
 
 <sup><sub>Versions below 0.4 are unsupported due to a huge crate rewrite.</sub></sup>
 

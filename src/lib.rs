@@ -29,7 +29,6 @@ impl Plugin for GearboxPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(transition_observer::<()> )
             .add_observer(initialize_state_machine)
-            //.add_observer(auto_attach_state_machine_on_substates)
             .add_observer(reset_state_region)
             .add_observer(transitions::always_edge_listener)
             .add_observer(transitions::start_after_on_enter)
@@ -64,16 +63,7 @@ impl Plugin for GearboxPlugin {
         app.add_systems(Update, (
             transitions::check_always_on_guards_changed,
             transitions::tick_after_system,
-            //attach_state_machine_to_roots,
-            //auto_reparent_scene_substates,
-            //auto_insert_state_machine_to_root,
         ));
-        //app.add_systems(Update, (
-        //    auto_insert_state_machine_to_root,
-        //    clean_up_state_machine,
-        //).chain());
-
-        //app.add_observer(activate_parallel_region);
 
         // Auto-register items discovered via inventory (transitions, states, params)
         app.run_auto_installers();

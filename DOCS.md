@@ -119,7 +119,7 @@ pub struct Jump {
 Transition events must implement `EntityEvent`, `Clone`, and either:
 
 - derive `SimpleTransition` (auto-implements `TransitionEvent` and auto-registers via inventory), or
-- manually implement `TransitionEvent` and decorate the type with `#[register_transition]` (registers it for auto-wiring).
+- manually implement `TransitionEvent` and decorate the type with `#[transition_event]` (registers it for auto-wiring).
 
 With either approach, no manual app registration is required; `GearboxPlugin` discovers and installs transition handlers automatically.
 
@@ -242,7 +242,7 @@ With this setup:
 
 ```rust
 #[derive(EntityEvent, Clone)]
-#[register_transition]
+#[transition_event]
 pub struct Attacked { #[event_target] pub target: Entity, pub amount: f32 }
 
 #[derive(EntityEvent, Clone)]
