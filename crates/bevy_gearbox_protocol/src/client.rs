@@ -360,7 +360,7 @@ fn client_commands(
                 match r {
                     Ok(Some(text)) => { let _ = writer.write(ClientMessage::SidecarFound { id, text }); }
                     Ok(None) => { let _ = writer.write(ClientMessage::SidecarMissing { id }); }
-                    Err(e) => { let _ = writer.write(ClientMessage::SidecarMissing { id }); }
+                    Err(_e) => { let _ = writer.write(ClientMessage::SidecarMissing { id }); }
                 }
             }
             ClientCommand::SidecarForMachine { id } => {
@@ -369,7 +369,7 @@ fn client_commands(
                 match r {
                     Ok(Some(text)) => { let _ = writer.write(ClientMessage::SidecarFound { id, text }); }
                     Ok(None) => { let _ = writer.write(ClientMessage::SidecarMissing { id }); }
-                    Err(e) => { let _ = writer.write(ClientMessage::SidecarMissing { id }); }
+                    Err(_e) => { let _ = writer.write(ClientMessage::SidecarMissing { id }); }
                 }
             }
         }
@@ -405,7 +405,7 @@ impl Plugin for ClientPlugin {
 		app.add_observer(on_despawn);
 		app.add_observer(on_reset_region);
         app.add_systems(Startup, version_check_startup);
-        app.add_systems(Update, (net_commands, watch_events, client_commands));
+        app.add_systems(Update, (connection_guard, net_commands, watch_events, client_commands));
     }
 }
 
@@ -431,14 +431,16 @@ pub struct ConnectionState {
 pub struct WatchManager {
     ctl_tx: Option<tokio::sync::mpsc::UnboundedSender<WatchCtl>>,
     evt_rx: Option<tokio::sync::mpsc::UnboundedReceiver<WatchEvt>>,
-    cursors: std::collections::HashMap<u64, (u64, u64, u64)>,
+    cursors: std::collections::HashMap<u64, u64>,
+    // When true, we've already flushed/closed watchers for a disconnected state
+    disconnected_flushed: bool,
 }
 
 #[derive(Debug)]
 enum WatchCtl {
     StartDiscovery { url: String },
     StopDiscovery,
-    StartMachine { url: String, id: u64, last_active_seq: u64, last_transition_seq: u64, last_name_seq: u64 },
+    StartMachine { url: String, id: u64, last_transition_seq: u64 },
     StopMachine { url: String, id: u64 },
     StartComponents { url: String, id: u64, components: Vec<String> },
     StopComponents { url: String, id: u64 },
@@ -545,16 +547,17 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                     }
                 }
                 WatchCtl::StopDiscovery => { if let Some(h) = discovery_handle.take() { h.abort(); } }
-                WatchCtl::StartMachine { url, id, mut last_active_seq, mut last_transition_seq, mut last_name_seq } => {
+                WatchCtl::StartMachine { url, id, mut last_transition_seq } => {
                     // Idempotent: if this machine watch is already running, do nothing
                     if machine_handles.contains_key(&id) { continue; }
                     let tx = evt_tx.clone();
                     let client_clone = client.clone();
                     let handle = tokio::spawn(async move {
-                        // Subscribe once before starting stream
+                        println!("[dbg] client: machine watch start id={}", id);
+                // Subscribe once before starting stream
                         let _ = client_clone.post(&url).json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":EDITOR_MACHINE_SUBSCRIBE,"params":{"entity":id}})).send().await;
                         loop {
-                            let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"editor.machine+watch","params":{"entity":id,"last_active_seq":last_active_seq,"last_transition_seq":last_transition_seq, "last_name_seq": last_name_seq}});
+                            let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"editor.machine+watch","params":{"entity":id,"last_transition_seq":last_transition_seq}});
                             let resp = match client_clone.post(&url).json(&req).send().await { Ok(r) => r, Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch http: {}", e))); tokio::time::sleep(std::time::Duration::from_millis(300)).await; continue; } };
                             let mut stream = resp.bytes_stream();
                             while let Some(chunk) = stream.next().await {
@@ -571,11 +574,8 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                                                         if !events.is_empty() {
                                                             for ev in events.iter() {
                                                                 if let Some(seq) = ev.get("seq").and_then(|v| v.as_u64()) {
-                                                                    match ev.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
-                                                                        "active_changed" => if seq > last_active_seq { last_active_seq = seq; },
-                                                                        "transition_edge" => if seq > last_transition_seq { last_transition_seq = seq; },
-                                                                        "name_changed" => if seq > last_name_seq { last_name_seq = seq; },
-                                                                        _ => {}
+                                                                    if ev.get("kind").and_then(|v| v.as_str()) == Some("transition_edge") {
+                                                                        if seq > last_transition_seq { last_transition_seq = seq; }
                                                                     }
                                                                 }
                                                             }
@@ -585,17 +585,15 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                                                 }
                                             }
                                             if !out.is_empty() {
-                                                let mut ac = 0usize; let mut tc = 0usize; let mut nc = 0usize; let total = out.len();
+                                                let mut tc = 0usize; let total = out.len();
                                                 for ev in out.iter() {
-                                                    match ev.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
-                                                        "active_changed" => ac += 1,
-                                                        "transition_edge" => tc += 1,
-                                                        "name_changed" => nc += 1,
-                                                        _ => {}
-                                                    }
+                                                    if ev.get("kind").and_then(|v| v.as_str()) == Some("transition_edge") { tc += 1; }
                                                 }
+                                                println!("[dbg] client: machine watch id={} batch events total={} transition={}", id, total, tc);
+                                                let _ = tx.send(WatchEvt::Machine { id, events: out });
+                                                // Long-poll: after delivering a non-empty batch, reconnect with updated cursors
+                                                break;
                                             }
-                                            if !out.is_empty() { let _ = tx.send(WatchEvt::Machine { id, events: out }); }
                                         }
                                     }
                                     Err(e) => { let _ = tx.send(WatchEvt::Error(format!("watch stream: {}", e))); break; }
@@ -606,6 +604,7 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                     machine_handles.insert(id, handle);
                 }
                 WatchCtl::StopMachine { url, id } => {
+                    println!("[dbg] client: machine watch stop id={} (unsubscribe + abort)", id);
                     // Best-effort unsubscribe
                     let _ = client.post(&url).json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":EDITOR_MACHINE_UNSUBSCRIBE,"params":{"entity":id}})).send().await;
                     if let Some(h) = machine_handles.remove(&id) { h.abort(); }
@@ -616,6 +615,21 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                     let client_clone = client.clone();
                     let comps = components.clone();
                     let handle = tokio::spawn(async move {
+                        // One-shot initial snapshot to seed the cache
+                        let initial_req = serde_json::json!({
+                            "jsonrpc":"2.0","id":1,
+                            "method": crate::methods::WORLD_GET_COMPONENTS,
+                            "params": {"entity": id, "components": comps}
+                        });
+                        if let Ok(resp) = client_clone.post(&url).json(&initial_req).send().await {
+                            if let Ok(v) = resp.json::<serde_json::Value>().await {
+                                let res = v.get("result").cloned().unwrap_or(v.clone());
+                                let comps_obj = res.get("components").and_then(|c| c.as_object()).cloned().unwrap_or_else(|| res.as_object().cloned().unwrap_or_default());
+                                if !comps_obj.is_empty() {
+                                    let _ = tx.send(WatchEvt::Components { id, components: comps_obj, removed: Vec::new() });
+                                }
+                            }
+                        }
                         loop {
                             let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"world.get_components+watch","params":{"entity":id,"components": comps}});
                             let resp = match client_clone.post(&url).json(&req).send().await { Ok(r) => r, Err(e) => { let _ = tx.send(WatchEvt::Error(format!("components watch http: {}", e))); tokio::time::sleep(std::time::Duration::from_millis(300)).await; continue; } };
@@ -688,10 +702,12 @@ fn net_commands(
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopDiscovery); }
             }
             NetCommand::StartMachine { id } => {
-                let (la, lt, ln) = mgr.cursors.get(&id).copied().unwrap_or((0, 0, 0));
-                if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartMachine { url: client.base_url.clone(), id, last_active_seq: la, last_transition_seq: lt, last_name_seq: ln }); }
+                let lt = mgr.cursors.get(&id).copied().unwrap_or(0);
+                println!("[dbg] client: request start machine watch id={} last_transition_seq={}", id, lt);
+                if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartMachine { url: client.base_url.clone(), id, last_transition_seq: lt }); }
             }
             NetCommand::StopMachine { id } => {
+                println!("[dbg] client: request stop machine watch id={}", id);
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopMachine { url: client.base_url.clone(), id }); }
             }
             NetCommand::StartComponents { id, ref components } => {
@@ -719,23 +735,15 @@ fn watch_events(
                 }
                 WatchEvt::Machine { id, events } => {
                     // Filter duplicates using stored cursors
-                    let (prev_a, prev_t, prev_n) = mgr.cursors.get(&id).copied().unwrap_or((0, 0, 0));
-                    let mut max_a = prev_a;
+                    let prev_t = mgr.cursors.get(&id).copied().unwrap_or(0);
                     let mut max_t = prev_t;
-                    let mut max_n = prev_n;
                     let mut filtered: Vec<serde_json::Value> = Vec::with_capacity(events.len());
                     for ev in events.into_iter() {
                         let kind = ev.get("kind").and_then(|v| v.as_str()).unwrap_or("");
                         let seq = ev.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
                         match kind {
-                            "active_changed" => {
-                                if seq > prev_a { filtered.push(ev.clone()); if seq > max_a { max_a = seq; } }
-                            }
                             "transition_edge" => {
                                 if seq > prev_t { filtered.push(ev.clone()); if seq > max_t { max_t = seq; } }
-                            }
-                            "name_changed" => {
-                                if seq > prev_n { filtered.push(ev.clone()); if seq > max_n { max_n = seq; } }
                             }
                             _ => {
                                 // pass through unknown kinds
@@ -744,16 +752,11 @@ fn watch_events(
                         }
                     }
                     // Update cursors from filtered
-                    mgr.cursors.insert(id, (max_a, max_t, max_n));
+                    mgr.cursors.insert(id, max_t);
                     if !filtered.is_empty() {
-                        let mut ac = 0usize; let mut tc = 0usize; let mut nc = 0usize; let total = filtered.len();
+                        let mut _tc = 0usize; let _total = filtered.len();
                         for ev in filtered.iter() {
-                            match ev.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
-                                "active_changed" => ac += 1,
-                                "transition_edge" => tc += 1,
-                                "name_changed" => nc += 1,
-                                _ => {}
-                            }
+                            if ev.get("kind").and_then(|v| v.as_str()) == Some("transition_edge") { _tc += 1; }
                         }
                         writer.write(NetMessage::Machine { id, events: filtered });
                     }
@@ -766,6 +769,33 @@ fn watch_events(
         }
         if drained > 0 { /* optional log */ }
         mgr.evt_rx = Some(rx);
+    }
+}
+
+// Close all active watches when disconnected; no-op while connected
+fn connection_guard(
+    conn: Res<ConnectionState>,
+    mut mgr: ResMut<WatchManager>,
+    mut writer: MessageWriter<NetCommand>,
+){
+    match conn.state {
+        ConnectionPhase::Connected => {
+            // Reset guard so future disconnects flush again
+            if mgr.disconnected_flushed { mgr.disconnected_flushed = false; }
+        }
+        _ => {
+            if !mgr.disconnected_flushed {
+                // Stop discovery
+                writer.write(NetCommand::StopDiscovery);
+                // Stop all known machine/component watches (safe even if not running)
+                let ids: Vec<u64> = mgr.cursors.keys().copied().collect();
+                for id in ids.into_iter() {
+                    writer.write(NetCommand::StopMachine { id });
+                    writer.write(NetCommand::StopComponents { id });
+                }
+                mgr.disconnected_flushed = true;
+            }
+        }
     }
 }
 

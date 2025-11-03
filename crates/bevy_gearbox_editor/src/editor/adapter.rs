@@ -13,25 +13,24 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
     // Authoritative classification by components:
     // Edge if it has Target; otherwise treat as State.
     let mut edge_ids_by_target: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
-    for (eid, edge) in snapshot.edges.iter() {
-        if edge.components.contains(c::TARGET) { edge_ids_by_target.insert(*eid); }
+    for (eid, _edge) in snapshot.edges.iter() {
+        if snapshot.entity_data.get(eid).map(|b| b.contains(c::TARGET)).unwrap_or(false) { edge_ids_by_target.insert(*eid); }
     }
-    // Guard against misfiled edges that appear in nodes but carry Target
-    for (nid, node) in snapshot.nodes.iter() {
-        if node.components.contains(c::TARGET) { edge_ids_by_target.insert(*nid); }
+    for (nid, _node) in snapshot.nodes.iter() {
+        if snapshot.entity_data.get(nid).map(|b| b.contains(c::TARGET)).unwrap_or(false) { edge_ids_by_target.insert(*nid); }
     }
 
     // Build state views, preserving rects
     let mut states: std::collections::HashMap<EntityId, StateView> = std::collections::HashMap::new();
     let default_state_size = egui::vec2(140.0, 60.0);
-    for (id, node) in snapshot.nodes.iter() {
+    for (id, _node) in snapshot.nodes.iter() {
         // Skip any entity classified as an edge by Target component
         if edge_ids_by_target.contains(id) { continue; }
         let mut rect = prev_scene.node_rects.get(id).copied()
             .unwrap_or_else(|| egui::Rect::from_min_size(egui::pos2(0.0, 0.0), default_state_size));
-        let label = node.display_name.clone().unwrap_or_else(|| format!("{}", id));
-        let is_container = !node.children.is_empty();
-        let has_initial = node.components.get(c::INITIAL_STATE).is_some();
+        let label = snapshot.get_display_name(id);
+        let is_container = !snapshot.get_children(id).is_empty();
+        let has_initial = snapshot.has_component(id, c::INITIAL_STATE);
         let kind = if !is_container { StateKind::Leaf } else if !has_initial { StateKind::Parallel } else { StateKind::Sequence };
         // If previously a container and now leaf, shrink to default at same min
         if let Some(prev) = prev_scene.states.get(id) {
@@ -58,7 +57,7 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
         };
         let rect = prev_scene.node_rects.get(eid).copied()
             .unwrap_or_else(|| egui::Rect::from_center_size(center, default_pill_half * 2.0));
-        let mut label = edge.display_label.clone().unwrap_or_else(|| crate::model::choose_edge_label_bag(&edge.components));
+        let mut label = edge.display_label.clone().unwrap_or_else(|| snapshot.component_bag(eid).map(crate::model::choose_edge_label_bag).unwrap_or_else(|| "Edge".to_string()));
         if label == "Edge" { label = format!("{}", eid); }
         let pill_parent = compute_pill_parent_for_edge(&snapshot, edge.source, edge.target);
         edges.insert(*eid, EdgeView { id: *eid, source: edge.source, target: edge.target, label, rect, pill_parent });
@@ -71,9 +70,9 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
     let mut parent_of: std::collections::HashMap<EntityId, Option<EntityId>> = std::collections::HashMap::new();
     let mut children_of: std::collections::HashMap<EntityId, Vec<EntityId>> = std::collections::HashMap::new();
     let mut containers: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
-    for (id, node) in snapshot.nodes.iter() {
-        parent_of.insert(*id, node.parent);
-        if !node.children.is_empty() { containers.insert(*id); }
+    for (id, _node) in snapshot.nodes.iter() {
+        parent_of.insert(*id, snapshot.get_parent(id));
+        if !snapshot.get_children(id).is_empty() { containers.insert(*id); }
     }
     for (eid, ev) in edges.iter() { parent_of.insert(*eid, ev.pill_parent); }
 
@@ -84,9 +83,9 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
         if let Some(Some(pid)) = parent_of.get(eid) { children_of.entry(*pid).or_default().push(*eid); }
     }
     // Then graph children
-    for (pid, node) in snapshot.nodes.iter() {
+    for (pid, _node) in snapshot.nodes.iter() {
         let list = children_of.entry(*pid).or_default();
-        for &cid in node.children.iter() { list.push(cid); }
+        for cid in snapshot.get_children(pid).into_iter() { list.push(cid); }
     }
 
     // Unified rects
@@ -103,10 +102,10 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
     // Initial child mapping (for indicators)
     let mut initial_substate_of: std::collections::HashMap<EntityId, EntityId> = std::collections::HashMap::new();
     let mut is_initial_child: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
-    for (id, node) in snapshot.nodes.iter() {
-        if node.components.get(c::INITIAL_STATE).is_some() {
+    for (id, _node) in snapshot.nodes.iter() {
+        if snapshot.has_component(id, c::INITIAL_STATE) {
             // best-effort: use the first valid child that exists in graph
-            for &child in node.children.iter() {
+            for child in snapshot.get_children(id).into_iter() {
                 initial_substate_of.insert(*id, child);
                 is_initial_child.insert(child);
                 break;
@@ -123,8 +122,8 @@ pub fn project_graph_into_doc(doc: &mut GraphDoc, snapshot: StateMachineGraph) {
 /// Choose the pill parent for an edge. For edges between a parent and its child (in either
 /// direction), the parent is always the pill parent. Otherwise, fallback to target sibling rule.
 fn compute_pill_parent_for_edge(graph: &StateMachineGraph, source: EntityId, target: EntityId) -> Option<EntityId> {
-    let src_parent = graph.nodes.get(&source).and_then(|n| n.parent);
-    let dst_parent = graph.nodes.get(&target).and_then(|n| n.parent);
+    let src_parent = graph.get_parent(&source);
+    let dst_parent = graph.get_parent(&target);
 
     // source is parent of target
     if dst_parent == Some(source) { return Some(source); }
@@ -149,9 +148,9 @@ fn apply_initial_layout_for_unseen_nodes(graph: &StateMachineGraph, node_views: 
 
     while let Some(id) = stack.pop() {
         // Ensure parent processed before children
-        if let Some(node) = graph.nodes.get(&id) {
-            for &child in node.children.iter().rev() { stack.push(child); }
-        }
+        let mut kids = graph.get_children(&id);
+        kids.reverse();
+        for child in kids.into_iter() { stack.push(child); }
 
         // Assign root if unseen
         if id == graph.root {
@@ -164,9 +163,9 @@ fn apply_initial_layout_for_unseen_nodes(graph: &StateMachineGraph, node_views: 
         }
 
         // For other nodes, if unseen, place inside parent's content area
-        let parent_id = match graph.nodes.get(&id).and_then(|n| n.parent) { Some(p) => p, None => continue };
+        let parent_id = match graph.get_parent(&id) { Some(p) => p, None => continue };
         let parent_min = node_views.get(&parent_id).map(|p| p.rect.min).unwrap_or(origin);
-        let parent_has_header = graph.nodes.get(&parent_id).map(|p| !p.children.is_empty()).unwrap_or(false);
+        let parent_has_header = !graph.get_children(&parent_id).is_empty();
         let row = *next_row_per_parent.entry(parent_id).or_insert(0);
         if let Some(view) = node_views.get_mut(&id) {
             if view.rect.min == egui::pos2(0.0, 0.0) {
@@ -188,9 +187,9 @@ fn compute_draw_orders(graph: &StateMachineGraph) -> (Vec<EntityId>, Vec<EntityI
     while let Some(id) = stack.pop() {
         if !seen.insert(id) { continue; }
         node_order.push(id);
-        if let Some(node) = graph.nodes.get(&id) {
-            for &child in node.children.iter().rev() { stack.push(child); }
-        }
+        let mut kids = graph.get_children(&id);
+        kids.reverse();
+        for child in kids.into_iter() { stack.push(child); }
     }
 
     // Build a ranking for nodes to order edges by source appearance

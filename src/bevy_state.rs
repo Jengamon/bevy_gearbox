@@ -1,24 +1,7 @@
 use bevy::{prelude::*, state::state::FreelyMutableState};
 use crate::EnterState;
 
-/// Bridge a Gearbox chart's EnterState events to Bevy `States`,
-/// setting `NextState<S>` when a chart node carrying `S` is entered.
-pub trait AppBevyStateBridgeExt {
-    fn add_state_bridge<S>(&mut self) -> &mut Self
-    where
-        S: States + FreelyMutableState + Component + Clone + 'static;
-}
-
-impl AppBevyStateBridgeExt for App {
-    fn add_state_bridge<S>(&mut self) -> &mut Self
-    where
-        S: States + FreelyMutableState + Component + Clone + 'static,
-    {
-        self.add_observer(bridge_chart_to_bevy_state::<S>)
-    }
-}
-
-fn bridge_chart_to_bevy_state<S: States + FreelyMutableState + Component + Clone + 'static>(
+pub fn bridge_chart_to_bevy_state<S: States + FreelyMutableState + Component + Clone + 'static>(
     enter_state: On<EnterState>,
     mut next: ResMut<NextState<S>>,
     q_state: Query<&S>,

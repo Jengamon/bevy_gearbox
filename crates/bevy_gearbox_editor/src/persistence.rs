@@ -52,32 +52,20 @@ use crate::editor::view_model::GraphDoc;
 use crate::model::StateMachineGraph;
 use crate::types::EntityId;
 
-fn get_node_name(graph: &StateMachineGraph, id: &EntityId) -> String {
-    graph
-        .nodes
-        .get(id)
-        .and_then(|n| n.display_name.clone())
-        .unwrap_or_else(|| format!("{}", id))
-}
+fn get_node_name(graph: &StateMachineGraph, id: &EntityId) -> String { graph.get_display_name(id) }
 
 fn build_parent_path(graph: &StateMachineGraph, id: &EntityId) -> String {
     // Build path from root down to the provided parent id, inclusive.
     let mut parts: Vec<String> = Vec::new();
     let mut cur = Some(*id);
-    while let Some(cid) = cur {
-        if let Some(node) = graph.nodes.get(&cid) {
-            parts.push(get_node_name(graph, &cid));
-            cur = node.parent;
-            if cur.is_none() { break; }
-        } else { break; }
-    }
+    while let Some(cid) = cur { parts.push(get_node_name(graph, &cid)); cur = graph.get_parent(&cid); }
     parts.reverse();
     parts.join("/")
 }
 
 pub fn node_key(graph: &StateMachineGraph, id: &EntityId) -> String {
     // Simplified variant without explicit state variant string for now
-    let parent = graph.nodes.get(id).and_then(|n| n.parent);
+    let parent = graph.get_parent(id);
     let parent_path = match parent { Some(pid) => build_parent_path(graph, &pid), None => String::new() };
     let name = get_node_name(graph, id);
     format!("{}|{}", parent_path, name)
@@ -87,18 +75,14 @@ pub fn node_key(graph: &StateMachineGraph, id: &EntityId) -> String {
 fn legacy_build_parent_path(graph: &StateMachineGraph, id: &EntityId) -> String {
     let mut parts: Vec<String> = Vec::new();
     let mut cur = Some(*id);
-    while let Some(cid) = cur {
-        if let Some(node) = graph.nodes.get(&cid) {
-            if let Some(p) = node.parent { cur = Some(p); parts.push(get_node_name(graph, &cid)); continue; } else { parts.push(get_node_name(graph, &cid)); break; }
-        } else { break; }
-    }
+    while let Some(cid) = cur { let p = graph.get_parent(&cid); if p.is_some() { cur = p; parts.push(get_node_name(graph, &cid)); continue; } else { parts.push(get_node_name(graph, &cid)); break; } }
     if parts.len() >= 1 { let _ = parts.remove(0); }
     parts.reverse();
     parts.join("/")
 }
 
 fn legacy_node_key(graph: &StateMachineGraph, id: &EntityId) -> String {
-    let parent = graph.nodes.get(id).and_then(|n| n.parent);
+    let parent = graph.get_parent(id);
     let parent_path = match parent { Some(pid) => legacy_build_parent_path(graph, &pid), None => String::new() };
     let name = get_node_name(graph, id);
     format!("{}|{}", parent_path, name)
@@ -147,12 +131,7 @@ pub fn extract_sidecar_for_subtree(doc: &GraphDoc, root: &EntityId) -> Sidecar {
         let mut nodes_set: HashSet<EntityId> = HashSet::new();
         let mut q: VecDeque<EntityId> = VecDeque::new();
         q.push_back(*root);
-        while let Some(cur) = q.pop_front() {
-            if !nodes_set.insert(cur) { continue; }
-            if let Some(n) = graph.nodes.get(&cur) {
-                for child in n.children.iter() { q.push_back(*child); }
-            }
-        }
+        while let Some(cur) = q.pop_front() { if !nodes_set.insert(cur) { continue; } for child in graph.get_children(&cur).into_iter() { q.push_back(child); } }
         // Build a temporary subgraph for fingerprinting
         let mut sub = crate::model::StateMachineGraph::new(crate::model::StateNode::new(*root));
         // Insert nodes
@@ -230,10 +209,7 @@ pub fn apply_sidecar_to_subtree(doc: &mut GraphDoc, sidecar: &Sidecar, root: &En
     let mut nodes_set: HashSet<EntityId> = HashSet::new();
     let mut q: VecDeque<EntityId> = VecDeque::new();
     q.push_back(*root);
-    while let Some(cur) = q.pop_front() {
-        if !nodes_set.insert(cur) { continue; }
-        if let Some(n) = graph.nodes.get(&cur) { for child in n.children.iter() { q.push_back(*child); } }
-    }
+    while let Some(cur) = q.pop_front() { if !nodes_set.insert(cur) { continue; } for child in graph.get_children(&cur).into_iter() { q.push_back(child); } }
     // 2) Build a temporary subgraph for key computation
     let mut sub = crate::model::StateMachineGraph::new(crate::model::StateNode::new(*root));
     for id in nodes_set.iter() {

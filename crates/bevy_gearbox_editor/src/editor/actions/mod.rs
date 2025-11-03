@@ -106,6 +106,19 @@ pub fn on_open_requested(
     // Decoupled unsubscribe and single-doc retention after fetch is enqueued
     if let Some(p) = prev {
         if p != evt.entity {
+            // Proactively stop component watches for the previous document (StateMachine + Name watchers)
+            // Stop root StateMachine components watch regardless of whether a graph was loaded
+            proto_net.write(NetCommand::StopComponents { id: p.0 });
+            if let Some(prev_doc) = workspace.docs.get(&p) {
+                if let Some(g) = &prev_doc.graph {
+                    for nid in g.nodes.keys() {
+                        proto_net.write(NetCommand::StopComponents { id: nid.0 });
+                    }
+                    for eid in g.edges.keys() {
+                        proto_net.write(NetCommand::StopComponents { id: eid.0 });
+                    }
+                }
+            }
             commands.trigger(super::actions::UnsubscribeRequested { entity: p });
             workspace.selection = None;
             workspace.docs.retain(|k, _| *k == evt.entity);
@@ -120,6 +133,8 @@ pub struct UnsubscribeRequested { pub entity: EntityId }
 
 pub fn on_unsubscribe_requested(evt: On<UnsubscribeRequested>, mut proto_net: MessageWriter<NetCommand>) {
     // Decoupled unsubscribe: stop server-side feeds for this machine. Do not couple to new selection.
+    // Also stop the root StateMachine component watch so re-opening forces an initial snapshot.
+    proto_net.write(NetCommand::StopComponents { id: evt.entity.0 });
     proto_net.write(NetCommand::StopMachine { id: evt.entity.0 });
 }
 

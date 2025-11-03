@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use bevy_gearbox_protocol::client::{ClientPlugin, NetMessage, ClientMessage, NetCommand, ClientCommand};
 use crate::types::EntityId;
-use crate::model::StateMachineGraph;
+use crate::model::{StateMachineGraph, ComponentEntry};
 use crate::editor::workspace::Workspace;
 use crate::editor::model::store::EditorStore;
 use crate::editor::actions::{
@@ -29,9 +29,8 @@ impl Plugin for EditorPlugin {
                 machines: vec![],
                 graphs: HashMap::new(),
                 sidecar_texts: HashMap::new(),
-                pending_active: HashMap::new(),
+                
                 pending_machine_events: HashMap::new(),
-                last_active_seq: HashMap::new(),
                 last_transition_seq: HashMap::new(),
             })
             .init_resource::<Workspace>()
@@ -63,12 +62,9 @@ pub(crate) struct UiState {
     graphs: HashMap<EntityId, StateMachineGraph>,
     /// Latest sidecar text fetched over RPC per machine (if any)
     sidecar_texts: HashMap<EntityId, String>,
-    /// One-shot active state snapshots awaiting application to docs
-    pending_active: HashMap<EntityId, (Vec<u64>, Vec<u64>)>,
     /// Accumulated machine +watch events awaiting application to docs
     pending_machine_events: HashMap<EntityId, Vec<JsonValue>>,
     /// Per-machine cursors for stateless +watch
-    last_active_seq: HashMap<EntityId, u64>,
     last_transition_seq: HashMap<EntityId, u64>,
 }
 
@@ -119,13 +115,19 @@ fn poll_network(
                     let doc_id = EntityId(*id);
                     // Stash graph snapshot for projection
                     ui.graphs.insert(doc_id, sm_graph.clone());
+                    // Begin watches for this machine: transitions/name via machine watch; active via StateMachine component
+                    net_cmd.write(NetCommand::StartMachine { id: *id });
+                    // Force a fresh StateMachine components watch so we always receive an initial snapshot
+                    net_cmd.write(NetCommand::StopComponents { id: *id });
+                    net_cmd.write(NetCommand::StartComponents { id: *id, components: vec![bevy_gearbox_protocol::components::STATE_MACHINE.to_string()] });
+                    // Active visualization will be driven by StateMachine component snapshots
                     // Request sidecar for the machine root
                     println!("[editor] graph_result: requesting sidecar for root {}", id);
                     client_cmd.write(ClientCommand::SidecarForMachine { id: *id });
                     // Also request sidecars for any substate nodes that declare a StateMachineId
                     let mut requested = 0usize;
-                    for (nid, node) in sm_graph.nodes.iter() {
-                        if node.components.contains(c::STATE_MACHINE_ID) {
+                    for (nid, _node) in sm_graph.nodes.iter() {
+                        if sm_graph.entity_data.get(nid).map(|bag| bag.contains(c::STATE_MACHINE_ID)).unwrap_or(false) {
                             println!("[editor] graph_result: requesting sidecar for substate {}", nid.0);
                             client_cmd.write(ClientCommand::SidecarForMachine { id: nid.0 });
                             requested += 1;
@@ -174,27 +176,77 @@ fn poll_network(
             NetMessage::Machine { id, events } => {
                 let doc_id = EntityId(id);
                 // Update last seqs and stash events
-                let mut max_a = ui.last_active_seq.get(&doc_id).copied().unwrap_or(0);
                 let mut max_t = ui.last_transition_seq.get(&doc_id).copied().unwrap_or(0);
                 for ev in events.iter() {
                     let seq = ev.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
                     match ev.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
-                        "active_changed" => { if seq > max_a { max_a = seq; } }
                         "transition_edge" => { if seq > max_t { max_t = seq; } }
                         _ => {}
                     }
                 }
-                ui.last_active_seq.insert(doc_id, max_a);
                 ui.last_transition_seq.insert(doc_id, max_t);
                 ui.pending_machine_events.entry(doc_id).or_default().extend(events.into_iter());
                 processed += 1;
             }
-            NetMessage::Components { id, components, removed: _ } => {
+            NetMessage::Components { id, components, removed } => {
                 // Apply Name changes to any open doc containing this entity
                 let target = EntityId(id);
                 let name_key = bevy_gearbox_protocol::components::NAME_REFLECT;
                 let name_opt = components.get(name_key).and_then(|v| v.as_str()).map(|s| s.to_string());
+                // Debug: log entity name and full packet contents from watch
+                {
+                    let entity_label = name_opt.clone().unwrap_or_else(|| id.to_string());
+                    let packet = serde_json::json!({
+                        "id": id,
+                        "components": components.clone(),
+                        "removed": removed.clone(),
+                    });
+                    if let Ok(s) = serde_json::to_string_pretty(&packet) {
+                        println!("{}\n{}", entity_label, s);
+                    } else {
+                        println!("{}\n<failed to pretty print packet>", entity_label);
+                    }
+                }
+                // Drive active visualization from StateMachine component snapshots on the machine root
+                let sm_key = bevy_gearbox_protocol::components::STATE_MACHINE;
+                let mut pending_sm_active: Option<(Vec<EntityId>, Vec<EntityId>)> = None;
+                if let Some(sm_val) = components.get(sm_key) {
+                    if let Some(obj) = sm_val.as_object() {
+                        let parse_set = |k: &str| -> Vec<EntityId> {
+                            obj.get(k)
+                                .and_then(|v| v.as_array())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|x| x.as_u64().or_else(|| x.as_str().and_then(|s| s.parse::<u64>().ok())))
+                                        .map(EntityId)
+                                        .collect::<Vec<EntityId>>()
+                                })
+                                .unwrap_or_default()
+                        };
+                        let act = parse_set("active");
+                        let leaves = parse_set("active_leaves");
+                        pending_sm_active = Some((act, leaves));
+                    }
+                    // Ensure a doc exists for this machine root; create minimal graph if missing
+                    let root_id = EntityId(id);
+                    let entry = workspace.docs.entry(root_id).or_default();
+                    if entry.graph.is_none() {
+                        let node = crate::model::StateNode::new(root_id);
+                        entry.graph = Some(crate::model::StateMachineGraph::new(node));
+                    }
+                } else if removed.iter().any(|k| k == sm_key) {
+                    // If StateMachine was removed, treat as empty set (unlikely for a machine root)
+                    pending_sm_active = Some((Vec::new(), Vec::new()));
+                }
                 for (_doc_id, doc) in workspace.docs.iter_mut() {
+                    // Update central per-entity component store on the graph if present
+                    if let Some(g) = doc.graph.as_mut() {
+                        let bag = g.entity_data.entry(target).or_default();
+                        for (k, v) in components.iter() {
+                            bag.insert(ComponentEntry::new(k.clone(), v.clone()));
+                        }
+                        for key in removed.iter() { let _ = bag.remove(key); }
+                    }
                     if let Some(v) = doc.scene.states.get_mut(&target) {
                         if let Some(ref name) = name_opt { v.label = name.clone(); }
                     }
@@ -202,11 +254,35 @@ fn poll_network(
                         if let Some(ref name) = name_opt { v.label = name.clone(); }
                     }
                     if let Some(g) = doc.graph.as_mut() {
-                        if let Some(n) = g.nodes.get_mut(&target) {
-                            if let Some(ref name) = name_opt { n.display_name = Some(name.clone()); }
-                        }
                         if let Some(e) = g.edges.get_mut(&target) {
                             if let Some(ref name) = name_opt { e.display_label = Some(name.clone()); }
+                        }
+                    }
+                }
+                // Apply StateMachine.active snapshot immediately to the doc's graph with flash/fade
+                if let Some((act, _leaves)) = pending_sm_active {
+                    let new: std::collections::HashSet<EntityId> = act.into_iter().collect();
+                    let doc_id = EntityId(id);
+                    if let Some(doc) = workspace.docs.get_mut(&doc_id) {
+                        let prev: std::collections::HashSet<EntityId> = doc.graph.as_ref().map(|g| g.active_nodes.clone()).unwrap_or_default();
+                        let mut added: Vec<EntityId> = Vec::new();
+                        let mut removed: Vec<EntityId> = Vec::new();
+                        for a in new.iter() { if !prev.contains(a) { added.push(*a); } }
+                        for p in prev.iter() { if !new.contains(p) { removed.push(*p); } }
+                        for u in added.into_iter() { doc.node_flash.insert(u, 1.0); }
+                        for u in removed.into_iter() { doc.node_fade.insert(u, 1.0); }
+                        if let Some(g) = doc.graph.as_mut() { g.set_active(new.clone().into_iter()); }
+                    }
+                }
+                // Late-bound StateMachineId: if an ID arrives for an entity present in any open doc, fetch its sidecar
+                {
+                    let smid_key = bevy_gearbox_protocol::components::STATE_MACHINE_ID;
+                    if components.contains_key(smid_key) {
+                        let present_in_any_doc = workspace.docs.values().any(|doc| {
+                            if let Some(g) = doc.graph.as_ref() { g.nodes.contains_key(&target) } else { false }
+                        });
+                        if present_in_any_doc {
+                            client_cmd.write(ClientCommand::SidecarForMachine { id });
                         }
                     }
                 }
@@ -239,60 +315,21 @@ fn ui_system(
 fn sync_snapshots_to_workspace(
     mut workspace: ResMut<Workspace>,
     mut ui: ResMut<UiState>,
+    mut net_cmd: MessageWriter<NetCommand>,
 ) {
     let mut consume_sidecar_for: Vec<EntityId> = Vec::new();
-    // Apply pending active snapshots and machine deltas per-doc before projecting any new graph snapshots
-    // 1) Active snapshots
-        let pending_active = std::mem::take(&mut ui.pending_active);
-    for (id, (active, _leaves)) in pending_active.into_iter() {
-        let doc = workspace.docs.entry(id).or_default();
-        // Map u64s to EntityId::Server (canonicalize)
-        let set: std::collections::HashSet<EntityId> = active
-            .into_iter()
-            .map(|u| crate::util::canonicalize_entity_u64(u))
-            .map(|u| EntityId(u))
-            .collect();
-        let (_new, _deactivated) = doc.set_active_nodes(&set);
-    }
-    // 2) Machine event batches (canonicalize ids before applying)
+    // Apply machine event batches (canonicalize ids before applying)
     let pending_events = std::mem::take(&mut ui.pending_machine_events);
     for (id, events) in pending_events.into_iter() {
         let doc = workspace.docs.entry(id).or_default();
         for ev in events.into_iter() {
             let kind = ev.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             match kind {
-                "active_changed" => {
-                    let active: Vec<u64> = ev
-                        .get("active")
-                        .and_then(|a| a.as_array())
-                        .map(|arr| arr.iter().filter_map(|v| v.as_u64()).map(|u| crate::util::canonicalize_entity_u64(u)).collect())
-                        .unwrap_or_default();
-                    let set: std::collections::HashSet<EntityId> = active.into_iter().map(|u| EntityId(u)).collect();
-                    let (new_nodes, deactivated) = doc.set_active_nodes(&set);
-                    for nid in new_nodes { doc.node_flash.insert(nid, 1.0); }
-                    for nid in deactivated { doc.node_fade.insert(nid, 1.0); }
-                }
                 "transition_edge" => {
                     if let Some(edge) = ev.get("edge").and_then(|v| v.as_u64()) {
                         let edge = crate::util::canonicalize_entity_u64(edge);
                         let eid = EntityId(edge);
                         doc.flash_edge(eid);
-                    }
-                }
-                "name_changed" => {
-                    if let (Some(ent_u), Some(name_s)) = (
-                        ev.get("entity").and_then(|v| v.as_u64()),
-                        ev.get("name").and_then(|v| v.as_str()),
-                    ) {
-                        let ent_u = crate::util::canonicalize_entity_u64(ent_u);
-                        let eid = EntityId(ent_u);
-                        let name = name_s.to_string();
-                        if let Some(v) = doc.scene.states.get_mut(&eid) { v.label = name.clone(); }
-                        if let Some(v) = doc.scene.edges.get_mut(&eid) { v.label = name.clone(); }
-                        if let Some(g) = doc.graph.as_mut() {
-                            if let Some(n) = g.nodes.get_mut(&eid) { n.display_name = Some(name.clone()); }
-                            if let Some(e) = g.edges.get_mut(&eid) { e.display_label = Some(name.clone()); }
-                        }
                     }
                 }
                 _ => {}
@@ -305,7 +342,18 @@ fn sync_snapshots_to_workspace(
         // Capture metrics before taking a mutable borrow of workspace.docs entry
         let was_empty = workspace.docs.get(id).and_then(|d| d.graph.as_ref()).is_none();
         let entry = workspace.docs.entry(*id).or_default();
+        let prev_active = entry.graph.as_ref().map(|g| g.active_nodes.clone());
         project_graph_into_doc(entry, graph.clone());
+        // After projecting the graph, start a Name component watch on all nodes and edges
+        if let Some(g) = entry.graph.as_ref() {
+            let name_comp = bevy_gearbox_protocol::components::NAME_REFLECT.to_string();
+            for nid in g.nodes.keys() { net_cmd.write(NetCommand::StartComponents { id: nid.0, components: vec![name_comp.clone()] }); }
+            for eid in g.edges.keys() { net_cmd.write(NetCommand::StartComponents { id: eid.0, components: vec![name_comp.clone()] }); }
+        }
+        // Reapply previous active set from old graph so colors persist
+        if let (Some(prev), Some(g)) = (prev_active, entry.graph.as_mut()) {
+            g.set_active(prev.into_iter());
+        }
         // After mutation, avoid borrowing workspace again; use the entry we have
         to_remove.push(*id);
         // Try applying sidecar when: (a) first load, or (b) new sidecar text arrived
@@ -324,7 +372,7 @@ fn sync_snapshots_to_workspace(
         }
         if !applied && was_empty {
             // Fallbacks for local disk resolution for convenience when app and editor share filesystem
-            if let Some(id_text) = graph.nodes.get(&graph.root).and_then(|n| n.components.get(c::STATE_MACHINE_ID)).and_then(|e| e.value_json.as_str()) {
+            if let Some(id_text) = graph.entity_data.get(&graph.root).and_then(|bag| bag.get(c::STATE_MACHINE_ID)).and_then(|e| e.value_json.as_str()) {
                 // Derive file name from id
                 let ptr_str = format!("{}.sm.ron", id_text);
                 let mut tried: Vec<std::path::PathBuf> = Vec::new();
@@ -398,14 +446,8 @@ fn convert_wire_graph_to_state_machine_graph(graph: serde_json::Value) -> Option
         for n in nodes.iter() {
             let id_u = n.get("id").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok())?;
             let id = EntityId(id_u);
-            let mut node = out.nodes.remove(&id).unwrap_or_else(|| m::StateNode::new(id));
-            if let Some(parent_s) = n.get("parent").and_then(|v| v.as_str()) { if let Ok(pu) = parent_s.parse::<u64>() { node.parent = Some(EntityId(pu)); } }
+            let node = out.nodes.remove(&id).unwrap_or_else(|| m::StateNode::new(id));
             if let Some(comps) = n.get("components").and_then(|v| v.as_object()) {
-                for (k, v) in comps.iter() { node.components.insert(m::ComponentEntry::new(k.clone(), v.clone())); }
-                if let Some(name_v) = comps.get("Name") { if let Some(s) = name_v.as_str() { node.display_name = Some(s.to_string()); } }
-                if let Some(children_v) = comps.get("bevy_gearbox::Substates").and_then(|v| v.as_array()) {
-                    node.children = children_v.iter().filter_map(|vv| vv.as_str()).filter_map(|s| s.parse::<u64>().ok()).map(|u| EntityId(u)).collect();
-                }
                 // Build adjacency from relationships if provided
                 if let Some(out_v) = comps.get(bevy_gearbox_protocol::components::TRANSITIONS).and_then(|v| v.as_array()) {
                     let mut outs: Vec<EntityId> = Vec::new();
@@ -423,6 +465,12 @@ fn convert_wire_graph_to_state_machine_graph(graph: serde_json::Value) -> Option
                 }
             }
             out.nodes.insert(id, node);
+            // Seed central component store for this node
+            if let Some(comps) = n.get("components").and_then(|v| v.as_object()) {
+                let mut bag = m::ComponentBag::default();
+                for (k, v) in comps.iter() { bag.insert(m::ComponentEntry::new(k.clone(), v.clone())); }
+                out.entity_data.insert(id, bag);
+            }
         }
     }
     // Edges
@@ -442,6 +490,12 @@ fn convert_wire_graph_to_state_machine_graph(graph: serde_json::Value) -> Option
                 edge.display_label = Some(crate::model::choose_edge_label_bag(&edge.components));
             }
             out.edges.insert(id, edge);
+            // Seed central component store for this edge
+            if let Some(comps) = e.get("components").and_then(|v| v.as_object()) {
+                let mut bag = m::ComponentBag::default();
+                for (k, v) in comps.iter() { bag.insert(m::ComponentEntry::new(k.clone(), v.clone())); }
+                out.entity_data.insert(id, bag);
+            }
         }
     }
     Some(out)

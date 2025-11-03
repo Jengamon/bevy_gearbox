@@ -9,6 +9,7 @@ homepage = "https://github.com/DEMIURGE-studio/bevy_gearbox"
 readme = "README.md"
 keywords = ["bevy", "state-machine", "gamedev", "ecs"]
 categories = ["game-development", "game-engines"]
+build = "build.rs"
 
 [workspace]
 members = [
@@ -22,11 +23,21 @@ resolver = "2"
 bevy = { version = "0.17", default-features = false, features = ["bevy_state"] }
 bevy_gearbox_macros = { path = "./crates/bevy_gearbox_macros" }
 inventory = "0.3.21"
+rustversion = "1"
 
 [dev-dependencies]
 bevy = "0.17"
 bevy-inspector-egui = "0.35.0"
 bevy_gearbox_editor = { path = "./crates/bevy_gearbox_editor" }
+bevy_gearbox_protocol = { path = "./crates/bevy_gearbox_protocol", features = ["server"] }
+
+[features]
+default = []
+# Opt-in flag. Effective only on nightly channel; ignored on stable.
+nightly = []
+
+[build-dependencies]
+rustc_version = "0.4"
 
 [[example]]
 name = "repeater"

@@ -1,17 +1,18 @@
-#![feature(associated_type_defaults)]
+#![cfg_attr(all(feature = "nightly", compiler_nightly), feature(associated_type_defaults))]
 
 use bevy::{prelude::*, reflect::Reflect};
 use bevy::platform::collections::HashSet;
 
 // Re-exports
-use crate::{active::{Active, Inactive}, guards::Guards, history::{History, HistoryState}};
+use crate::{guards::Guards, history::{History, HistoryState}};
 pub use registration::RegistrationAppExt;
 pub use bevy_gearbox_macros::SimpleTransition;
-pub use transitions::{TransitionEvent, NoEvent};
+pub use bevy_gearbox_macros::transition_event;
+pub use bevy_gearbox_macros::state_component;
+pub use bevy_gearbox_macros::state_bridge;
+pub use transitions::{TransitionEvent, NoEvent, AcceptAll};
 pub use inventory;
-pub use bevy_gearbox_macros::register_transition;
 
-pub mod active;
 pub mod guards;
 pub mod history;
 pub mod prelude;
@@ -26,11 +27,9 @@ pub struct GearboxPlugin;
 
 impl Plugin for GearboxPlugin {
     fn build(&self, app: &mut App) {
-        app.add_observer(active::add_active)
-            .add_observer(active::add_inactive)
-            .add_observer(transition_observer::<()>)
+        app.add_observer(transition_observer::<()> )
             .add_observer(initialize_state_machine)
-            .add_observer(auto_attach_state_machine_on_substates)
+            //.add_observer(auto_attach_state_machine_on_substates)
             .add_observer(reset_state_region)
             .add_observer(transitions::always_edge_listener)
             .add_observer(transitions::start_after_on_enter)
@@ -65,9 +64,16 @@ impl Plugin for GearboxPlugin {
         app.add_systems(Update, (
             transitions::check_always_on_guards_changed,
             transitions::tick_after_system,
-            attach_state_machine_to_roots,
-            auto_reparent_scene_substates,
+            //attach_state_machine_to_roots,
+            //auto_reparent_scene_substates,
+            //auto_insert_state_machine_to_root,
         ));
+        //app.add_systems(Update, (
+        //    auto_insert_state_machine_to_root,
+        //    clean_up_state_machine,
+        //).chain());
+
+        //app.add_observer(activate_parallel_region);
 
         // Auto-register items discovered via inventory (transitions, states, params)
         app.run_auto_installers();
@@ -141,9 +147,9 @@ pub struct InitialState(#[entities] pub Entity);
 #[derive(Component, Reflect, Default)]
 #[reflect(Component)]
 pub struct StateMachine {
-    #[reflect(ignore)] #[entities]
+    #[entities]
     pub active: HashSet<Entity>,
-    #[reflect(ignore)] #[entities]
+    #[entities]
     pub active_leaves: HashSet<Entity>,
 }
 
@@ -434,7 +440,7 @@ fn transition_observer<T: transitions::PhasePayload>(
 
     // Transition actions phase (between exits and entries)
     commands.trigger(TransitionActions { target: transition.event().edge });
-    transition.event().payload.on_effect(&mut commands, transition.event().edge, &q_children, &current_state);
+    transition.event().payload.on_edge(&mut commands, transition.event().edge, &q_children, &current_state);
     // Invoke typed Effect payload if present
     // Note: we avoid trait bounds here; user code can downcast payload if desired via helper
 
@@ -579,59 +585,8 @@ fn initialize_state_machine(
 fn reset_state_region(
     reset_region: On<ResetRegion>,
     mut commands: Commands,
-    q_children: Query<&Substates>,
 ) {
     let root = reset_region.target;
 
-    for child in q_children.iter_descendants(root) {
-        commands.entity(child).remove::<Active>().insert(Inactive);
-    }
-
     commands.entity(root).remove::<StateMachine>().insert(StateMachine::new());
-}
-
-/// When `Substates` is added to a host that is not itself a substate of another entity,
-/// attach a `StateMachine` so the host becomes a parallel-region root/container.
-fn auto_attach_state_machine_on_substates(
-    add_substates: On<Add, Substates>,
-    q_substate_of: Query<&SubstateOf>,
-    q_state_machine: Query<&StateMachine>,
-    mut commands: Commands,
-) {
-    let host = add_substates.event().entity;
-    let is_root = q_substate_of.get(host).is_err();
-    let has_machine = q_state_machine.get(host).is_ok();
-    if is_root && !has_machine {
-        commands.entity(host).insert(StateMachine::new());
-    }
-}
-
-/// Backfill attachment when a relationship existed prior to the observer firing.
-fn attach_state_machine_to_roots(
-    q_roots: Query<Entity, (With<Substates>, Without<SubstateOf>, Without<StateMachine>)>,
-    mut commands: Commands,
-) {
-    for e in q_roots.iter() {
-        commands.entity(e).insert(StateMachine::new());
-    }
-}
-
-fn auto_reparent_scene_substates(
-    q_scene: Query<(Entity, &Children), (With<DynamicSceneRoot>, With<SubstateOf>)>,
-    q_substate_of: Query<&SubstateOf>,
-    mut commands: Commands,
-) {
-    for (entity, children) in q_scene.iter() {
-        let Ok(substate_of) = q_substate_of.get(entity) else {
-            continue;
-        };
-        for child in children.iter() {
-            commands.entity(child).insert(ChildOf(substate_of.0));
-            if q_substate_of.contains(child) {
-                continue;
-            }
-            commands.entity(child).insert(SubstateOf(substate_of.0));
-        }
-        commands.entity(entity).despawn();
-    }
 }

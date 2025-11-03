@@ -90,7 +90,7 @@ impl<P> FloatInRange<P> {
     }
 }
 
-fn guard_key_for_float<P>() -> String { format!("float-in-range::<{}>", std::any::type_name::<P>()) }
+fn guard_key_for_float<P>() -> String { format!("FloatInRange::<{}>", std::any::type_name::<P>()) }
 
 /// Update Guards on edges with FloatInRange<P> based on the current FloatParam<P> value.
 /// Works seamlessly with AlwaysEdge and EventEdge since both consult Guards.
@@ -133,6 +133,22 @@ pub fn apply_float_param_guards<P: Send + Sync + 'static>(
     }
 }
 
+/// Immediately seed a blocking guard when a FloatInRange<P> is added to an edge.
+/// This ensures Always edges won't fire before the first guard application pass.
+pub fn init_float_param_guard_on_add<P: Send + Sync + 'static>(
+    add: On<Add, FloatInRange<P>>,
+    mut q_guards: Query<&mut Guards>,
+    mut commands: Commands,
+){
+    let edge = add.event().entity;
+    let key = guard_key_for_float::<P>();
+    if let Ok(mut g) = q_guards.get_mut(edge) {
+        g.add_guard(key.as_str());
+    } else {
+        commands.entity(edge).insert(Guards::init([key.as_str()]));
+    }
+}
+
 /// Implement this on the marker type `P` to bind a source component `T` to an int param.
 pub trait IntParamBinding<T: Component> {
     fn extract(source: &T) -> i32;
@@ -166,7 +182,7 @@ impl<P> IntInRange<P> {
     }
 }
 
-fn guard_key_for_int<P>() -> String { format!("int-in-range::<{}>", std::any::type_name::<P>()) }
+fn guard_key_for_int<P>() -> String { format!("IntInRange::<{}>", std::any::type_name::<P>()) }
 
 /// Update Guards on edges with IntInRange<P> based on the current IntParam<P> value.
 pub fn apply_int_param_guards<P: Send + Sync + 'static>(
@@ -205,6 +221,21 @@ pub fn apply_int_param_guards<P: Send + Sync + 'static>(
     }
 }
 
+/// Immediately seed a blocking guard when an IntInRange<P> is added to an edge.
+pub fn init_int_param_guard_on_add<P: Send + Sync + 'static>(
+    add: On<Add, IntInRange<P>>,
+    mut q_guards: Query<&mut Guards>,
+    mut commands: Commands,
+){
+    let edge = add.event().entity;
+    let key = guard_key_for_int::<P>();
+    if let Ok(mut g) = q_guards.get_mut(edge) {
+        g.add_guard(key.as_str());
+    } else {
+        commands.entity(edge).insert(Guards::init([key.as_str()]));
+    }
+}
+
 /// Implement this on the marker type `P` to bind a source component `T` to a bool param.
 pub trait BoolParamBinding<T: Component> {
     fn extract(source: &T) -> bool;
@@ -234,7 +265,7 @@ impl<P> BoolEquals<P> {
     pub fn new(expected: bool) -> Self { Self { expected, _marker: PhantomData } }
 }
 
-fn guard_key_for_bool<P>() -> String { format!("bool-equals::<{}>", std::any::type_name::<P>()) }
+fn guard_key_for_bool<P>() -> String { format!("BoolEquals::<{}>", std::any::type_name::<P>()) }
 
 /// Update Guards on edges with BoolEquals<P> based on the current BoolParam<P> value.
 pub fn apply_bool_param_guards<P: Send + Sync + 'static>(
@@ -266,5 +297,20 @@ pub fn apply_bool_param_guards<P: Send + Sync + 'static>(
                 commands.entity(edge).insert(Guards::init([key.as_str()]));
             }
         }
+    }
+}
+
+/// Immediately seed a blocking guard when a BoolEquals<P> is added to an edge.
+pub fn init_bool_param_guard_on_add<P: Send + Sync + 'static>(
+    add: On<Add, BoolEquals<P>>,
+    mut q_guards: Query<&mut Guards>,
+    mut commands: Commands,
+){
+    let edge = add.event().entity;
+    let key = guard_key_for_bool::<P>();
+    if let Ok(mut g) = q_guards.get_mut(edge) {
+        g.add_guard(key.as_str());
+    } else {
+        commands.entity(edge).insert(Guards::init([key.as_str()]));
     }
 }

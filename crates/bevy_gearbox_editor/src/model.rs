@@ -65,12 +65,6 @@ impl ComponentBag {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct StateNode {
     pub(crate) id: EntityId,
-    pub(crate) parent: Option<EntityId>,
-    /// Child state nodes in display order.
-    pub(crate) children: Vec<EntityId>,
-    pub(crate) components: ComponentBag,
-    /// Derived, non-authoritative label (e.g., from `Name`).
-    pub(crate) display_name: Option<String>,
     /// Dirty tracking for this node.
     pub(crate) dirty: DirtyFlags,
     /// Opaque server version for the node entity (not per-component).
@@ -81,10 +75,6 @@ impl StateNode {
     pub(crate) fn new(id: EntityId) -> Self {
         Self {
             id,
-            parent: None,
-            children: Vec::new(),
-            components: ComponentBag::default(),
-            display_name: None,
             dirty: DirtyFlags::default(),
             server_version: None,
         }
@@ -134,6 +124,10 @@ pub(crate) struct StateMachineGraph {
     /// Cached adjacency for quick traversal; rebuild or keep in sync on edits.
     pub(crate) adjacency_out: HashMap<EntityId, Vec<EntityId>>,
     pub(crate) adjacency_in: HashMap<EntityId, Vec<EntityId>>,
+    /// Central, per-entity component store kept in sync via snapshots and watches.
+    pub(crate) entity_data: HashMap<EntityId, ComponentBag>,
+    /// Current active state set derived from StateMachine.active (doc-local cache)
+    pub(crate) active_nodes: std::collections::HashSet<EntityId>,
 }
 
 impl StateMachineGraph {
@@ -148,7 +142,72 @@ impl StateMachineGraph {
             edges: HashMap::new(),
             adjacency_out: HashMap::new(),
             adjacency_in: HashMap::new(),
+            entity_data: HashMap::new(),
+            active_nodes: std::collections::HashSet::new(),
         }
+    }
+
+    /// Returns the component bag for an entity if present in the central store.
+    pub(crate) fn component_bag(&self, id: &EntityId) -> Option<&ComponentBag> {
+        self.entity_data.get(id)
+    }
+
+    /// True if the entity has a component with the given type path.
+    pub(crate) fn has_component(&self, id: &EntityId, type_path: &str) -> bool {
+        self.entity_data.get(id).map_or(false, |b| b.contains(type_path))
+    }
+
+    /// Returns a display label for either a state or an edge entity, derived from its components.
+    /// Order of precedence:
+    /// 1) Name text (if present)
+    /// 2) EventEdge<T> → T simple name, or "Always" for AlwaysEdge
+    /// 3) Fallback: the numeric entity id
+    pub(crate) fn get_label_for(&self, id: &EntityId) -> String {
+        if let Some(bag) = self.entity_data.get(id) {
+            if let Some(name) = extract_name_from_bag(bag) { return name; }
+            let edge_label = choose_edge_label_bag(bag);
+            if edge_label != "Edge" { return edge_label; }
+        }
+        format!("{}", id.0)
+    }
+
+    /// Returns the display name for a state entity (same precedence as get_label_for for now).
+    pub(crate) fn get_display_name(&self, id: &EntityId) -> String { self.get_label_for(id) }
+
+    /// Children derived from the per-entity component store (STATE_CHILDREN as array of ids).
+    pub(crate) fn get_children(&self, id: &EntityId) -> Vec<EntityId> {
+        let mut out: Vec<EntityId> = Vec::new();
+        if let Some(bag) = self.entity_data.get(id) {
+            if let Some(entry) = bag.get(c::STATE_CHILDREN) {
+                if let serde_json::Value::Array(arr) = &entry.value_json {
+                    for v in arr.iter() {
+                        if let Some(s) = v.as_str() {
+                            if let Ok(u) = s.parse::<u64>() { out.push(EntityId(u)); }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Parent derived by scanning STATE_CHILDREN of all nodes; O(N) but acceptable for editor.
+    pub(crate) fn get_parent(&self, id: &EntityId) -> Option<EntityId> {
+        for (candidate, _node) in self.nodes.iter() {
+            if self.get_children(candidate).contains(id) { return Some(*candidate); }
+        }
+        None
+    }
+
+    /// True if the entity currently has the Active component (from live component store).
+    pub(crate) fn is_active(&self, id: &EntityId) -> bool {
+        self.active_nodes.contains(id)
+    }
+
+    /// Replace the current active set with the provided entities.
+    pub(crate) fn set_active<I: IntoIterator<Item = EntityId>>(&mut self, ids: I) {
+        self.active_nodes.clear();
+        self.active_nodes.extend(ids);
     }
 }
 
@@ -160,9 +219,7 @@ impl fmt::Display for StateMachineGraph {
         // Helper to extract a displayable name from a node's components
         let mut get_node_name = |id: &EntityId| -> String {
             if let Some(n) = names.get(id) { return n.clone(); }
-            let name = self.nodes.get(id)
-                .and_then(|node| node.display_name.clone().or_else(|| extract_name_from_bag(&node.components)))
-                .unwrap_or_default();
+            let name = self.get_display_name(id);
             names.insert(*id, name.clone());
             name
         };
@@ -175,10 +232,10 @@ impl fmt::Display for StateMachineGraph {
         while let Some((id, depth)) = stack.pop() {
             if !visited.insert(id) { continue; }
             ordered.push((id, depth));
-            if let Some(node) = self.nodes.get(&id) {
-                // Push children in reverse to preserve original order on pop
-                for child in node.children.iter().rev() { stack.push((*child, depth + 1)); }
-            }
+            // Push children in reverse to preserve original order on pop
+            let mut kids = self.get_children(&id);
+            kids.reverse();
+            for child in kids.into_iter() { stack.push((child, depth + 1)); }
         }
 
         // Build edges list in a stable order (by source appearance in states)
@@ -191,7 +248,7 @@ impl fmt::Display for StateMachineGraph {
                         let source_name = get_node_name(&edge.source);
                         let mut target_name = get_node_name(&edge.target);
                         if target_name.is_empty() {
-                            if let Some(s) = extract_name_from_bag(&edge.components) {
+                            if let Some(s) = self.component_bag(&edge.id).and_then(|b| extract_name_from_bag(b)) {
                                 if let Some(arrow) = s.find("->") {
                                     let rhs = s[arrow+2..].trim();
                                     let rhs = if let Some(paren) = rhs.find('(') { &rhs[..paren] } else { rhs };
@@ -200,7 +257,7 @@ impl fmt::Display for StateMachineGraph {
                                 }
                             }
                         }
-                        let label = choose_edge_label_bag(&edge.components);
+                        let label = self.component_bag(&edge.id).map(choose_edge_label_bag).unwrap_or_else(|| "Edge".to_string());
                         edges_formatted.push(format!("{} - {} -> {}", source_name, label, target_name));
                     }
                 }
@@ -210,7 +267,7 @@ impl fmt::Display for StateMachineGraph {
                         let source_name = get_node_name(&edge.source);
                         let mut target_name = get_node_name(&edge.target);
                         if target_name.is_empty() {
-                            if let Some(s) = extract_name_from_bag(&edge.components) {
+                            if let Some(s) = self.component_bag(&edge.id).and_then(|b| extract_name_from_bag(b)) {
                                 if let Some(arrow) = s.find("->") {
                                     let rhs = s[arrow+2..].trim();
                                     let rhs = if let Some(paren) = rhs.find('(') { &rhs[..paren] } else { rhs };
@@ -219,7 +276,7 @@ impl fmt::Display for StateMachineGraph {
                                 }
                             }
                         }
-                        let label = choose_edge_label_bag(&edge.components);
+                        let label = self.component_bag(&edge.id).map(choose_edge_label_bag).unwrap_or_else(|| "Edge".to_string());
                         edges_formatted.push(format!("{} - {} -> {}", source_name, label, target_name));
                     }
                 }

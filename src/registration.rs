@@ -6,6 +6,7 @@ use std::any::TypeId;
 use crate::parameter;
 use crate::transitions::TransitionEvent;
 use crate::transitions::{edge_event_listener, PhaseEvents, tick_after_event_timers, cancel_pending_event_on_exit, replay_deferred_event};
+use crate::bevy_state::bridge_chart_to_bevy_state;
 
 /// Marker trait implemented by macros for events that are auto-registered.
 pub trait RegisteredTransitionEvent: 'static {}
@@ -54,6 +55,12 @@ inventory::collect!(IntParamBindingInstaller);
 pub struct BoolParamBindingInstaller { pub install: fn(&mut App) }
 inventory::collect!(BoolParamBindingInstaller);
 
+pub struct StateBridgeInstaller { pub install: fn(&mut App) }
+inventory::collect!(StateBridgeInstaller);
+
+pub struct SubstateBridgeInstaller { pub install: fn(&mut App) }
+inventory::collect!(SubstateBridgeInstaller);
+
 /// Helper trait to register components and systems to an App.
 pub trait RegistrationAppExt {
     fn register_transition<E>(&mut self) -> &mut Self
@@ -61,7 +68,7 @@ pub trait RegistrationAppExt {
         E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static + bevy::reflect::TypePath,
         for<'a> <E as Event>::Trigger<'a>: Default,
         for<'a> <<E as TransitionEvent>::ExitEvent as Event>::Trigger<'a>: Default,
-        for<'a> <<E as TransitionEvent>::EffectEvent as Event>::Trigger<'a>: Default,
+        for<'a> <<E as TransitionEvent>::EdgeEvent as Event>::Trigger<'a>: Default,
         for<'a> <<E as TransitionEvent>::EntryEvent as Event>::Trigger<'a>: Default,
         <E as TransitionEvent>::Validator: bevy::reflect::TypePath + bevy::reflect::FromReflect + bevy::reflect::GetTypeRegistration + bevy::reflect::Typed;
 
@@ -92,6 +99,10 @@ pub trait RegistrationAppExt {
     where
         P: Send + Sync + 'static;
 
+    fn register_state_bridge<S>(&mut self) -> &mut Self
+    where
+        S: States + bevy::state::state::FreelyMutableState + Default + Component + Clone + 'static;
+
     fn run_auto_installers(&mut self);
 }
 
@@ -101,7 +112,7 @@ impl RegistrationAppExt for App {
         E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static + bevy::reflect::TypePath,
         for<'a> <E as Event>::Trigger<'a>: Default,
         for<'a> <<E as TransitionEvent>::ExitEvent as Event>::Trigger<'a>: Default,
-        for<'a> <<E as TransitionEvent>::EffectEvent as Event>::Trigger<'a>: Default,
+        for<'a> <<E as TransitionEvent>::EdgeEvent as Event>::Trigger<'a>: Default,
         for<'a> <<E as TransitionEvent>::EntryEvent as Event>::Trigger<'a>: Default,
         <E as TransitionEvent>::Validator: bevy::reflect::TypePath + bevy::reflect::FromReflect + bevy::reflect::GetTypeRegistration + bevy::reflect::Typed 
     {
@@ -119,7 +130,7 @@ impl RegistrationAppExt for App {
         self.register_type::<<E as TransitionEvent>::Validator>();
     
         self.add_observer(edge_event_listener::<E>)
-            .add_observer(crate::transition_observer::<PhaseEvents<E::ExitEvent, E::EffectEvent, E::EntryEvent>>)
+            .add_observer(crate::transition_observer::<PhaseEvents<E::ExitEvent, E::EdgeEvent, E::EntryEvent>>)
             .add_systems(Update, tick_after_event_timers::<E>)
             .add_observer(cancel_pending_event_on_exit::<E>)
             .add_observer(replay_deferred_event::<E>);
@@ -161,7 +172,10 @@ impl RegistrationAppExt for App {
         drop(installed);
         if already { return self; }
     
-        self.add_systems(Update, parameter::apply_float_param_guards::<P>);
+        // Seed a blocking guard on edges as soon as FloatInRange<P> is added,
+        // then run guard application in PreUpdate so guards are settled before transitions
+        self.add_observer(parameter::init_float_param_guard_on_add::<P>);
+        self.add_systems(PreUpdate, parameter::apply_float_param_guards::<P>);
         self
     }
 
@@ -177,7 +191,10 @@ impl RegistrationAppExt for App {
         drop(installed);
         if already { return self; }
     
-        self.add_systems(Update, parameter::apply_int_param_guards::<P>);
+        // Seed a blocking guard on edges as soon as IntInRange<P> is added,
+        // then run guard application in PreUpdate so guards are settled before transitions
+        self.add_observer(parameter::init_int_param_guard_on_add::<P>);
+        self.add_systems(PreUpdate, parameter::apply_int_param_guards::<P>);
         self
     }
 
@@ -193,7 +210,10 @@ impl RegistrationAppExt for App {
         drop(installed);
         if already { return self; }
     
-        self.add_systems(Update, parameter::apply_bool_param_guards::<P>);
+        // Seed a blocking guard on edges as soon as BoolEquals<P> is added,
+        // then run guard application in PreUpdate so guards are settled before transitions
+        self.add_observer(parameter::init_bool_param_guard_on_add::<P>);
+        self.add_systems(PreUpdate, parameter::apply_bool_param_guards::<P>);
         self
     }
 
@@ -210,7 +230,8 @@ impl RegistrationAppExt for App {
         drop(installed);
         if already { return self; }
     
-        self.add_systems(Update, parameter::sync_float_param::<T, P>);
+        // Sync in PreUpdate and ensure it runs before guard application
+        self.add_systems(PreUpdate, parameter::sync_float_param::<T, P>.before(parameter::apply_float_param_guards::<P>));
         self
     }
 
@@ -227,7 +248,8 @@ impl RegistrationAppExt for App {
         drop(installed);
         if already { return self; }
     
-        self.add_systems(Update, parameter::sync_int_param::<T, P>);
+        // Sync in PreUpdate and ensure it runs before guard application
+        self.add_systems(PreUpdate, parameter::sync_int_param::<T, P>.before(parameter::apply_int_param_guards::<P>));
         self
     }
 
@@ -256,6 +278,28 @@ impl RegistrationAppExt for App {
         for installer in inventory::iter::<BoolParamBindingInstaller> {
             (installer.install)(self);
         }
+        for installer in inventory::iter::<StateBridgeInstaller> {
+            (installer.install)(self);
+        }
+        for installer in inventory::iter::<SubstateBridgeInstaller> {
+            (installer.install)(self);
+        }
+    }
+    
+    fn register_state_bridge<S>(&mut self) -> &mut Self
+    where
+        S: States + bevy::state::state::FreelyMutableState + Default + Component + Clone + 'static,
+    {
+        if !self.world().contains_resource::<InstalledStateBridges>() {
+            self.insert_resource(InstalledStateBridges(HashSet::new()));
+        }
+        let mut installed = self.world_mut().resource_mut::<InstalledStateBridges>();
+        let already = !installed.0.insert(TypeId::of::<S>());
+        drop(installed);
+        if already { return self; }
+
+        self.add_observer(bridge_chart_to_bevy_state::<S>);
+        self
     }
 }
 
@@ -266,11 +310,18 @@ where
     E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static + bevy::reflect::TypePath,
     for<'a> <E as Event>::Trigger<'a>: Default,
     for<'a> <<E as TransitionEvent>::ExitEvent as Event>::Trigger<'a>: Default,
-    for<'a> <<E as TransitionEvent>::EffectEvent as Event>::Trigger<'a>: Default,
+    for<'a> <<E as TransitionEvent>::EdgeEvent as Event>::Trigger<'a>: Default,
     for<'a> <<E as TransitionEvent>::EntryEvent as Event>::Trigger<'a>: Default,
     <E as TransitionEvent>::Validator: bevy::reflect::TypePath + bevy::reflect::FromReflect + bevy::reflect::GetTypeRegistration + bevy::reflect::Typed,
 {
     RegistrationAppExt::register_transition::<E>(app);
+}
+
+pub fn register_state_component<T>(app: &mut App)
+where
+    T: Component<Mutability = Mutable> + Clone + Reflect + FromReflect + bevy::reflect::TypePath + bevy::reflect::GetTypeRegistration + bevy::reflect::Typed + 'static,
+{
+    RegistrationAppExt::register_state_component::<T>(app);
 }
 
 pub fn register_float_param<P>(app: &mut App)
@@ -310,6 +361,13 @@ where
     RegistrationAppExt::register_int_param_binding::<T, P>(app);
 }
 
+pub fn register_state_bridge<S>(app: &mut App)
+where
+    S: States + bevy::state::state::FreelyMutableState + Default + Component + Clone + 'static,
+{
+    RegistrationAppExt::register_state_bridge::<S>(app);
+}
+
 // Deduping for (T, P) bindings
 #[derive(Resource, Default)]
 pub struct InstalledFloatParamBindings(pub HashSet<(TypeId, TypeId)>);
@@ -319,6 +377,12 @@ pub struct InstalledIntParamBindings(pub HashSet<(TypeId, TypeId)>);
 
 #[derive(Resource, Default)]
 pub struct InstalledBoolParamBindings(pub HashSet<(TypeId, TypeId)>);
+
+#[derive(Resource, Default)]
+pub struct InstalledStateBridges(pub HashSet<TypeId>);
+
+#[derive(Resource, Default)]
+pub struct InstalledSubstateBridges(pub HashSet<TypeId>);
 
 /// Function-style plugin to run inventory-based auto-registrations without the full GearboxPlugin
 pub fn gearbox_auto_register_plugin(app: &mut App) {

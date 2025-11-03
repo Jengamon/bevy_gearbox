@@ -8,8 +8,6 @@ pub use crate::{
     TransitionActions,
     state_component::Reset,
     // Components
-    active::Active,
-    active::Inactive,
     SubstateOf,
     Substates,
     StateMachine,
@@ -39,14 +37,16 @@ pub use crate::{
     transitions::replay_deferred_event,
     transitions::TransitionEvent,
     transitions::NoEvent,
+    transitions::AcceptAll,
     // Bevy state integration
-    bevy_state::AppBevyStateBridgeExt,
     bevy_state::GearboxCommandsExt,
     // Derive macros
     SimpleTransition,
 };
 
-pub use bevy_gearbox_macros::register_transition;
+pub use bevy_gearbox_macros::transition_event;
+pub use bevy_gearbox_macros::state_component;
+pub use bevy_gearbox_macros::state_bridge;
 pub use bevy_gearbox_macros::gearbox_param;
 
 pub use crate::parameter::{

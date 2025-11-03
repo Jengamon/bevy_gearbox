@@ -1,7 +1,6 @@
 // Ported from bevy_gearbox_editor/examples/custom_payload.rs
 // Uses protocol server to enable optional remote editor connection
 use bevy::prelude::*;
-use bevy_gearbox::RegistrationAppExt;
 use bevy_gearbox::StateMachineId;
 use bevy_gearbox::prelude::*;
 use bevy_gearbox::GearboxPlugin;
@@ -16,7 +15,7 @@ use bevy_gearbox_editor::ServerPlugin;
 // --- Events ---
 
 #[derive(EntityEvent, Reflect, Clone)]
-#[register_transition]
+#[transition_event]
 struct Attack {
     #[event_target]
     pub target: Entity, // shooter state machine root
@@ -25,7 +24,7 @@ struct Attack {
 }
 
 #[derive(EntityEvent, Reflect, Clone)]
-#[register_transition]
+#[transition_event]
 struct TryDamage {
     #[event_target]
     pub target: Entity,
@@ -39,44 +38,72 @@ struct TakeDamage {
     pub amount: f32,
 }
 
-#[derive(EntityEvent, Reflect, Clone)]
-#[register_transition]
-struct Die {
-    #[event_target]
-    pub target: Entity,
+// Parameter marker for Life -> used to gate death via a param edge
+#[derive(Clone)]
+#[gearbox_param(kind = "float", source = Life)]
+struct LifeParam;
+
+impl FloatParamBinding<Life> for LifeParam {
+    fn extract(source: &Life) -> f32 { source.0 }
 }
 
 // Map the trigger into a phase payload that targets the victim with TryDamage.
 impl TransitionEvent for Attack {
     type EntryEvent = TryDamage;
 
-    fn to_entry_event(&self) -> Option<Self::EntryEvent> {
+    type EdgeEvent = NoEvent;
+    type ExitEvent = NoEvent;
+    type Validator = AcceptAll;
+
+    fn to_entry_event(
+        &self,
+        _entering: Entity,
+        _source: Entity,
+        _edge: Entity,
+        _machine: Entity,
+    ) -> Option<Self::EntryEvent> {
         Some(TryDamage { target: self.victim, amount: self.damage })
     }
 }
 
 impl TransitionEvent for TryDamage {
     type EntryEvent = TakeDamage;
-    fn to_entry_event(&self) -> Option<Self::EntryEvent> { Some(TakeDamage { target: self.target, amount: self.amount }) }
-}
 
-impl TransitionEvent for Die {}
+    type EdgeEvent = NoEvent;
+    type ExitEvent = NoEvent;
+    type Validator = AcceptAll;
+
+    fn to_entry_event(
+        &self,
+        _entering: Entity,
+        _source: Entity,
+        _edge: Entity,
+        _machine: Entity,
+    ) -> Option<Self::EntryEvent> {
+        Some(TakeDamage { target: self.target, amount: self.amount })
+    }
+}
 
 // --- State markers ---
 
 #[derive(Component, Reflect, Clone)]
+#[state_component]
 struct Waiting;
 
 #[derive(Component, Reflect, Clone)]
+#[state_component]
 struct Attacking;
 
 #[derive(Component, Reflect, Clone)]
+#[state_component]
 struct TargetWaiting;
 
 #[derive(Component, Reflect, Clone)]
+#[state_component]
 struct TakingDamageState;
 
 #[derive(Component, Reflect, Clone)]
+#[state_component]
 struct Dead;
 
 #[derive(Component, Reflect, Clone)]
@@ -112,13 +139,9 @@ fn main() {
         .add_observer(on_enter_taking_damage_color)
         .add_observer(on_exit_taking_damage_color)
         .add_observer(do_damage_on_entry)
+        .add_observer(on_add_dead_despawn)
         .add_systems(Startup, setup)
         .add_systems(Update, (input_attack_event, drive_bounces, process_respawn_queue))
-        .register_state_component::<Waiting>()
-        .register_state_component::<Attacking>()
-        .register_state_component::<TargetWaiting>()
-        .register_state_component::<TakingDamageState>()
-        .register_state_component::<Dead>()
         .run();
 }
 
@@ -281,9 +304,6 @@ fn do_damage_on_entry(
     do_damage: On<TakeDamage>,
     q_substate_of: Query<&SubstateOf>,
     mut q_life: Query<&mut Life>,
-    q_transform: Query<&Transform>,
-    mut commands: Commands,
-    mut respawns: ResMut<RespawnQueue>,
 ) {
     let amount = do_damage.amount;
     let target = do_damage.target;
@@ -293,14 +313,6 @@ fn do_damage_on_entry(
     if let Ok(mut life) = q_life.get_mut(root) {
         life.0 -= amount;
         println!("[Damage] Applied {amount}, Life now {:.1}", life.0);
-        if life.0 <= 0.0 {
-            // Capture current position for respawn, enqueue, then despawn
-            let mut pos = Vec3::ZERO;
-            if let Ok(tf_ro) = q_transform.get(root) { pos = tf_ro.translation; }
-            respawns.0.push(RespawnRequest { position: pos, delay: 1.0, timer: 0.0 });
-            commands.trigger(Die { target: root });
-            commands.entity(root).despawn();
-        }
     }
 }
 
@@ -341,6 +353,20 @@ fn on_exit_taking_damage_color(
     }
 }
 
+// On entering Dead, schedule respawn and despawn the defender root
+fn on_add_dead_despawn(
+    add: On<Add, Dead>,
+    q_transform: Query<&Transform>,
+    mut respawns: ResMut<RespawnQueue>,
+    mut commands: Commands,
+) {
+    let root = add.entity;
+    let mut pos = Vec3::ZERO;
+    if let Ok(tf) = q_transform.get(root) { pos = tf.translation; }
+    respawns.0.push(RespawnRequest { position: pos, delay: 1.0, timer: 0.0 });
+    commands.entity(root).despawn();
+}
+
 fn process_respawn_queue(
     time: Res<Time>,
     mut respawns: ResMut<RespawnQueue>,
@@ -379,6 +405,7 @@ fn spawn_defender(world: &mut World, position: Vec3) -> Entity {
         MeshMaterial3d(target_mat),
         Transform::from_translation(position),
         Life(60.0),
+        FloatParam::<LifeParam>::default(),
         StateMachineId::new("dummy_target"), // ID lets the editor connect a sidecar file to the state machine
     )).id();
 
@@ -410,13 +437,14 @@ fn spawn_defender(world: &mut World, position: Vec3) -> Entity {
         EdgeKind::External,
     ));
 
-    // Edge: Defender root --(Die)--> Dead
+    // Edge: Defender root --(Always, when Life <= 0)--> Dead via param guard
     world.spawn((
-        Name::new("Die"),
+        Name::new("DieByParam"),
         Source(defender),
         Target(dead),
-        EventEdge::<Die>::default(),
-        EdgeKind::External,
+        AlwaysEdge,
+        Guards::new(),
+        FloatInRange::<LifeParam>::new(f32::MIN, 0.0, 0.0),
     ));
 
     // Edge: TakingDamage --(Always, After 0.2s)--> TargetWaiting

@@ -31,10 +31,6 @@ fn init_enters_initial_chain_and_sets_active_sets() {
     assert!(sm.active_leaves.contains(&leaf), "leaf should be active");
     assert!(sm.active.contains(&leaf), "leaf should be in active set");
     assert!(sm.active.contains(&root), "root should be in active ancestor set");
-
-    // Assert markers: only leaf gets Active
-    assert!(app.world().get::<Active>(leaf).is_some(), "leaf should have Active marker");
-    assert!(app.world().get::<Active>(root).is_some(), "root should have Active marker");
 }
 
 
@@ -75,11 +71,6 @@ fn transitions_priority_first_match_wins() {
     assert!(sm.active_leaves.contains(&t1), "highest priority edge should activate T1");
     assert!(!sm.active_leaves.contains(&t2), "lower priority edge must not fire when higher fired");
     assert!(!sm.active_leaves.contains(&s), "source should be inactive after transition");
-
-    // Markers reflect ancestry activity
-    assert!(app.world().get::<Active>(t1).is_some());
-    assert!(app.world().get::<Active>(root).is_some());
-    assert!(app.world().get::<Inactive>(s).is_some());
 }
 
 // Helpers for ordering test

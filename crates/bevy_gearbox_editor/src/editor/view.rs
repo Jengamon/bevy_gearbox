@@ -4,6 +4,7 @@ use super::context_menu::{build_context_menu, MenuItemKind, MenuSelection};
 use crate::editor::workspace::{ RenameInline, Workspace, EdgeBuildState, EdgeMenuState};
 use crate::types::EntityId;
 use bevy_egui::egui;
+use bevy_gearbox_protocol::components as c;
 
 /// Minimal read-only view with pan/zoom and basic nodes/edges rendering.
 pub fn draw_doc(
@@ -79,7 +80,8 @@ pub fn draw_doc(
             if doc.scene.edges.contains_key(eid) {
                 if let Some(edge) = doc.scene.edges.get(eid) {
                         let zoom = doc.transform.zoom;
-                    let text_size_s = doc.cached_label_size_screen(&edge.label, zoom, &painter);
+                    let label_dyn = doc.graph.as_ref().map(|g| g.get_label_for(eid)).unwrap_or(edge.label.clone());
+                    let text_size_s = doc.cached_label_size_screen(&label_dyn, zoom, &painter);
                         let pill_pad_x = 10.0 * zoom;
                         let pill_pad_y = 6.0 * zoom;
                         let pill_size_s = egui::vec2(text_size_s.x + 2.0 * pill_pad_x, text_size_s.y + 2.0 * pill_pad_y);
@@ -126,7 +128,8 @@ pub fn draw_doc(
                 egui::Rect::from_min_max(doc.transform.to_screen(sv.rect.min), doc.transform.to_screen(sv.rect.max))
             } else if let Some(ev) = doc.scene.edges.get(eid) {
                     let zoom = doc.transform.zoom;
-                let text_size_s = doc.cached_label_size_screen(&ev.label, zoom, &ui.painter());
+                let label_dyn = doc.graph.as_ref().map(|g| g.get_label_for(eid)).unwrap_or(ev.label.clone());
+                let text_size_s = doc.cached_label_size_screen(&label_dyn, zoom, &ui.painter());
                     let pill_pad_x = 10.0 * zoom;
                     let pill_pad_y = 6.0 * zoom;
                     let pill_size_s = egui::vec2(text_size_s.x + 2.0 * pill_pad_x, text_size_s.y + 2.0 * pill_pad_y);
@@ -225,7 +228,7 @@ pub fn draw_doc(
                         for (id, rect) in layout.node_rects.iter() { doc.set_rect(id, *rect); }
                 } else {
                         // Compute pill size in world from cached label size, set desired rect, then clamp via layout
-                        let label = doc.scene.edges.get(&ent).map(|v| v.label.clone()).unwrap_or_default();
+                        let label = doc.graph.as_ref().map(|g| g.get_label_for(&ent)).or_else(|| doc.scene.edges.get(&ent).map(|v| v.label.clone())).unwrap_or_default();
                         let zoom = doc.transform.zoom;
                         let size_s = doc.cached_label_size_screen(&label, zoom, &painter);
                         let pad_s = egui::vec2(10.0 * zoom, 6.0 * zoom);
@@ -443,7 +446,7 @@ pub fn draw_doc(
                 let header_rect_world = layout.header_rect(id, &cfg).unwrap_or(rect_world);
                 let header_rect = egui::Rect::from_min_max(doc.transform.to_screen(header_rect_world.min), doc.transform.to_screen(header_rect_world.max));
                 // Header color: active -> yellow family; deactivated fades from yellow -> gray
-                let is_active = doc.active_nodes.contains(id);
+                let is_active = doc.graph.as_ref().map(|g| g.is_active(id)).unwrap_or(false);
                 let flash_t = doc.node_flash.get(id).copied().unwrap_or(0.0);
                 let fade_t = doc.node_fade.get(id).copied().unwrap_or(0.0);
                 let mut header_color = egui::Color32::from_rgb(38, 38, 46);
@@ -478,7 +481,7 @@ pub fn draw_doc(
                     &painter,
                     label_pos,
                     egui::Align2::LEFT_TOP,
-                    &sv.label,
+                    &doc.graph.as_ref().map(|g| g.get_label_for(id)).unwrap_or_else(|| sv.label.clone()),
                     &font_id,
                     text_col,
                 );
@@ -543,7 +546,7 @@ pub fn draw_doc(
                     let bch = a.b() as f32 * inv + b.b() as f32 * ta;
                     egui::Color32::from_rgb(cl(r), cl(g), cl(bch))
                 };
-                let is_active = doc.active_nodes.contains(id);
+                let is_active = doc.graph.as_ref().map(|g| g.is_active(id)).unwrap_or(false);
                 let flash_t = doc.node_flash.get(id).copied().unwrap_or(0.0);
                 let fade_t = doc.node_fade.get(id).copied().unwrap_or(0.0);
                 let fill_color = if is_active {
@@ -607,7 +610,7 @@ pub fn draw_doc(
                     &painter,
                     label_top,
                     egui::Align2::CENTER_TOP,
-                    &sv.label,
+                    &doc.graph.as_ref().map(|g| g.get_label_for(id)).unwrap_or_else(|| sv.label.clone()),
                     &font_id,
                     text_col,
                 );
@@ -629,7 +632,8 @@ pub fn draw_doc(
                 let dst_rect_s = egui::Rect::from_min_max(doc.transform.to_screen(dst_rect_w.min), doc.transform.to_screen(dst_rect_w.max));
 
             let pill_center_s = doc.transform.to_screen(doc.scene.node_rects.get(id).map(|r| r.center()).unwrap_or(ev.rect.center()));
-            let text_size_s = doc.cached_label_size_screen(&ev.label, zoom, &painter);
+            let label_dyn = doc.graph.as_ref().map(|g| g.get_label_for(id)).unwrap_or(ev.label.clone());
+            let text_size_s = doc.cached_label_size_screen(&label_dyn, zoom, &painter);
                 let pill_pad_x = 10.0 * zoom;
                 let pill_pad_y = 6.0 * zoom;
                 let pill_size_s = egui::vec2(text_size_s.x + 2.0 * pill_pad_x, text_size_s.y + 2.0 * pill_pad_y);
@@ -742,7 +746,7 @@ pub fn draw_doc(
                     &painter,
                     pill_rect_s.center(),
                     egui::Align2::CENTER_CENTER,
-                &ev.label,
+                &label_dyn,
                     &font_id,
                     pill_text_col,
                 );
@@ -1007,11 +1011,9 @@ fn is_direct_substate_of_parallel(doc: &GraphDoc, child_id: &EntityId) -> bool {
         .unwrap_or(false);
     if by_view { return true; }
     if let (Some(graph), Some(pid)) = (&doc.graph, parent_opt) {
-        if let Some(parent_node) = graph.nodes.get(&pid) {
-            let has_initial = parent_node.components.contains(bevy_gearbox_protocol::components::INITIAL_STATE);
-            let has_children = !parent_node.children.is_empty();
-            if has_children && !has_initial { return true; }
-        }
+        let has_initial = graph.has_component(&pid, bevy_gearbox_protocol::components::INITIAL_STATE);
+        let has_children = !graph.get_children(&pid).is_empty();
+        if has_children && !has_initial { return true; }
     }
     false
 }

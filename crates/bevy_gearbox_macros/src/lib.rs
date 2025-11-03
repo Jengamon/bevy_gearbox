@@ -25,12 +25,12 @@ use syn::Token;
 /// ```rust
 /// impl TransitionEvent for MySimpleEvent {
 ///     type ExitEvent = NoEvent;
-///     type EffectEvent = NoEvent;
+///     type EdgeEvent = NoEvent;
 ///     type EntryEvent = NoEvent;
 ///     
-///     fn to_exit_event(&self) -> Option<Self::ExitEvent> { None }
-///     fn to_effect_event(&self) -> Option<Self::EffectEvent> { None }
-///     fn to_entry_event(&self) -> Option<Self::EntryEvent> { None }
+///     fn to_exit_event(&self, _source: Entity, _machine: Entity) -> Option<Self::ExitEvent> { None }
+///     fn to_edge_event(&self, _edge: Entity, _source: Entity, _target: Entity, _machine: Entity) -> Option<Self::EdgeEvent> { None }
+///     fn to_entry_event(&self, _entering: Entity, _source: Entity, _edge: Entity, _machine: Entity) -> Option<Self::EntryEvent> { None }
 /// }
 /// ```
 #[proc_macro_derive(SimpleTransition)]
@@ -41,12 +41,13 @@ pub fn derive_simple_transition(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         impl bevy_gearbox::TransitionEvent for #name {
             type ExitEvent = bevy_gearbox::NoEvent;
-            type EffectEvent = bevy_gearbox::NoEvent;
+            type EdgeEvent = bevy_gearbox::NoEvent;
             type EntryEvent = bevy_gearbox::NoEvent;
+            type Validator = bevy_gearbox::AcceptAll;
             
-            fn to_exit_event(&self) -> Option<Self::ExitEvent> { None }
-            fn to_effect_event(&self) -> Option<Self::EffectEvent> { None }
-            fn to_entry_event(&self) -> Option<Self::EntryEvent> { None }
+            fn to_exit_event(&self, _source: bevy::prelude::Entity, _machine: bevy::prelude::Entity) -> Option<Self::ExitEvent> { None }
+            fn to_edge_event(&self, _edge: bevy::prelude::Entity, _source: bevy::prelude::Entity, _target: bevy::prelude::Entity, _machine: bevy::prelude::Entity) -> Option<Self::EdgeEvent> { None }
+            fn to_entry_event(&self, _entering: bevy::prelude::Entity, _source: bevy::prelude::Entity, _edge: bevy::prelude::Entity, _machine: bevy::prelude::Entity) -> Option<Self::EntryEvent> { None }
         }
 
         impl bevy_gearbox::registration::RegisteredTransitionEvent for #name {}
@@ -59,9 +60,37 @@ pub fn derive_simple_transition(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
+/// Attribute macro variant to auto-register a state component type `T`.
+///
+/// Usage:
+/// ```rust
+/// #[register_state_component]
+/// #[derive(Component, Reflect, FromReflect, Clone)]
+/// struct MyFlag;
+/// ```
+#[proc_macro_attribute]
+pub fn state_component(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut parsed: Item = syn::parse(item.clone()).expect("#[register_state_component] must be applied to a type item");
+
+    let name_ident = match &mut parsed {
+        Item::Struct(s) => { s.ident.clone() }
+        Item::Enum(e) => { e.ident.clone() }
+        _ => panic!("#[bevy_state_bridge] supports only structs or enums"),
+    };
+
+    let expanded = quote! {
+        #parsed
+
+        bevy_gearbox::inventory::submit! {
+            bevy_gearbox::registration::StateInstaller { install: bevy_gearbox::registration::register_state_component::<#name_ident> }
+        }
+    };
+    TokenStream::from(expanded)
+}
+
 /// Apply to the event type definition. It implements the marker and submits an installer.
 #[proc_macro_attribute]
-pub fn register_transition(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn transition_event(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let parsed: Item = syn::parse(item.clone()).expect("#[register_transition] must be applied to a type item");
     let name = match &parsed {
         Item::Struct(s) => &s.ident,
@@ -168,6 +197,28 @@ pub fn gearbox_param(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         #binding_installer
+    };
+    TokenStream::from(expanded)
+}
+
+/// Attribute macro variant to auto-register a Bevy `States` bridge and inject derives.
+/// Ensures `#[derive(States)]`, `#[derive(Component)]`, `#[derive(Default)]`, and `#[derive(Clone)]` exist.
+#[proc_macro_attribute]
+pub fn state_bridge(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut parsed: Item = syn::parse(item.clone()).expect("#[bevy_state_bridge] must be applied to a type item");
+
+    let name_ident = match &mut parsed {
+        Item::Struct(s) => { s.ident.clone() }
+        Item::Enum(e) => { e.ident.clone() }
+        _ => panic!("#[bevy_state_bridge] supports only structs or enums"),
+    };
+
+    let expanded = quote! {
+        #parsed
+
+        bevy_gearbox::inventory::submit! {
+            bevy_gearbox::registration::StateBridgeInstaller { install: bevy_gearbox::registration::register_state_bridge::<#name_ident> }
+        }
     };
     TokenStream::from(expanded)
 }

@@ -1,5 +1,4 @@
 #![cfg(feature = "server")]
-#![allow(unused)]
 use bevy::prelude::*;
 
 use bevy::remote::{BrpError, BrpResult, RemoteMethodSystemId, RemoteMethods, error_codes};
@@ -39,8 +38,7 @@ impl Plugin for ServerPlugin {
         // Trackers and observers for +watch ring buffers
         app.init_resource::<MachineTrackers>()
             .add_observer(on_transition_edge)
-            .add_observer(send_active_states_on_subscribe)
-            .add_systems(Update, (on_name_changed, on_state_machine_changed));
+            ;
 
         // Register RPCs (+watch and convenience endpoints). Start minimal; extend as needed.
         register_editor_subscription_rpcs(app);
@@ -86,22 +84,31 @@ fn atomic_write(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     }
 }
 
-fn collect_state_machine_entities(world: &World, root: Entity) -> Vec<Entity> {
-    let mut entities: Vec<Entity> = Vec::new();
-    let mut stack: Vec<Entity> = vec![root];
-    while let Some(e) = stack.pop() {
-        if !world.entities().contains(e) { continue; }
-        if !entities.contains(&e) { entities.push(e); }
+fn collect_state_machine_entities(world: &mut World, root: Entity) -> Vec<Entity> {
+    use std::collections::HashSet;
+    // Visit all descendants via RelationshipTarget helpers and include transition edge entities
+    let mut out: Vec<Entity> = Vec::new();
+    if !world.entities().contains(root) { return out; }
+    let mut seen: HashSet<Entity> = HashSet::new();
+    let mut q_children_state = world.query::<&gearbox::Substates>();
+    let mut q_children = q_children_state.query(world);
+    // Always include the root
+    seen.insert(root);
+    out.push(root);
+    // Descendants
+    for e in q_children.iter_descendants(root) {
+        if seen.insert(e) { out.push(e); }
+    }
+    // Include transition edges referenced by any visited node
+    let snapshot = out.clone();
+    for e in snapshot.into_iter() {
         if let Some(transitions) = world.get::<gearbox::transitions::Transitions>(e) {
             for &edge in transitions.into_iter() {
-                if world.entities().contains(edge) && !entities.contains(&edge) { entities.push(edge); }
+                if world.entities().contains(edge) && seen.insert(edge) { out.push(edge); }
             }
         }
-        if let Some(children) = world.get::<gearbox::Substates>(e) {
-            for &child in children.into_iter() { stack.push(child); }
-        }
     }
-    entities
+    out
 }
 
 fn build_scene_from_root(world: &mut World, root: Entity) -> bevy::scene::DynamicScene {
@@ -109,10 +116,25 @@ fn build_scene_from_root(world: &mut World, root: Entity) -> bevy::scene::Dynami
     let entities = collect_state_machine_entities(world, root);
     let mut builder = DynamicSceneBuilder::from_world(world)
         .allow_all()
-        .deny_component::<bevy::camera::visibility::VisibilityClass>()
         .extract_entities(entities.into_iter())
         .build();
     builder
+}
+
+// Remove ephemeral data from components inside a DynamicScene prior to serialization
+fn scrub_state_machine_ephemeral(scene: &mut bevy::scene::DynamicScene) {
+    for ent in scene.entities.iter_mut() {
+        for comp in ent.components.iter_mut() {
+            if comp.represents::<gearbox::StateMachine>() {
+                if let Some(refl) = comp.try_as_reflect_mut() {
+                    if let Some(sm) = refl.downcast_mut::<gearbox::StateMachine>() {
+                        sm.active.clear();
+                        sm.active_leaves.clear();
+                    }
+                }
+            }
+        }
+    }
 }
 
 // =========================
@@ -163,6 +185,8 @@ fn save_as_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResul
         return Err(BrpError { code: error_codes::INVALID_PARAMS, message: format!("unserializable components present: {}", bad.join(", ")), data: None });
     }
     let mut scene = build_scene_from_root(world, p.entity);
+    // Clear ephemeral StateMachine fields prior to serialization
+    scrub_state_machine_ephemeral(&mut scene);
     println!("[protocol] save_as: scene built");
     // Remove SubstateOf on the selected root so it becomes a top-level root when loading
     if let Some(ent) = scene.entities.iter_mut().find(|e| e.entity == p.entity) {
@@ -187,14 +211,13 @@ struct SaveSubstatesParams { entity: Entity }
 fn iter_descendants_with_id(world: &mut World, root: Entity) -> Vec<(Entity, String)> {
     let mut out: Vec<(Entity, String)> = Vec::new();
     if !world.entities().contains(root) { return out; }
-    let mut q_children = world.query::<&gearbox::Substates>();
-    let mut stack: Vec<Entity> = vec![root];
-    while let Some(cur) = stack.pop() {
-        if let Some(id) = world.get::<gearbox::StateMachineId>(cur) { if !id.0.is_empty() { out.push((cur, id.0.clone())); } }
-        if let Ok(children) = q_children.get(world, cur) { for &c in children.into_iter() { stack.push(c); } }
+    let mut q_children_state = world.query::<&gearbox::Substates>();
+    let q_children = q_children_state.query(world);
+    for cur in q_children.iter_descendants(root) {
+        if let Some(id) = world.get::<gearbox::StateMachineId>(cur) {
+            if !id.0.is_empty() { out.push((cur, id.0.clone())); }
+        }
     }
-    // Exclude the root if it had an id; Substates save concerns descendants only
-    out.retain(|(e, _)| *e != root);
     out
 }
 
@@ -218,6 +241,8 @@ fn save_substates_handler(In(params): In<Option<Value>>, world: &mut World) -> B
             continue;
         }
         let mut scene = build_scene_from_root(world, ent);
+        // Clear ephemeral StateMachine fields prior to serialization
+        scrub_state_machine_ephemeral(&mut scene);
         // Remove SubstateOf on the saved sub-machine root
         if let Some(e) = scene.entities.iter_mut().find(|e| e.entity == ent) { e.components.retain(|c| !c.represents::<gearbox::SubstateOf>()); }
         match serialize_scene(world, &scene) {
@@ -245,7 +270,9 @@ fn save_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpRe
     let mut path = std::path::PathBuf::from(p.path);
     if !path.is_absolute() { path = std::path::PathBuf::from("assets").join(path); }
     if path.extension().and_then(|s| s.to_str()) != Some("ron") { path.set_extension("scn.ron"); }
-    let scene = build_scene_from_root(world, p.entity);
+    let mut scene = build_scene_from_root(world, p.entity);
+    // Clear ephemeral StateMachine fields prior to serialization
+    scrub_state_machine_ephemeral(&mut scene);
     println!("[protocol] save_graph: scene built");
     let ron = serialize_scene(world, &scene).map_err(|msg| BrpError { code: error_codes::INTERNAL_ERROR, message: msg, data: None })?;
     println!("[protocol] save_graph: serialized RON ({} bytes)", ron.len());
@@ -366,11 +393,7 @@ fn register_editor_file_rpcs(app: &mut App) {
 struct MachineWatchParams {
     entity: Entity,
     #[serde(default)]
-    last_active_seq: u64,
-    #[serde(default)]
     last_transition_seq: u64,
-    #[serde(default)]
-    last_name_seq: u64,
 }
 
 fn entity_to_bits(e: Entity) -> u64 { e.to_bits() }
@@ -413,7 +436,7 @@ fn machine_watch_handler(In(_params): In<Option<Value>>, _world: &World) -> BrpR
         }
     }
 
-    // If we have trackers, flush events newer than cursors
+    // If we have trackers, flush events newer than cursors (transition only)
     if let Some(trackers) = _world.get_resource::<MachineTrackers>() {
         if let Some(tracker) = trackers.trackers.get(&p.entity) {
             let mut out: Vec<Value> = Vec::new();
@@ -421,41 +444,21 @@ fn machine_watch_handler(In(_params): In<Option<Value>>, _world: &World) -> BrpR
                 let kind = ev.get("kind").and_then(|v| v.as_str()).unwrap_or("");
                 let seq = ev.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
                 match kind {
-                    "active_changed" if seq > p.last_active_seq => out.push(ev.clone()),
                     "transition_edge" if seq > p.last_transition_seq => out.push(ev.clone()),
-                    "name_changed" if seq > p.last_name_seq => out.push(ev.clone()),
                     _ => {}
                 }
             }
-            // Guarantee baseline: if client hasn't seen any active yet and flush has none, append snapshot
-            let has_active = out.iter().any(|e| e.get("kind").and_then(|v| v.as_str()) == Some("active_changed"));
-            if p.last_active_seq == 0 && !has_active {
-                if let Some(sm) = _world.get::<gearbox::StateMachine>(p.entity) {
-                    let active: Vec<u64> = sm.active.iter().copied().map(entity_to_bits).collect();
-                    let ev = serde_json::json!({
-                        "kind": "active_changed",
-                        "seq": p.last_active_seq.saturating_add(1),
-                        "active": active,
-                    });
-                    out.push(ev);
-                }
-            }
+            if out.is_empty() { return Ok(None); }
+            println!(
+                "[protocol] machine_watch: emit {} events for entity {}",
+                out.len(),
+                entity_to_bits(p.entity)
+            );
             return Ok(Some(serde_json::json!({"events": out})));
         }
     }
 
-    // Seed with a minimal snapshot event for active states
-    if let Some(sm) = _world.get::<gearbox::StateMachine>(p.entity) {
-        let active: Vec<u64> = sm.active.iter().copied().map(entity_to_bits).collect();
-        let ev = serde_json::json!({
-            "kind": "active_changed",
-            "seq": p.last_active_seq.saturating_add(1),
-            "active": active,
-        });
-        return Ok(Some(serde_json::json!({"events": [ev]})));
-    }
-
-    Ok(Some(serde_json::json!({"events": []})))
+    Ok(None)
 }
 
 fn register_editor_watch_rpcs(app: &mut App) {
@@ -466,26 +469,6 @@ fn register_editor_watch_rpcs(app: &mut App) {
     let mut methods = world.resource_mut::<RemoteMethods>();
     methods.insert("editor.discovery+watch", RemoteMethodSystemId::Watching(discovery_watch));
     methods.insert("editor.machine+watch", RemoteMethodSystemId::Watching(machine_watch));
-}
-
-// =========================
-// Reconciliation on StateMachine changes
-// =========================
-fn on_state_machine_changed(
-    q_changed: Query<(Entity, &gearbox::StateMachine), Changed<gearbox::StateMachine>>,
-    mut trackers: ResMut<MachineTrackers>,
-) {
-    for (entity, sm) in q_changed.iter() {
-        let tr = trackers.trackers.entry(entity).or_default();
-        tr.active_seq = tr.active_seq.saturating_add(1);
-        let active: Vec<u64> = sm.active.iter().copied().map(entity_to_bits).collect();
-        let ev = serde_json::json!({
-            "kind": "active_changed",
-            "seq": tr.active_seq,
-            "active": active,
-        });
-        push_event(tr, ev);
-    }
 }
 
 // =========================
@@ -529,6 +512,7 @@ fn subscribe_machine_handler(In(params): In<Option<Value>>, world: &mut World) -
     let mut counts = world.resource_mut::<Subscriptions>();
     let c = counts.counts.entry(p.entity).or_insert(0);
     *c = c.saturating_add(1);
+    println!("[protocol] subscribe machine: entity={} count={}", entity_to_bits(p.entity), *c);
     
     // Trigger MachineSubscribed event
     world.commands().trigger(crate::events::MachineSubscribed { target: p.entity });
@@ -544,7 +528,9 @@ fn unsubscribe_machine_handler(In(params): In<Option<Value>>, world: &mut World)
     let mut counts = world.resource_mut::<Subscriptions>();
     if let Some(c) = counts.counts.get_mut(&p.entity) {
         *c = c.saturating_sub(1);
+        let remaining = *c;
         if *c == 0 { counts.counts.remove(&p.entity); }
+        println!("[protocol] unsubscribe machine: entity={} remaining={}", entity_to_bits(p.entity), remaining);
     }
     Ok(serde_json::json!({"ok": true}))
 }
@@ -819,9 +805,7 @@ fn register_editor_machine_graph_rpc(app: &mut App) {
 
 #[derive(Default)]
 struct MachineTracker {
-    active_seq: u64,
     transition_seq: u64,
-    name_seq: u64,
     events: VecDeque<Value>,
 }
 
@@ -830,11 +814,6 @@ fn push_event(tracker: &mut MachineTracker, ev: Value) {
     tracker.events.push_back(ev);
 }
 
-fn find_machine_root(e: Entity, q_sub: &Query<&gearbox::SubstateOf>, q_sm: &Query<&gearbox::StateMachine>) -> Option<Entity> {
-    if q_sm.get(e).is_ok() { return Some(e); }
-    for anc in q_sub.iter_ancestors(e) { if q_sm.get(anc).is_ok() { return Some(anc); } }
-    None
-}
 
 fn on_transition_edge(
     transition: On<gearbox::TransitionActions>,
@@ -851,51 +830,6 @@ fn on_transition_edge(
         "kind": "transition_edge",
         "seq": tr.transition_seq,
         "edge": entity_to_bits(edge),
-    });
-    push_event(tr, ev);
-}
-
-// Track Name changes across the machine subtree and emit name_changed events
-fn on_name_changed(
-    q_changed: Query<(Entity, &Name), Changed<Name>>,
-    q_sub: Query<&gearbox::SubstateOf>,
-    q_sm: Query<&gearbox::StateMachine>,
-    q_source: Query<&gearbox::transitions::Source>,
-    mut trackers: ResMut<MachineTrackers>,
-) {
-    for (entity, name) in q_changed.iter() {
-        let state_entity = q_source.get(entity).map(|s| s.0).unwrap_or(entity);
-        if let Some(root) = find_machine_root(state_entity, &q_sub, &q_sm) {
-            let tr = trackers.trackers.entry(root).or_default();
-            tr.name_seq = tr.name_seq.saturating_add(1);
-            let ev = serde_json::json!({
-                "kind": "name_changed",
-                "seq": tr.name_seq,
-                "entity": entity_to_bits(entity),
-                "name": name.as_str(),
-            });
-            push_event(tr, ev);
-        }
-    }
-}
-
-// Send active states snapshot when a client subscribes to a machine.
-// This seeds the subscriber regardless of tracker state or load order.
-fn send_active_states_on_subscribe(
-    sub: On<crate::events::MachineSubscribed>,
-    q_sm: Query<&gearbox::StateMachine>,
-    mut trackers: ResMut<MachineTrackers>,
-) {
-    let entity = sub.target;
-    let Ok(sm) = q_sm.get(entity) else { return; };
-    
-    let tr = trackers.trackers.entry(entity).or_default();
-    tr.active_seq = tr.active_seq.saturating_add(1);
-    let active: Vec<u64> = sm.active.iter().copied().map(entity_to_bits).collect();
-    let ev = serde_json::json!({
-        "kind": "active_changed",
-        "seq": tr.active_seq,
-        "active": active,
     });
     push_event(tr, ev);
 }

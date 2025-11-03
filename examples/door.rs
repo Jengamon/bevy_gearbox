@@ -1,7 +1,7 @@
 // Ported from bevy_gearbox_editor/examples/door.rs
 // Uses protocol server to enable optional remote editor connection
 use bevy::prelude::*;
-use bevy_gearbox::{RegistrationAppExt, prelude::*};
+use bevy_gearbox::prelude::*;
 use bevy_gearbox::transitions::{Source, After, DeferEvent};
 use bevy_gearbox::GearboxPlugin;
 use std::time::Duration;
@@ -17,10 +17,6 @@ fn main() {
         .add_observer(print_enter_state_messages)
         .add_observer(print_exit_state_messages)
         .add_observer(replay_deferred_event::<RequestClose>)
-        .register_state_component::<DoorClosed>()
-        .register_state_component::<DoorOpening>()
-        .register_state_component::<DoorOpen>()
-        .register_state_component::<DoorClosing>()
         .run();
 }
 
@@ -34,18 +30,22 @@ struct DoorMachine;
 
 /// Marker component for when the door is closed
 #[derive(Component, Reflect, Clone)]
+#[state_component]
 struct DoorClosed;
 
 /// Marker component for when the door is opening
 #[derive(Component, Reflect, Clone)]
+#[state_component]
 struct DoorOpening;
 
 /// Marker component for when the door is open
 #[derive(Component, Reflect, Clone)]
+#[state_component]
 struct DoorOpen;
 
 /// Marker component for when the door is closing
 #[derive(Component, Reflect, Clone)]
+#[state_component]
 struct DoorClosing;
 
 // --- Events ---

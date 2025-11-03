@@ -49,7 +49,7 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                             crate::editor::context_menu::MenuSelection::RenameEntity { target } => {
                                 // Seed inline edit with current display name or current label
                                 let mut default_text = String::new();
-                                if let Some(g) = &entry.graph { if let Some(n) = g.nodes.get(&target) { if let Some(name) = &n.display_name { default_text = name.clone(); } } }
+                                if let Some(g) = &entry.graph { default_text = g.get_display_name(&target); }
                                 if default_text.is_empty() {
                                     if let Some(v) = entry.scene.states.get(&target) { default_text = v.label.clone(); }
                                     else if let Some(v) = entry.scene.edges.get(&target) { default_text = v.label.clone(); }

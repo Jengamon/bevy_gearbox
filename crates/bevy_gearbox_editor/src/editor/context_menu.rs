@@ -40,22 +40,15 @@ pub enum MenuSelection {
 pub fn build_context_menu(graph: &StateMachineGraph, id: EntityId) -> Vec<MenuItem> {
     let mut items: Vec<MenuItem> = Vec::new();
 
-    let Some(node) = graph.nodes.get(&id) else { return items; };
-
-    let has_children = !node.children.is_empty();
-    let has_initial_state = node.components.contains(c::INITIAL_STATE);
+    if !graph.nodes.contains_key(&id) { return items; }
+    let has_children = !graph.get_children(&id).is_empty();
+    let has_initial_state = graph.has_component(&id, c::INITIAL_STATE);
     let is_parallel = has_children && !has_initial_state;
     // Root node detection: server does not include an explicit bevy_gearbox::StateMachine marker
     // in the graph snapshot, so treat the graph root as the state machine owner.
-    let has_state_children_capability = node.components.contains(c::STATE_CHILDREN);
+    let has_state_children_capability = graph.has_component(&id, c::STATE_CHILDREN);
 
-    let parent_and_lacks_initial = node.parent.and_then(|pid| {
-        graph
-            .nodes
-            .get(&pid)
-            .map(|p| (!p.components.contains(c::INITIAL_STATE)).then_some(pid))
-            .flatten()
-    });
+    let parent_and_lacks_initial = graph.get_parent(&id).and_then(|pid| (!graph.has_component(&pid, c::INITIAL_STATE)).then_some(pid));
 
     // Make Leaf (only when there are children)
     if has_children {
@@ -77,13 +70,12 @@ pub fn build_context_menu(graph: &StateMachineGraph, id: EntityId) -> Vec<MenuIt
 
     // Save Substates: available if any descendant has a StateMachineId
     let mut has_descendant_with_id = false;
-    if !node.children.is_empty() {
-        let mut stack: Vec<EntityId> = node.children.clone();
+    if has_children {
+        let mut stack: Vec<EntityId> = graph.get_children(&id);
         while let Some(cid) = stack.pop() {
-            if let Some(n) = graph.nodes.get(&cid) {
-                if n.components.contains(c::STATE_MACHINE_ID) { has_descendant_with_id = true; break; }
-                if !n.children.is_empty() { stack.extend_from_slice(&n.children); }
-            }
+            if graph.entity_data.get(&cid).map(|b| b.contains(c::STATE_MACHINE_ID)).unwrap_or(false) { has_descendant_with_id = true; break; }
+            let kids = graph.get_children(&cid);
+            if !kids.is_empty() { stack.extend(kids.into_iter()); }
         }
     }
     if has_descendant_with_id {

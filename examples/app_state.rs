@@ -4,9 +4,11 @@ use bevy::prelude::*;
 use bevy_gearbox::StateMachineId;
 use bevy_gearbox::prelude::*;
 use bevy_gearbox::GearboxPlugin;
+use bevy_gearbox::state_bridge;
 use bevy_gearbox_editor::ServerPlugin;
 
 #[derive(States, Component, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
+#[state_bridge]
 enum ExampleState {
     #[default]
     Menu,
@@ -25,7 +27,7 @@ enum AppSignal {
 
 #[derive(EntityEvent, Clone, Reflect)]
 #[reflect(Default)]
-#[bevy_gearbox::register_transition]
+#[transition_event]
 struct AppEvent {
     #[event_target]
     pub target: Entity,
@@ -46,13 +48,13 @@ impl bevy_gearbox::transitions::EventValidator<AppEvent> for AppEventValidator {
 
 impl bevy_gearbox::TransitionEvent for AppEvent {
     type ExitEvent = bevy_gearbox::NoEvent;
-    type EffectEvent = bevy_gearbox::NoEvent;
+    type EdgeEvent = bevy_gearbox::NoEvent;
     type EntryEvent = bevy_gearbox::NoEvent;
     type Validator = AppEventValidator;
 
-    fn to_exit_event(&self) -> Option<Self::ExitEvent> { None }
-    fn to_effect_event(&self) -> Option<Self::EffectEvent> { None }
-    fn to_entry_event(&self) -> Option<Self::EntryEvent> { None }
+    fn to_exit_event(&self, _source: Entity, _machine: Entity) -> Option<Self::ExitEvent> { None }
+    fn to_edge_event(&self, _edge: Entity, _source: Entity, _target: Entity, _machine: Entity) -> Option<Self::EdgeEvent> { None }
+    fn to_entry_event(&self, _entering: Entity, _source: Entity, _edge: Entity, _machine: Entity) -> Option<Self::EntryEvent> { None }
 }
 
 #[derive(Component)]
@@ -64,7 +66,6 @@ fn main() {
         .add_plugins(GearboxPlugin)
         .add_plugins(ServerPlugin::default())
         .init_state::<ExampleState>()
-        .add_state_bridge::<ExampleState>()
         .add_systems(Startup, setup_machine)
         .add_systems(OnEnter(ExampleState::Menu), || println!("ExampleState::Menu"))
         .add_systems(OnEnter(ExampleState::Playing), || println!("ExampleState::Playing"))
