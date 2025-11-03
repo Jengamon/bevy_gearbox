@@ -325,20 +325,24 @@ fn sync_snapshots_to_workspace(
 ) {
     let mut consume_sidecar_for: Vec<EntityId> = Vec::new();
     // Apply machine event batches (canonicalize ids before applying)
+    // Flash edges in any open doc that contains the edge (root or substates)
     let pending_events = std::mem::take(&mut ui.pending_machine_events);
-    for (id, events) in pending_events.into_iter() {
-        let doc = docs.map.entry(id).or_default();
+    let mut edges_to_flash: Vec<EntityId> = Vec::new();
+    for (_id, events) in pending_events.into_iter() {
         for ev in events.into_iter() {
             let kind = ev.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            match kind {
-                "transition_edge" => {
-                    if let Some(edge) = ev.get("edge").and_then(|v| v.as_u64()) {
-                        let edge = crate::util::canonicalize_entity_u64(edge);
-                        let eid = EntityId(edge);
-                        doc.flash_edge(eid);
-                    }
+            if kind == "transition_edge" {
+                if let Some(edge) = ev.get("edge").and_then(|v| v.as_u64()) {
+                    let edge = crate::util::canonicalize_entity_u64(edge);
+                    edges_to_flash.push(EntityId(edge));
                 }
-                _ => {}
+            }
+        }
+    }
+    if !edges_to_flash.is_empty() {
+        for (_doc_id, doc) in docs.map.iter_mut() {
+            for eid in edges_to_flash.iter().copied() {
+                if doc.scene.edges.contains_key(&eid) { doc.flash_edge(eid); }
             }
         }
     }

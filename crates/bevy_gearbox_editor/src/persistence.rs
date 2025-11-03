@@ -193,7 +193,6 @@ pub fn apply_sidecar_to_doc(doc: &mut GraphDoc, sidecar: &Sidecar) {
             }
         }
     }
-    if let Some(vp) = &sidecar.viewport { doc.transform.pan = egui::vec2(vp.pan.0, vp.pan.1); doc.transform.zoom = vp.zoom; }
 }
 
 /// Apply a sidecar whose keys were generated relative to a subtree rooted at `root`.
