@@ -4,6 +4,7 @@ use super::model::store::EditorStore;
 use super::model::types::{ConnectionState, IndexFilter};
 use bevy_gearbox_protocol::client::{ClientCommand, NetCommand};
 use crate::editor::workspace::Workspace;
+use crate::editor::docs::Docs;
 use rfd::FileDialog;
 
 #[derive(Debug, Clone)]
@@ -90,40 +91,22 @@ pub fn on_refresh_index_requested(evt: On<RefreshIndexRequested>, mut store: Res
 
 pub fn on_open_requested(
     evt: On<OpenRequested>,
-    mut store: ResMut<EditorStore>,
-    mut workspace: ResMut<Workspace>,
-    mut commands: Commands,
+    _store: ResMut<EditorStore>,
+    workspace: ResMut<Workspace>,
+    mut docs: ResMut<Docs>,
+    _commands: Commands,
     mut proto_net: MessageWriter<NetCommand>,
     mut proto_cmd: MessageWriter<ClientCommand>,
 ) {
-    // Ensure a doc entry exists immediately for drawing feedback
-    let _ = workspace.docs.entry(evt.entity).or_default();
-    // Promote to active first, then enqueue fetch
-    let prev = store.active_doc;
-    store.active_doc = Some(evt.entity);
-    // Start per-machine +watch stream
+    // Ensure a doc entry exists immediately for drawing feedback; keep previously open docs (multi-open)
+    let doc = docs.map.entry(evt.entity).or_default();
+    // Seed the new document's transform from the global board transform so zoom/pan are consistent
+    // This is a shallow copy of the current board transform; subsequent board ops will update all docs
+    // via the shell/view board handlers.
+    doc.transform.pan = workspace.board_transform.pan;
+    doc.transform.zoom = workspace.board_transform.zoom;
+    // Start per-machine watch stream (do not stop others)
     proto_net.write(NetCommand::StartMachine { id: evt.entity.0 });
-    // Decoupled unsubscribe and single-doc retention after fetch is enqueued
-    if let Some(p) = prev {
-        if p != evt.entity {
-            // Proactively stop component watches for the previous document (StateMachine + Name watchers)
-            // Stop root StateMachine components watch regardless of whether a graph was loaded
-            proto_net.write(NetCommand::StopComponents { id: p.0 });
-            if let Some(prev_doc) = workspace.docs.get(&p) {
-                if let Some(g) = &prev_doc.graph {
-                    for nid in g.nodes.keys() {
-                        proto_net.write(NetCommand::StopComponents { id: nid.0 });
-                    }
-                    for eid in g.edges.keys() {
-                        proto_net.write(NetCommand::StopComponents { id: eid.0 });
-                    }
-                }
-            }
-            commands.trigger(super::actions::UnsubscribeRequested { entity: p });
-            workspace.selection = None;
-            workspace.docs.retain(|k, _| *k == evt.entity);
-        }
-    }
     // Request a fresh graph snapshot via protocol (handled asynchronously)
     proto_cmd.write(ClientCommand::FetchGraph { id: evt.entity.0 });
 }
@@ -139,11 +122,37 @@ pub fn on_unsubscribe_requested(evt: On<UnsubscribeRequested>, mut proto_net: Me
 }
 
 #[derive(Debug, Clone, Event)]
+pub struct CloseRequested { pub entity: EntityId }
+
+pub fn on_close_requested(
+    evt: On<CloseRequested>,
+    mut workspace: ResMut<Workspace>,
+    mut docs: ResMut<Docs>,
+    mut proto_net: MessageWriter<NetCommand>,
+) {
+    // Stop server-side feeds for this machine and any node/edge component watches if known
+    if let Some(doc) = docs.map.get(&evt.entity) {
+        if let Some(g) = &doc.graph {
+            for nid in g.nodes.keys() { proto_net.write(NetCommand::StopComponents { id: nid.0 }); }
+            for eid in g.edges.keys() { proto_net.write(NetCommand::StopComponents { id: eid.0 }); }
+        }
+    }
+    proto_net.write(NetCommand::StopComponents { id: evt.entity.0 });
+    proto_net.write(NetCommand::StopMachine { id: evt.entity.0 });
+    // Drop editor-side state after stopping watches
+    let _ = docs.map.remove(&evt.entity);
+    if let Some((d, _)) = workspace.global_selection {
+        if d == evt.entity { workspace.global_selection = None; }
+    }
+}
+
+#[derive(Debug, Clone, Event)]
 pub struct SaveAsRequested { pub doc: EntityId, pub target: EntityId }
 
 pub fn on_save_as_requested(
     save_as_requested: On<SaveAsRequested>,
-    workspace: Res<Workspace>,
+    _workspace: Res<Workspace>,
+    docs: Res<Docs>,
     client: Res<bevy_gearbox_protocol::client::Client>,
     rt: Res<bevy_gearbox_protocol::client::TokioRuntime>,
 ) {
@@ -164,8 +173,8 @@ pub fn on_save_as_requested(
         let sm_path = format!("{}.sm.ron", id_text);
 
         // Extract and serialize current sidecar snapshot once (to upload only on success)
-        let sidecar_text: Option<String> = workspace
-            .docs
+        let sidecar_text: Option<String> = docs
+            .map
             .get(&save_as_requested.doc)
             .map(|doc| {
                 let root = save_as_requested.target;

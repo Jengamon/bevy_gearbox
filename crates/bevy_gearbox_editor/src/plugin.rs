@@ -6,6 +6,7 @@ use bevy_gearbox_protocol::client::{ClientPlugin, NetMessage, ClientMessage, Net
 use crate::types::EntityId;
 use crate::model::{StateMachineGraph, ComponentEntry};
 use crate::editor::workspace::Workspace;
+use crate::editor::docs::Docs;
 use crate::editor::model::store::EditorStore;
 use crate::editor::actions::{
     on_connect_requested, on_disconnect_requested, on_reconnect_requested, on_refresh_index_requested, on_open_requested,
@@ -34,6 +35,7 @@ impl Plugin for EditorPlugin {
                 last_transition_seq: HashMap::new(),
             })
             .init_resource::<Workspace>()
+            .init_resource::<Docs>()
             .insert_resource(EditorStore::default())
             .add_systems(Startup, setup_camera)
             .add_systems(Update, (poll_network, sync_snapshots_to_workspace))
@@ -43,6 +45,7 @@ impl Plugin for EditorPlugin {
             .add_observer(on_reconnect_requested)
             .add_observer(on_refresh_index_requested)
             .add_observer(on_open_requested)
+            .add_observer(crate::editor::actions::on_close_requested)
             .add_observer(crate::editor::actions::on_unsubscribe_requested)
             .add_observer(crate::editor::actions::on_save_as_requested)
             .add_observer(crate::editor::actions::on_save_substates_requested)
@@ -80,6 +83,7 @@ fn poll_network(
     mut client_cmd: MessageWriter<ClientCommand>,
     mut store: ResMut<EditorStore>,
     mut workspace: ResMut<Workspace>,
+    mut docs: ResMut<Docs>,
 ) {
     let mut processed = 0usize;
     const MAX_PER_FRAME: usize = 64;
@@ -229,7 +233,7 @@ fn poll_network(
                     }
                     // Ensure a doc exists for this machine root; create minimal graph if missing
                     let root_id = EntityId(id);
-                    let entry = workspace.docs.entry(root_id).or_default();
+                    let entry = docs.map.entry(root_id).or_default();
                     if entry.graph.is_none() {
                         let node = crate::model::StateNode::new(root_id);
                         entry.graph = Some(crate::model::StateMachineGraph::new(node));
@@ -238,7 +242,7 @@ fn poll_network(
                     // If StateMachine was removed, treat as empty set (unlikely for a machine root)
                     pending_sm_active = Some((Vec::new(), Vec::new()));
                 }
-                for (_doc_id, doc) in workspace.docs.iter_mut() {
+                for (_doc_id, doc) in docs.map.iter_mut() {
                     // Update central per-entity component store on the graph if present
                     if let Some(g) = doc.graph.as_mut() {
                         let bag = g.entity_data.entry(target).or_default();
@@ -263,7 +267,7 @@ fn poll_network(
                 if let Some((act, _leaves)) = pending_sm_active {
                     let new: std::collections::HashSet<EntityId> = act.into_iter().collect();
                     let doc_id = EntityId(id);
-                    if let Some(doc) = workspace.docs.get_mut(&doc_id) {
+                    if let Some(doc) = docs.map.get_mut(&doc_id) {
                         let prev: std::collections::HashSet<EntityId> = doc.graph.as_ref().map(|g| g.active_nodes.clone()).unwrap_or_default();
                         let mut added: Vec<EntityId> = Vec::new();
                         let mut removed: Vec<EntityId> = Vec::new();
@@ -278,7 +282,7 @@ fn poll_network(
                 {
                     let smid_key = bevy_gearbox_protocol::components::STATE_MACHINE_ID;
                     if components.contains_key(smid_key) {
-                        let present_in_any_doc = workspace.docs.values().any(|doc| {
+                        let present_in_any_doc = docs.map.values().any(|doc| {
                             if let Some(g) = doc.graph.as_ref() { g.nodes.contains_key(&target) } else { false }
                         });
                         if present_in_any_doc {
@@ -304,16 +308,18 @@ fn ui_system(
     mut store: ResMut<EditorStore>,
     mut commands: Commands,
     mut workspace: ResMut<Workspace>,
+    mut docs: ResMut<Docs>,
 ) {
     if let Ok(ctx) = egui_ctx.ctx_mut() {
         egui::CentralPanel::default().show(ctx, |ui_egui| {
-            crate::editor::shell::layout::draw(ui_egui, &mut store, &mut commands, &mut workspace);
+            crate::editor::shell::layout::draw(ui_egui, &mut store, &mut commands, &mut workspace, &mut docs);
         });
     }
 }
 
 fn sync_snapshots_to_workspace(
-    mut workspace: ResMut<Workspace>,
+    _workspace: ResMut<Workspace>,
+    mut docs: ResMut<Docs>,
     mut ui: ResMut<UiState>,
     mut net_cmd: MessageWriter<NetCommand>,
 ) {
@@ -321,7 +327,7 @@ fn sync_snapshots_to_workspace(
     // Apply machine event batches (canonicalize ids before applying)
     let pending_events = std::mem::take(&mut ui.pending_machine_events);
     for (id, events) in pending_events.into_iter() {
-        let doc = workspace.docs.entry(id).or_default();
+        let doc = docs.map.entry(id).or_default();
         for ev in events.into_iter() {
             let kind = ev.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             match kind {
@@ -339,9 +345,9 @@ fn sync_snapshots_to_workspace(
     // Drain snapshot inbox: apply once, then clear from UiState
     let mut to_remove: Vec<EntityId> = Vec::new();
     for (id, graph) in ui.graphs.iter() {
-        // Capture metrics before taking a mutable borrow of workspace.docs entry
-        let was_empty = workspace.docs.get(id).and_then(|d| d.graph.as_ref()).is_none();
-        let entry = workspace.docs.entry(*id).or_default();
+        // Capture metrics before taking a mutable borrow of docs entry
+        let was_empty = docs.map.get(id).and_then(|d| d.graph.as_ref()).is_none();
+        let entry = docs.map.entry(*id).or_default();
         let prev_active = entry.graph.as_ref().map(|g| g.active_nodes.clone());
         project_graph_into_doc(entry, graph.clone());
         // After projecting the graph, start a Name component watch on all nodes and edges
@@ -403,7 +409,7 @@ fn sync_snapshots_to_workspace(
     // Only apply if the doc already has a graph to target
     let extra_sidecars: Vec<(EntityId, String)> = ui.sidecar_texts.iter().map(|(k, v)| (*k, v.clone())).collect();
     for (target_entity, text) in extra_sidecars.iter() {
-        for (doc_id, doc) in workspace.docs.iter_mut() {
+        for (doc_id, doc) in docs.map.iter_mut() {
             if doc.graph.is_none() { continue; }
             let graph = doc.graph.as_ref().unwrap();
             // If this sidecar targets the doc root, apply whole-doc overlay; otherwise, apply to subtree if present

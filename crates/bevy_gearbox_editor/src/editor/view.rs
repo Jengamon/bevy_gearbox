@@ -2,9 +2,10 @@ use super::view_model::{GraphDoc, StateKind};
 use super::layout::{NodeLayout, LayoutConfig};
 use super::context_menu::{build_context_menu, MenuItemKind, MenuSelection};
 use crate::editor::workspace::{ RenameInline, Workspace, EdgeBuildState, EdgeMenuState};
+use crate::editor::docs::Docs;
 use crate::types::EntityId;
 use bevy_egui::egui;
-use bevy_gearbox_protocol::components as c;
+
 
 /// Minimal read-only view with pan/zoom and basic nodes/edges rendering.
 pub fn draw_doc(
@@ -13,13 +14,30 @@ pub fn draw_doc(
     selection: &mut Option<EntityId>,
     doc_id: EntityId,
     workspace: &mut Workspace,
+    docs: &mut Docs,
 ) -> Option<MenuSelection> {
     let desired = ui.available_size_before_wrap();
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
+    draw_doc_on_board(ui, rect, &response, doc, selection, doc_id, workspace, docs, true)
+}
 
-    // Background
+/// Draw a document onto a provided board rect, sharing input `response` with other docs.
+/// If `draw_background` is true, paints the board background; otherwise skips it.
+pub fn draw_doc_on_board(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    response: &egui::Response,
+    doc: &mut GraphDoc,
+    selection: &mut Option<EntityId>,
+    doc_id: EntityId,
+    workspace: &mut Workspace,
+    docs: &mut Docs,
+    draw_background: bool,
+) -> Option<MenuSelection> {
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, egui::Color32::from_gray(20));
+    if draw_background {
+        painter.rect_filled(rect, 0.0, egui::Color32::from_gray(20));
+    }
 
     // Tick highlight animations and request repaint while animating
     let animating = doc.tick_highlights(0.92);
@@ -109,6 +127,8 @@ pub fn draw_doc(
                     doc.dragging = Some(ent);
                     doc.drag_anchor_world = Some(anchor);
                 *selection = Some(ent);
+                // Claim board-wide drag ownership for this document (entity drag)
+                workspace.board_drag_doc = Some(doc_id);
             }
         }
     }
@@ -241,21 +261,35 @@ pub fn draw_doc(
                 }
             }
         } else {
-            if delta_screen.length_sq() > 0.0 && response.ctx.input(|i| i.pointer.primary_down()) {
-                doc.transform.pan_screen_delta(delta_screen);
+            // Board background drag: with no entity being dragged, pan ALL documents once per frame
+            if workspace.board_drag_doc.is_none() && !workspace.board_pan_applied {
+                if delta_screen.length_sq() > 0.0 && response.ctx.input(|i| i.pointer.primary_down()) {
+                    for (_id, d) in docs.map.iter_mut() {
+                        d.transform.pan_screen_delta(delta_screen);
+                    }
+                    // Also pan the current document (it's temporarily removed from workspace.docs)
+                    doc.transform.pan_screen_delta(delta_screen);
+                    workspace.board_transform.pan_screen_delta(delta_screen);
+                    workspace.board_pan_applied = true;
+                }
             }
         }
     }
 
     // Auto-pan canvas while dragging near the viewport edges to keep node under cursor
-    if doc.dragging.is_some() {
+    if doc.dragging.is_some() && workspace.board_drag_doc == Some(doc_id) {
         if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
             let pan = NodeLayout::autopan_suggestion(rect, cursor, 24.0, 10.0);
-            if pan != egui::Vec2::ZERO { doc.transform.pan_screen_delta(pan); }
+            if pan != egui::Vec2::ZERO {
+                for (_id, d) in docs.map.iter_mut() { d.transform.pan_screen_delta(pan); }
+                // Also pan the current document (it's temporarily removed from workspace.docs)
+                doc.transform.pan_screen_delta(pan);
+                workspace.board_transform.pan_screen_delta(pan);
+            }
         }
     }
 
-    if response.drag_stopped() { doc.dragging = None; doc.drag_anchor_world = None; }
+    if response.drag_stopped() { doc.dragging = None; doc.drag_anchor_world = None; if workspace.board_drag_doc == Some(doc_id) { workspace.board_drag_doc = None; } }
 
     // Draw graph if any
     if doc.graph.is_none() { return context_menu_selection; }
@@ -947,17 +981,7 @@ pub fn draw_doc(
         }
     }
 
-    // Zoom at cursor with scroll, but suppress when UI is consuming pointer input (e.g., scrolling menus)
-    let scroll_y = ui.ctx().input(|i| i.smooth_scroll_delta.y);
-    if scroll_y != 0.0 && !ui.ctx().wants_pointer_input() {
-        let scroll: f32 = scroll_y;
-        if scroll.abs() > 0.0 {
-            let factor = 1.0 + (-scroll * 0.001);
-            let cursor = ui.ctx().input(|i| i.pointer.hover_pos()).unwrap_or(rect.center());
-            let cursor = cursor.clamp(rect.min, rect.max);
-            doc.transform.zoom_around_screen_point(factor, cursor);
-        }
-    }
+    // Board-level zoom handled in shell; skip here to avoid duplicating per-doc.
 
     context_menu_selection
 }

@@ -3,8 +3,9 @@ use bevy_egui::egui;
 use crate::editor::panels;
 use crate::editor::model::store::EditorStore;
 use crate::editor::workspace::Workspace;
+use crate::editor::docs::Docs;
 
-pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands, workspace: &mut Workspace) {
+pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands, workspace: &mut Workspace, docs: &mut Docs) {
     ui.vertical(|ui| {
         // Top bar: connection controls across entire app
         ui.horizontal(|ui| {
@@ -23,69 +24,94 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
             let _resp = ui.allocate_ui_with_layout(desired_left, egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_width(left_width);
                 ui.heading("Explorer");
-                panels::explorer::draw(ui, store, commands);
+                panels::explorer::draw(ui, store, commands, workspace, docs);
             });
 
             ui.separator();
 
-            // Canvas: show active document only
+            // Canvas: single shared board where all open documents are drawn together
             let desired_canvas = ui.available_size_before_wrap();
             let _resp = ui.allocate_ui_with_layout(desired_canvas, egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_min_size(desired_canvas);
+                let board_size = ui.available_size_before_wrap();
+                let (board_rect, board_resp) = ui.allocate_exact_size(board_size, egui::Sense::click_and_drag());
+                let board_painter = ui.painter_at(board_rect);
+                board_painter.rect_filled(board_rect, 0.0, egui::Color32::from_gray(20));
 
-                if let Some(active) = store.active_doc {
-                    // Ensure a doc entry exists, then temporarily remove it to avoid borrow conflicts
-                    workspace.docs.entry(active).or_default();
-                    let mut sel_local = workspace.selection.clone();
-                    let mut entry = workspace.docs.remove(&active).unwrap_or_default();
-                    if let Some(selection) = crate::editor::view::draw_doc(ui, &mut entry, &mut sel_local, active, workspace) {
-                        match selection {
-                            crate::editor::context_menu::MenuSelection::SaveStateMachine { target } => {
-                                commands.trigger(crate::editor::actions::SaveAsRequested { doc: active, target });
-                            }
-                            crate::editor::context_menu::MenuSelection::SaveSubstates { target } => {
-                                commands.trigger(crate::editor::actions::SaveSubstatesRequested { target });
-                            }
-                            crate::editor::context_menu::MenuSelection::RenameEntity { target } => {
-                                // Seed inline edit with current display name or current label
-                                let mut default_text = String::new();
-                                if let Some(g) = &entry.graph { default_text = g.get_display_name(&target); }
-                                if default_text.is_empty() {
-                                    if let Some(v) = entry.scene.states.get(&target) { default_text = v.label.clone(); }
-                                    else if let Some(v) = entry.scene.edges.get(&target) { default_text = v.label.clone(); }
+                // Reset board-level once-per-frame guards
+                workspace.board_pan_applied = false;
+
+                // Board-level zoom: apply wheel zoom to all documents once per frame and persist to workspace.board_transform
+                let scroll_y = ui.ctx().input(|i| i.smooth_scroll_delta.y);
+                if scroll_y != 0.0 && !ui.ctx().wants_pointer_input() {
+                    let scroll: f32 = scroll_y;
+                    if scroll.abs() > 0.0 {
+                        let factor = 1.0 + (-scroll * 0.001);
+                        let cursor = ui.ctx().input(|i| i.pointer.hover_pos()).unwrap_or(board_rect.center());
+                        let cursor = cursor.clamp(board_rect.min, board_rect.max);
+                        for (_id, doc) in docs.map.iter_mut() {
+                            doc.transform.zoom_around_screen_point(factor, cursor);
+                        }
+                        workspace.board_transform.zoom_around_screen_point(factor, cursor);
+                    }
+                }
+
+                if docs.map.is_empty() {
+                    let hint = "No document open. Select a state machine from the left.";
+                    board_painter.text(board_rect.center(), egui::Align2::CENTER_CENTER, hint, egui::FontId::proportional(14.0), egui::Color32::from_gray(160));
+                } else {
+                    let mut ids: Vec<crate::types::EntityId> = docs.map.keys().copied().collect();
+                    ids.sort_by_key(|e| e.0);
+                    for doc_id in ids {
+                        let mut entry = docs.map.remove(&doc_id).unwrap_or_default();
+                        // Local view of global selection for this doc
+                        let prev_global = workspace.global_selection;
+                        let mut sel_local = prev_global.and_then(|(d, t)| if d == doc_id { Some(t) } else { None });
+                        if let Some(selection) = crate::editor::view::draw_doc_on_board(ui, board_rect, &board_resp, &mut entry, &mut sel_local, doc_id, workspace, docs, false) {
+                            match selection {
+                                crate::editor::context_menu::MenuSelection::SaveStateMachine { target } => {
+                                    commands.trigger(crate::editor::actions::SaveAsRequested { doc: doc_id, target });
                                 }
-                                workspace.rename_inline = Some(crate::editor::workspace::RenameInline { doc: active, target, text: default_text });
+                                crate::editor::context_menu::MenuSelection::SaveSubstates { target } => {
+                                    commands.trigger(crate::editor::actions::SaveSubstatesRequested { target });
+                                }
+                                crate::editor::context_menu::MenuSelection::RenameEntity { target } => {
+                                    let mut default_text = String::new();
+                                    if let Some(g) = &entry.graph { default_text = g.get_display_name(&target); }
+                                    if default_text.is_empty() {
+                                        if let Some(v) = entry.scene.states.get(&target) { default_text = v.label.clone(); }
+                                        else if let Some(v) = entry.scene.edges.get(&target) { default_text = v.label.clone(); }
+                                    }
+                                    workspace.rename_inline = Some(crate::editor::workspace::RenameInline { doc: doc_id, target, text: default_text });
+                                }
+                                crate::editor::context_menu::MenuSelection::DeleteEntity { target } => {
+                                    let e = bevy::prelude::Entity::from_bits(target.0);
+                                    commands.trigger(bevy_gearbox_protocol::events::Despawn { target: e });
+                                    workspace.pending_fetch_docs.push(doc_id);
+                                }
+                                _ => {}
                             }
-                            crate::editor::context_menu::MenuSelection::DeleteEntity { target } => {
-                                let e = bevy::prelude::Entity::from_bits(target.0);
-                                commands.trigger(bevy_gearbox_protocol::events::Despawn { target: e });
-                                // Request a fresh graph snapshot for the active document
-                                workspace.pending_fetch_docs.push(active);
-                            }
+                        }
+                        // Reconcile global selection based on this doc's local selection delta
+                        match (prev_global, sel_local) {
+                            (_, Some(t)) => workspace.global_selection = Some((doc_id, t)),
+                            (Some((d, _)), None) if d == doc_id => workspace.global_selection = None,
                             _ => {}
                         }
+                        docs.map.insert(doc_id, entry);
                     }
-                    // Insert the possibly modified entry back
-                    workspace.docs.insert(active, entry);
-                    // Global commit handler
+
                     if let Some(commit) = workspace.pending_rename_commit.take() {
                         let e = bevy::prelude::Entity::from_bits(commit.target.0);
                         commands.trigger(bevy_gearbox_protocol::events::Rename { target: e, name: commit.text.clone() });
-                        // No optimistic UI mutation; wait for watch-driven update
                     }
-                    // Edge creation commit handler
                     if let Some(req) = workspace.pending_edge_create.take() {
                         let m = bevy::prelude::Entity::from_bits(req.doc.0);
                         let s = bevy::prelude::Entity::from_bits(req.source.0);
                         let t = bevy::prelude::Entity::from_bits(req.target.0);
                         commands.trigger(bevy_gearbox_protocol::events::CreateTransition { machine: m, source: s, target: t, kind: req.kind.clone() });
-                        // Ask for a graph refresh; the client observer will also request it, but keep this as a backup coupling
                         workspace.pending_fetch_docs.push(req.doc);
                     }
-                    workspace.selection = sel_local;
-                } else {
-                    // no-op: avoid chatty log
-                    ui.label("No document open. Select a state machine from the left.");
                 }
             });
         });

@@ -1,13 +1,18 @@
 use bevy::prelude::*;
-use std::collections::HashMap;
 use crate::types::EntityId;
-use super::view_model::GraphDoc;
+use super::canvas::CanvasTransform;
 use bevy_egui::egui;
 
 #[derive(Debug, Default, Resource)]
 pub struct Workspace {
-    pub docs: HashMap<EntityId, GraphDoc>,
-    pub selection: Option<EntityId>,
+    /// Global selection: only one entity across all open documents may be selected at a time
+    pub global_selection: Option<(EntityId, EntityId)>,
+    /// Which document (if any) currently owns a board-level entity drag
+    pub board_drag_doc: Option<EntityId>,
+    /// Guard to ensure board background pan is applied only once per frame
+    pub board_pan_applied: bool,
+    /// Global board transform (pan/zoom) applied to all documents; used to seed new docs
+    pub board_transform: CanvasTransform,
     /// Global inline rename state (only one rename across app at a time)
     pub rename_inline: Option<RenameInline>,
     /// One-shot commit captured during draw; consumed by shell
