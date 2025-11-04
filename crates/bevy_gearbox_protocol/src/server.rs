@@ -96,7 +96,7 @@ fn collect_state_machine_entities(world: &mut World, root: Entity) -> Vec<Entity
     if !world.entities().contains(root) { return out; }
     let mut seen: HashSet<Entity> = HashSet::new();
     let mut q_children_state = world.query::<&gearbox::Substates>();
-    let mut q_children = q_children_state.query(world);
+    let q_children = q_children_state.query(world);
     // Always include the root
     seen.insert(root);
     out.push(root);
@@ -119,7 +119,7 @@ fn collect_state_machine_entities(world: &mut World, root: Entity) -> Vec<Entity
 fn build_scene_from_root(world: &mut World, root: Entity) -> bevy::scene::DynamicScene {
     use bevy::scene::DynamicSceneBuilder;
     let entities = collect_state_machine_entities(world, root);
-    let mut builder = DynamicSceneBuilder::from_world(world)
+    let builder = DynamicSceneBuilder::from_world(world)
         .allow_all()
         .extract_entities(entities.into_iter())
         .build();
@@ -180,33 +180,23 @@ fn save_as_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResul
     if !world.entities().contains(p.entity) {
         return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
     }
-    println!("[protocol] save_as: entity={} path={} (begin)", entity_to_bits(p.entity), p.path);
     // Preflight: ensure all components in subtree are reflect-serializable
     let set = collect_state_machine_entities(world, p.entity);
-    println!("[protocol] save_as: collected {} entities in subtree", set.len());
     let bad = find_unreflected_components(world, &set);
     if !bad.is_empty() {
-        println!("[protocol] save_as: failing due to unreflected components: {}", bad.join(", "));
         return Err(BrpError { code: error_codes::INVALID_PARAMS, message: format!("unserializable components present: {}", bad.join(", ")), data: None });
     }
     let mut scene = build_scene_from_root(world, p.entity);
     // Clear ephemeral StateMachine fields prior to serialization
     scrub_state_machine_ephemeral(&mut scene);
-    println!("[protocol] save_as: scene built");
     // Remove SubstateOf on the selected root so it becomes a top-level root when loading
     if let Some(ent) = scene.entities.iter_mut().find(|e| e.entity == p.entity) {
-        let before = ent.components.len();
         ent.components.retain(|c| !c.represents::<gearbox::SubstateOf>());
-        let after = ent.components.len();
-        if before != after { println!("[protocol] save_as: stripped SubstateOf from root ({} -> {} comps)", before, after); }
     }
     let ron = serialize_scene(world, &scene).map_err(|msg| BrpError { code: error_codes::INTERNAL_ERROR, message: msg, data: None })?;
-    println!("[protocol] save_as: serialized RON ({} bytes)", ron.len());
     let path = ensure_absolute_assets_path(p.path);
-    println!("[protocol] save_as: writing to {}", path.to_string_lossy());
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| BrpError { code: error_codes::INTERNAL_ERROR, message: format!("mkdirs: {e}"), data: None })?; }
     atomic_write(&path, &ron).map_err(|e| BrpError { code: error_codes::INTERNAL_ERROR, message: format!("write: {e}"), data: None })?;
-    println!("[protocol] save_as: done -> {}", path.to_string_lossy());
     Ok(serde_json::json!({"ok": true, "path": path.to_string_lossy().to_string()}))
 }
 
@@ -231,17 +221,13 @@ fn save_substates_handler(In(params): In<Option<Value>>, world: &mut World) -> B
     if !world.entities().contains(p.entity) {
         return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
     }
-    println!("[protocol] save_substates: root={} (begin)", entity_to_bits(p.entity));
     let targets = iter_descendants_with_id(world, p.entity);
-    println!("[protocol] save_substates: found {} descendants with StateMachineId", targets.len());
     let mut results: Vec<Value> = Vec::new();
     for (ent, id) in targets.into_iter() {
-        println!("[protocol] save_substates: saving entity={} id={}", entity_to_bits(ent), id);
         let path = ensure_absolute_assets_path(format!("{}.scn.ron", id));
         let set = collect_state_machine_entities(world, ent);
         let bad = find_unreflected_components(world, &set);
         if !bad.is_empty() {
-            println!("[protocol] save_substates: FAIL entity={} id={} bad_components={}", entity_to_bits(ent), id, bad.join(", "));
             results.push(serde_json::json!({"entity": entity_to_bits(ent), "id": id, "ok": false, "error": format!("unserializable components: {}", bad.join(", ")) }));
             continue;
         }
@@ -254,14 +240,13 @@ fn save_substates_handler(In(params): In<Option<Value>>, world: &mut World) -> B
             Ok(ron) => {
                 if let Some(parent) = path.parent() { if let Err(e) = std::fs::create_dir_all(parent) { results.push(serde_json::json!({"entity": entity_to_bits(ent), "id": id, "ok": false, "error": format!("mkdirs: {}", e)})); continue; } }
                 match atomic_write(&path, &ron) {
-                    Ok(_) => { println!("[protocol] save_substates: OK entity={} -> {}", entity_to_bits(ent), path.to_string_lossy()); results.push(serde_json::json!({"entity": entity_to_bits(ent), "id": id, "ok": true, "path": path.to_string_lossy().to_string()})); },
-                    Err(e) => { println!("[protocol] save_substates: WRITE FAIL entity={} err={}", entity_to_bits(ent), e); results.push(serde_json::json!({"entity": entity_to_bits(ent), "id": id, "ok": false, "error": format!("write: {}", e)})); },
+                    Ok(_) => { results.push(serde_json::json!({"entity": entity_to_bits(ent), "id": id, "ok": true, "path": path.to_string_lossy().to_string()})); },
+                    Err(e) => { results.push(serde_json::json!({"entity": entity_to_bits(ent), "id": id, "ok": false, "error": format!("write: {}", e)})); },
                 }
             }
-            Err(msg) => { println!("[protocol] save_substates: SERIALIZE FAIL entity={} msg={}", entity_to_bits(ent), msg); results.push(serde_json::json!({"entity": entity_to_bits(ent), "id": id, "ok": false, "error": msg })); }
+            Err(msg) => { results.push(serde_json::json!({"entity": entity_to_bits(ent), "id": id, "ok": false, "error": msg })); }
         }
     }
-    println!("[protocol] save_substates: done");
     Ok(serde_json::json!({"results": results}))
 }
 
@@ -270,7 +255,6 @@ fn save_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpRe
     if !world.entities().contains(p.entity) {
         return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
     }
-    println!("[protocol] save_graph: entity={} path={} (begin)", entity_to_bits(p.entity), p.path);
     // Ensure .scn.ron extension and assets path defaulting
     let mut path = std::path::PathBuf::from(p.path);
     if !path.is_absolute() { path = std::path::PathBuf::from("assets").join(path); }
@@ -278,13 +262,9 @@ fn save_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpRe
     let mut scene = build_scene_from_root(world, p.entity);
     // Clear ephemeral StateMachine fields prior to serialization
     scrub_state_machine_ephemeral(&mut scene);
-    println!("[protocol] save_graph: scene built");
     let ron = serialize_scene(world, &scene).map_err(|msg| BrpError { code: error_codes::INTERNAL_ERROR, message: msg, data: None })?;
-    println!("[protocol] save_graph: serialized RON ({} bytes)", ron.len());
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| BrpError { code: error_codes::INTERNAL_ERROR, message: format!("mkdirs: {e}"), data: None })?; }
-    println!("[protocol] save_graph: writing to {}", path.to_string_lossy());
     atomic_write(&path, &ron).map_err(|e| BrpError { code: error_codes::INTERNAL_ERROR, message: format!("write: {e}"), data: None })?;
-    println!("[protocol] save_graph: done -> {}", path.to_string_lossy());
     Ok(serde_json::json!({"ok": true}))
 }
 
@@ -454,11 +434,6 @@ fn machine_watch_handler(In(_params): In<Option<Value>>, _world: &World) -> BrpR
                 }
             }
             if out.is_empty() { return Ok(None); }
-            println!(
-                "[protocol] machine_watch: emit {} events for entity {}",
-                out.len(),
-                entity_to_bits(p.entity)
-            );
             return Ok(Some(serde_json::json!({"events": out})));
         }
     }
@@ -573,7 +548,6 @@ fn subscribe_machine_handler(In(params): In<Option<Value>>, world: &mut World) -
     let mut counts = world.resource_mut::<Subscriptions>();
     let c = counts.counts.entry(p.entity).or_insert(0);
     *c = c.saturating_add(1);
-    println!("[protocol] subscribe machine: entity={} count={}", entity_to_bits(p.entity), *c);
     
     // Trigger MachineSubscribed event
     world.commands().trigger(crate::events::MachineSubscribed { target: p.entity });
@@ -589,9 +563,7 @@ fn unsubscribe_machine_handler(In(params): In<Option<Value>>, world: &mut World)
     let mut counts = world.resource_mut::<Subscriptions>();
     if let Some(c) = counts.counts.get_mut(&p.entity) {
         *c = c.saturating_sub(1);
-        let remaining = *c;
         if *c == 0 { counts.counts.remove(&p.entity); }
-        println!("[protocol] unsubscribe machine: entity={} remaining={}", entity_to_bits(p.entity), remaining);
     }
     Ok(serde_json::json!({"ok": true}))
 }
@@ -833,7 +805,7 @@ fn create_transition_handler(In(params): In<Option<Value>>, world: &mut World) -
     };
 
     // Determine marker and display name
-    let mut edge_label = String::new();
+    let edge_label: String;
     if p.kind == "Always" {
         // Insert AlwaysEdge outside the spawn scope
         world.entity_mut(entity).insert(gearbox::transitions::AlwaysEdge);

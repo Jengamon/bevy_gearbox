@@ -249,29 +249,23 @@ fn poll_network(
                     setup_watch_root(&mut net_cmd, *id);
                     // Active visualization will be driven by StateMachine component snapshots
                     // Request sidecar for the machine root
-                    println!("[editor] graph_result: requesting sidecar for root {}", id);
                     client_cmd.write(ClientCommand::SidecarForMachine { id: *id });
                     // Also request sidecars for any substate nodes that declare a StateMachineId
                     let mut requested = 0usize;
                     for (nid, _node) in sm_graph.nodes.iter() {
                         if sm_graph.entity_data.get(nid).map(|bag| bag.contains(c::STATE_MACHINE_ID)).unwrap_or(false) {
-                            println!("[editor] graph_result: requesting sidecar for substate {}", nid.0);
                             client_cmd.write(ClientCommand::SidecarForMachine { id: nid.0 });
                             requested += 1;
                         }
                     }
-                    println!("[editor] graph_result: requested {} substate sidecars", requested);
                 }
             }
             ClientMessage::SidecarFound { id, text } => {
                 let doc_id = EntityId(*id);
-                println!("[editor] sidecar_found: id={} ({} bytes)", id, text.len());
                 ui.sidecar_texts.insert(doc_id, text.clone());
                 processed += 1;
             }
             ClientMessage::SidecarMissing { .. } => {
-                println!("[editor] sidecar_missing");
-                // No-op; fallback to local disk/default layout in sync pass
                 processed += 1;
             }
             ClientMessage::EventEdgeVariants { variants } => {
@@ -345,11 +339,6 @@ fn poll_network(
                         "components": components.clone(),
                         "removed": removed.clone(),
                     });
-                    if let Ok(s) = serde_json::to_string_pretty(&packet) {
-                        println!("{}\n{}", entity_label, s);
-                    } else {
-                        println!("{}\n<failed to pretty print packet>", entity_label);
-                    }
                 }
                 // Drive active visualization from StateMachine component snapshots on the machine root
                 let sm_key = bevy_gearbox_protocol::components::STATE_MACHINE;
@@ -513,11 +502,10 @@ fn sync_snapshots_to_workspace(
         if let Some(text) = ui.sidecar_texts.get(id) {
             match parse_sidecar_text(text) {
                 Ok(sc) => {
-                    println!("[editor] applying sidecar to doc {}", id.0);
                     apply_sidecar_to_doc(entry, &sc);
                     applied = true;
                 }
-                Err(e) => { println!("[editor] sidecar parse error for {}: {}", id.0, e); },
+                Err(e) => (),
             }
             // mark for single-consume once attempted (avoid re-applying every frame)
             consume_sidecar_for.push(*id);
@@ -534,7 +522,6 @@ fn sync_snapshots_to_workspace(
                 tried.push(candidate_assets.clone());
                 for p in tried {
                     if p.exists() {
-                        println!("[editor] fallback loading sidecar: {}", p.to_string_lossy());
                         if let Ok(sc) = load_sidecar(&p) { apply_sidecar_to_doc(entry, &sc); applied = true; break; }
                     }
                 }
@@ -543,7 +530,6 @@ fn sync_snapshots_to_workspace(
                 // As a final fallback when no sidecar is found anywhere, ensure a derived default layout
                 // is applied so the editor shows states/edges at reasonable default positions.
                 if entry.graph.is_some() && entry.scene.node_rects.is_empty() {
-                    println!("[editor] no sidecar found; projecting default layout");
                     project_graph_into_doc(entry, graph.clone());
                 }
             }
@@ -564,7 +550,6 @@ fn sync_snapshots_to_workspace(
                 let mut applied_here = false;
                 if is_doc_root {
                     if let Ok(sc) = parse_sidecar_text(text) {
-                        println!("[editor] applying extra sidecar (root) to doc {}", doc_id.0);
                         apply_sidecar_to_doc(doc, &sc);
                         applied_here = true;
                     }
@@ -573,7 +558,6 @@ fn sync_snapshots_to_workspace(
                     let target_id = *target_entity;
                     if graph.nodes.contains_key(&target_id) {
                         if let Ok(sc) = parse_sidecar_text(text) {
-                            println!("[editor] applying extra sidecar (subtree {}) to doc {}", target_entity.0, doc_id.0);
                             crate::persistence::apply_sidecar_to_subtree(doc, &sc, &target_id);
                             applied_here = true;
                         }

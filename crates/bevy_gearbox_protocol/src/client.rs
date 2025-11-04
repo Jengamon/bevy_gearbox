@@ -622,8 +622,7 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                     let tx = evt_tx.clone();
                     let client_clone = client.clone();
                     let handle = tokio::spawn(async move {
-                        println!("[dbg] client: machine watch start id={}", id);
-                // Subscribe once before starting stream
+                        // Subscribe once before starting stream
                         let _ = client_clone.post(&url).json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":EDITOR_MACHINE_SUBSCRIBE,"params":{"entity":id}})).send().await;
                         loop {
                             let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"editor.machine+watch","params":{"entity":id,"last_transition_seq":last_transition_seq}});
@@ -654,11 +653,6 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                                                 }
                                             }
                                             if !out.is_empty() {
-                                                let mut tc = 0usize; let total = out.len();
-                                                for ev in out.iter() {
-                                                    if ev.get("kind").and_then(|v| v.as_str()) == Some("transition_edge") { tc += 1; }
-                                                }
-                                                println!("[dbg] client: machine watch id={} batch events total={} transition={}", id, total, tc);
                                                 let _ = tx.send(WatchEvt::Machine { id, events: out });
                                                 // Long-poll: after delivering a non-empty batch, reconnect with updated cursors
                                                 break;
@@ -673,7 +667,6 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                     machine_handles.insert(id, handle);
                 }
                 WatchCtl::StopMachine { url, id } => {
-                    println!("[dbg] client: machine watch stop id={} (unsubscribe + abort)", id);
                     // Best-effort unsubscribe
                     let _ = client.post(&url).json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":EDITOR_MACHINE_UNSUBSCRIBE,"params":{"entity":id}})).send().await;
                     if let Some(h) = machine_handles.remove(&id) { h.abort(); }
@@ -814,11 +807,9 @@ fn net_commands(
             }
             NetCommand::StartMachine { id } => {
                 let lt = mgr.cursors.get(&id).copied().unwrap_or(0);
-                println!("[dbg] client: request start machine watch id={} last_transition_seq={}", id, lt);
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StartMachine { url: client.base_url.clone(), id, last_transition_seq: lt }); }
             }
             NetCommand::StopMachine { id } => {
-                println!("[dbg] client: request stop machine watch id={}", id);
                 if let Some(tx) = &mgr.ctl_tx { let _ = tx.send(WatchCtl::StopMachine { url: client.base_url.clone(), id }); }
             }
             NetCommand::StartComponents { id, ref components } => {
@@ -872,7 +863,7 @@ fn watch_events(
                         writer.write(NetMessage::Machine { id, events: filtered });
                     }
                 }
-                WatchEvt::Error(e) => { println!("[dbg] client: watch error: {}", e); }
+                WatchEvt::Error(_e) => (),
                 WatchEvt::Components { id, components, removed } => {
                     writer.write(NetMessage::Components { id, components, removed });
                 }

@@ -659,18 +659,12 @@ pub fn draw_doc_on_board(
                     draw_initial_indicator(rect_screen);
                 }
             } else {
-                // Debug: also log if this id is unexpectedly present as an edge (should not happen)
-                if doc.scene.edges.contains_key(id) {
-                    if let Some(ev) = doc.scene.edges.get(id) {
-                        println!("[editor][warn] entity id={:?} also classified as EDGE with name={} while drawing as STATE name={}", id, ev.label, sv.label);
-                    }
-                }
                 // Leaf state rendering (see container branch for shared helpers)
                 let rect_world = sv.rect;
-            let min = doc.transform.to_screen(rect_world.min);
-            let max = doc.transform.to_screen(rect_world.max);
-            let rect_screen = egui::Rect::from_min_max(min, max);
-            let rounding = egui::CornerRadius::same(6);
+                let min = doc.transform.to_screen(rect_world.min);
+                let max = doc.transform.to_screen(rect_world.max);
+                let rect_screen = egui::Rect::from_min_max(min, max);
+                let rounding = egui::CornerRadius::same(6);
                 // Fill (leaf body changes fully; header rule doesn't apply here)
                 let base_fill = egui::Color32::from_rgb(30, 30, 35);
                 let base_yellow = egui::Color32::from_rgb(230, 200, 40);
