@@ -38,6 +38,7 @@ pub struct ViewBoardCtx {
     pub preview_edges: Vec<crate::editor::workspace::PreviewEdge>,
     pub rename_inline: Option<RenameInline>,
     pub delay_inline: Option<crate::editor::workspace::DelayInline>,
+    pub board_drag_owner: Option<EntityId>,
 }
 
 /// Minimal read-only view with pan/zoom and basic nodes/edges rendering.
@@ -152,8 +153,14 @@ pub fn draw_doc_on_board(
 
     // On drag start: capture draggable if hovering; also select it. Else pan background
     if response.drag_started() && response.ctx.input(|i| i.pointer.primary_down()) {
-        if let Some(ent) = hovered_entity {
-            if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
+        // Only allow this document to start a drag if no other doc owns the drag, or this doc already owns it
+        let allowed = match ctx.board_drag_owner {
+            Some(owner) => owner == doc_id,
+            None => true,
+        };
+        if allowed {
+            if let Some(ent) = hovered_entity {
+                if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
                 let pointer_world = doc.transform.to_world(cursor);
                 // Compute rect for entity (node rect or pill rect in world space)
                 let rect_w = doc.scene.node_rects.get(&ent).copied().unwrap_or(egui::Rect::from_min_max(pointer_world, pointer_world));
@@ -163,6 +170,7 @@ pub fn draw_doc_on_board(
                 *selection = Some(ent);
                 // Claim board-wide drag ownership for this document (entity drag)
                 _events.claim_drag = true;
+                }
             }
         }
     }
@@ -313,7 +321,37 @@ pub fn draw_doc_on_board(
     // During drag: move draggable in world coords, with clamping to parent content via NodeLayout
     // Drag delta consumed by shell for board-level background pan
     if response.dragged() {
-        if let (Some(ent), Some(anchor)) = (doc.dragging, doc.drag_anchor_world) {
+        // Only process movement for the owning document if there is an owner
+        if let Some(owner) = ctx.board_drag_owner {
+            if owner == doc_id {
+                if let (Some(ent), Some(anchor)) = (doc.dragging, doc.drag_anchor_world) {
+                    if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
+                        let pointer_world = doc.transform.to_world(cursor);
+                        let desired_min = egui::pos2(pointer_world.x - anchor.x, pointer_world.y - anchor.y);
+                        if !doc.scene.edges.contains_key(&ent) {
+                                let _ = layout.move_node_clamped_and_propagate(ent, desired_min, &cfg);
+                                // Sync rects back to scene
+                                for (id, rect) in layout.node_rects.iter() { doc.set_rect(id, *rect); }
+                        } else {
+                                // Compute pill size in world from cached label size, set desired rect, then clamp via layout
+                                let label = doc.graph.as_ref().map(|g| g.get_label_for(&ent)).or_else(|| doc.scene.edges.get(&ent).map(|v| v.label.clone())).unwrap_or_default();
+                                let zoom = doc.transform.zoom;
+                                let size_s = doc.cached_label_size_screen(&label, zoom, &painter);
+                                let pad_s = egui::vec2(10.0 * zoom, 6.0 * zoom);
+                                let size_w = egui::vec2((size_s.x + 2.0 * pad_s.x) / zoom, (size_s.y + 2.0 * pad_s.y) / zoom);
+                                let rect = egui::Rect::from_min_size(desired_min, size_w);
+                                layout.node_rects.insert(ent, rect);
+                                layout.clamp_children_left_top(&cfg);
+                                // Sync rects back to scene
+                                for (id, rect) in layout.node_rects.iter() { doc.set_rect(id, *rect); }
+                        }
+                    }
+                } else {
+                    // Board-level background drag pan handled in shell/layout.rs
+                }
+            }
+        } else if let (Some(ent), Some(anchor)) = (doc.dragging, doc.drag_anchor_world) {
+            // No owner yet; allow initial movement for the doc that captured this frame
             if let Some(cursor) = response.ctx.input(|i| i.pointer.hover_pos()) {
                 let pointer_world = doc.transform.to_world(cursor);
                 let desired_min = egui::pos2(pointer_world.x - anchor.x, pointer_world.y - anchor.y);

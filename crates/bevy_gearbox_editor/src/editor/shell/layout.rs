@@ -104,6 +104,7 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                             preview_edges: workspace.preview_edges.clone(),
                             rename_inline: workspace.rename_inline.clone(),
                             delay_inline: workspace.delay_inline.clone(),
+                            board_drag_owner: workspace.board_drag_doc,
                         };
                         // Draw using a scoped mutable borrow to this document
                         let ev = {
