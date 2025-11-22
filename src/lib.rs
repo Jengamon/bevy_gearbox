@@ -46,7 +46,7 @@ impl Plugin for GearboxPlugin {
             .register_type::<EnterState>()
             .register_type::<ExitState>()
             .register_type::<ResetRegion>()
-            .register_type::<TransitionActions>()
+            .register_type::<EdgeTraversed>()
             .register_type::<transitions::Delay>()
             .register_type::<transitions::Source>()
             .register_type::<transitions::Transitions>()
@@ -122,7 +122,7 @@ pub struct Transition<T = ()> where T: Clone + Send + Sync + 'static {
 }
 
 #[derive(EntityEvent, Reflect)]
-pub struct TransitionActions { #[event_target] pub target: Entity }
+pub struct EdgeTraversed { #[event_target] pub target: Entity }
 
 /// A component that specifies the initial substate for a state.
 /// When a state is entered, the machine will recursively drill down through `InitialState`
@@ -429,7 +429,7 @@ fn transition_observer<T: transitions::PhasePayload>(
     }
 
     // Transition actions phase (between exits and entries)
-    commands.trigger(TransitionActions { target: transition.event().edge });
+    commands.trigger(EdgeTraversed { target: transition.event().edge });
     transition.event().payload.on_edge(&mut commands, transition.event().edge, &q_children, &current_state);
     // Invoke typed Effect payload if present
     // Note: we avoid trait bounds here; user code can downcast payload if desired via helper
@@ -578,5 +578,5 @@ fn reset_state_region(
 ) {
     let root = reset_region.target;
 
-    commands.entity(root).remove::<StateMachine>().insert(StateMachine::new());
+    commands.entity(root).try_remove::<StateMachine>().insert(StateMachine::new());
 }

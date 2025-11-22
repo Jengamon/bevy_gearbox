@@ -52,9 +52,9 @@ impl bevy_gearbox::TransitionEvent for AppEvent {
     type EntryEvent = bevy_gearbox::NoEvent;
     type Validator = AppEventValidator;
 
-    fn to_exit_event(&self, _source: Entity, _machine: Entity) -> Option<Self::ExitEvent> { None }
-    fn to_edge_event(&self, _edge: Entity, _source: Entity, _target: Entity, _machine: Entity) -> Option<Self::EdgeEvent> { None }
-    fn to_entry_event(&self, _entering: Entity, _source: Entity, _edge: Entity, _machine: Entity) -> Option<Self::EntryEvent> { None }
+    fn to_exit_event(&self, _exiting: Entity, _entering: Entity, _edge: Entity) -> Option<Self::ExitEvent> { None }
+    fn to_edge_event(&self, _edge: Entity) -> Option<Self::EdgeEvent> { None }
+    fn to_entry_event(&self, _entering: Entity, _exiting: Entity, _edge: Entity) -> Option<Self::EntryEvent> { None }
 }
 
 #[derive(Component)]

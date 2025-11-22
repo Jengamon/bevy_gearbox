@@ -89,7 +89,7 @@ fn log_exit(exit_state: On<ExitState>, names: Query<&Name>, mut log: ResMut<Orde
     }
 }
 
-fn log_actions(transition_action: On<TransitionActions>, names: Query<&Name>, mut log: ResMut<OrderLog>) {
+fn log_actions(transition_action: On<EdgeTraversed>, names: Query<&Name>, mut log: ResMut<OrderLog>) {
     if let Ok(name) = names.get(transition_action.target) {
         log.0.push(format!("actions:{}", name.as_str()));
     }

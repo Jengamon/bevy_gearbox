@@ -7,7 +7,6 @@ use bevy::platform::collections::HashSet;
 use crate::{InitialState, Substates};
 use crate::{guards::Guards, EnterState, Transition, SubstateOf, StateMachine, ExitState};
 use crate::state_component::Reset;
-use crate::registration::RegisteredTransitionEvent;
 
 /// Outbound transitions from a source state. Order defines priority (first match wins).
 #[derive(Component, Default, Debug, PartialEq, Eq, Reflect)]
@@ -136,7 +135,7 @@ fn cleanup_edge_timer_and_pending<E: EntityEvent + Clone + 'static>(
     commands: &mut Commands,
     edge: Entity,
 ) {
-    commands.entity(edge).remove::<EdgeTimer>().remove::<PendingEvent<E>>();
+    commands.entity(edge).try_remove::<EdgeTimer>().try_remove::<PendingEvent<E>>();
 }
 
 /// Trait implemented by events that can provide phase-specific payloads
@@ -152,15 +151,15 @@ mod transition_event_def {
 
         /// Map this trigger into an optional Exit event. Called once per transition before exits.
         /// source: the state that initiated the transition; machine: the state machine root entity
-        fn to_exit_event(&self, _source: Entity, _machine: Entity) -> Option<Self::ExitEvent> { None }
+        fn to_exit_event(&self, _exiting: Entity, _entering: Entity, _edge: Entity) -> Option<Self::ExitEvent> { None }
 
         /// Map this trigger into an optional Edge event. Called during the transition actions phase.
         /// edge: the transition edge entity; source: source state; target: entering super-state; machine: root
-        fn to_edge_event(&self, _edge: Entity, _source: Entity, _target: Entity, _machine: Entity) -> Option<Self::EdgeEvent> { None }
+        fn to_edge_event(&self, _edge: Entity) -> Option<Self::EdgeEvent> { None }
 
         /// Map this trigger into an optional Entry event. Called once after entries, on the entering super-state.
         /// entering: the entering super-state entity; source: source state; edge: transition edge; machine: root
-        fn to_entry_event(&self, _entering: Entity, _source: Entity, _edge: Entity, _machine: Entity) -> Option<Self::EntryEvent> { None }
+        fn to_entry_event(&self, _entering: Entity, _exiting: Entity, _edge: Entity) -> Option<Self::EntryEvent> { None }
     }
     pub use TransitionEvent as Trait;
 }
@@ -176,15 +175,15 @@ mod transition_event_def {
 
         /// Map this trigger into an optional Exit event. Called once per transition before exits.
         /// source: the state that initiated the transition; machine: the state machine root entity
-        fn to_exit_event(&self, _source: Entity, _machine: Entity) -> Option<Self::ExitEvent> { None }
+        fn to_exit_event(&self, _exiting: Entity, _entering: Entity, _edge: Entity) -> Option<Self::ExitEvent> { None }
 
         /// Map this trigger into an optional Edge event. Called during the transition actions phase.
-        /// edge: the transition edge entity; source: source state; target: entering super-state; machine: root
-        fn to_edge_event(&self, _edge: Entity, _source: Entity, _target: Entity, _machine: Entity) -> Option<Self::EdgeEvent> { None }
+        /// edge: the transition edge entity
+        fn to_edge_event(&self, _edge: Entity) -> Option<Self::EdgeEvent> { None }
 
         /// Map this trigger into an optional Entry event. Called once after entries, on the entering super-state.
-        /// entering: the entering super-state entity; source: source state; edge: transition edge; machine: root
-        fn to_entry_event(&self, _entering: Entity, _source: Entity, _edge: Entity, _machine: Entity) -> Option<Self::EntryEvent> { None }
+        /// entering: the entering super-state entity; exiting: the exiting super-state entity; edge: transition edge
+        fn to_entry_event(&self, _entering: Entity, _exiting: Entity, _edge: Entity) -> Option<Self::EntryEvent> { None }
     }
     pub use TransitionEvent as Trait;
 }
@@ -274,7 +273,7 @@ fn validate_edge_basic(
 }
 
 /// Generic edge firing logic for TransitionEvent
-fn try_fire_first_matching_edge_generic<E: TransitionEvent + RegisteredTransitionEvent + Clone>(
+fn try_fire_first_matching_edge_generic<E: TransitionEvent + Clone>(
     source: Entity,
     event: &E,
     q_transitions: &Query<&Transitions>,
@@ -328,9 +327,9 @@ fn try_fire_first_matching_edge_generic<E: TransitionEvent + RegisteredTransitio
         let root = q_substate_of.root_ancestor(source);
         let target = q_edge_target.get(edge).ok().map(|t| t.0).unwrap_or(source);
         let payload = PhaseEvents {
-            exit: event.to_exit_event(source, root),
-            edge: event.to_edge_event(edge, source, target, root),
-            entry: event.to_entry_event(target, source, edge, root),
+            exit: event.to_exit_event(source, target, edge),
+            edge: event.to_edge_event(edge),
+            entry: event.to_entry_event(target, source, edge),
         };
         let root = q_substate_of.root_ancestor(source);
         commands.trigger(Transition { machine: root, source, edge, payload });
@@ -343,20 +342,20 @@ fn try_fire_first_matching_edge_generic<E: TransitionEvent + RegisteredTransitio
 #[derive(Reflect, Component)]
 #[reflect(Component, Default)]
 #[require(EdgeKind)]
-pub struct EventEdge<E: RegisteredTransitionEvent + TransitionEvent> {
+pub struct EventEdge<E: TransitionEvent> {
     #[reflect(ignore)]
     _marker: PhantomData<E>,
     /// Optional per-edge validator; when None, all events of type E are accepted
     pub validator: Option<<E as TransitionEvent>::Validator>,
 }
 
-impl<E: RegisteredTransitionEvent + TransitionEvent> Default for EventEdge<E> {
+impl<E: TransitionEvent> Default for EventEdge<E> {
     fn default() -> Self {
         Self { _marker: PhantomData, validator: None }
     }
 }
 
-impl<E: RegisteredTransitionEvent + TransitionEvent> EventEdge<E> {
+impl<E: TransitionEvent> EventEdge<E> {
     #[inline]
     pub fn new(validator: Option<<E as TransitionEvent>::Validator>) -> Self {
         Self { _marker: PhantomData, validator }
@@ -367,17 +366,17 @@ impl<E: RegisteredTransitionEvent + TransitionEvent> EventEdge<E> {
 /// Event of type `E` that arrive while this state is active will be stored
 /// and replayed when the state is exited.
 #[derive(Component)]
-pub struct DeferEvent<E: EntityEvent + RegisteredTransitionEvent> {
+pub struct DeferEvent<E: EntityEvent> {
     pub deferred: Option<E>,
 }
 
-impl<E: EntityEvent + RegisteredTransitionEvent> Default for DeferEvent<E> {
+impl<E: EntityEvent> Default for DeferEvent<E> {
     fn default() -> Self {
         Self { deferred: None }
     }
 }
 
-impl<E: EntityEvent + RegisteredTransitionEvent> DeferEvent<E> {
+impl<E: EntityEvent> DeferEvent<E> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -460,7 +459,7 @@ fn find_parallel_region_root(
 }
 
 /// On event `E`, scan `Transitions` for a matching edge with `EventEdge<E>`, in priority order.
-pub(crate) fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent + Clone>(
+pub(crate) fn edge_event_listener<E: TransitionEvent + Clone>(
     transition_event: On<E>,
     q_transitions: Query<&Transitions>,
     q_listener: Query<&EventEdge<E>>, 
@@ -517,7 +516,7 @@ pub(crate) fn edge_event_listener<E: TransitionEvent + RegisteredTransitionEvent
     );
 }
 
-fn try_fire_first_matching_edge<E: TransitionEvent + RegisteredTransitionEvent + Clone>(
+fn try_fire_first_matching_edge<E: TransitionEvent + Clone>(
     source: Entity,
     event: &E,
     q_transitions: &Query<&Transitions>,
@@ -538,7 +537,7 @@ fn try_fire_first_matching_edge<E: TransitionEvent + RegisteredTransitionEvent +
     )
 }
 
-fn try_fire_first_matching_edge_on_branch<E: EntityEvent + Clone + TransitionEvent + RegisteredTransitionEvent>(
+fn try_fire_first_matching_edge_on_branch<E: EntityEvent + Clone + TransitionEvent>(
     start: Entity,
     event: &E,
     machine_root: Entity,
@@ -651,14 +650,14 @@ pub fn cancel_after_on_exit(
     let Ok(transitions) = q_transitions.get(source) else { return; };
     for edge in transitions.into_iter().copied() {
         if q_delay.get(edge).is_ok() {
-            commands.entity(edge).remove::<EdgeTimer>();
+            commands.entity(edge).try_remove::<EdgeTimer>();
         }
     }
 }
 
 /// During TransitionActions, if an edge has ResetEdge, emit ResetSubtree for its scope
 pub(crate) fn reset_on_transition_actions(
-    transition_action: On<crate::TransitionActions>,
+    transition_action: On<crate::EdgeTraversed>,
     q_reset_edge: Query<&ResetEdge>,
     q_edge: Query<(&Source, &Target)>,
     q_children: Query<&crate::Substates>,
@@ -721,12 +720,12 @@ pub fn tick_after_system(
         // Validate edge (guards and target) before firing
         if !validate_edge_basic(edge, &q_guards, &q_edge_target, &q_substate_of) {
                 // Cancel invalid timer
-                commands.entity(edge).remove::<EdgeTimer>();
+                commands.entity(edge).try_remove::<EdgeTimer>();
                 continue;
             }
 
             // Cancel timer to avoid multiple firings if state persists
-            commands.entity(edge).remove::<EdgeTimer>();
+            commands.entity(edge).try_remove::<EdgeTimer>();
 
             // Emit transition to the machine root with empty payload
             let root = q_substate_of.root_ancestor(source);
@@ -737,7 +736,7 @@ pub fn tick_after_system(
 }
 
 /// Generic system to replay deferred event when a state exits.
-pub fn replay_deferred_event<E: EntityEvent + RegisteredTransitionEvent + Clone>(
+pub fn replay_deferred_event<E: EntityEvent + Clone>(
     exit_state: On<ExitState>,
     mut q_defer: Query<&mut DeferEvent<E>>,
     mut commands: Commands,
@@ -755,7 +754,7 @@ where
 }
 
 /// Timer system for event edges with After; fire when due
-pub fn tick_after_event_timers<E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static>(
+pub fn tick_after_event_timers<E: TransitionEvent + Clone + 'static>(
     time: Res<Time>,
     mut q_timer: Query<(Entity, &mut EdgeTimer, &PendingEvent<E>, &EventEdge<E>)>,
     q_delay: Query<&Delay>,
@@ -803,9 +802,9 @@ pub fn tick_after_event_timers<E: TransitionEvent + RegisteredTransitionEvent + 
 
         let target = q_edge_target.get(edge).ok().map(|t| t.0).unwrap_or(*source);
         let payload = PhaseEvents {
-            exit: pending.event.to_exit_event(*source, root),
-            edge: pending.event.to_edge_event(edge, *source, target, root),
-            entry: pending.event.to_entry_event(target, *source, edge, root),
+            exit: pending.event.to_exit_event(*source, target, edge),
+            edge: pending.event.to_edge_event(edge),
+            entry: pending.event.to_entry_event(target, *source, edge),
         };
 
         // Cleanup timer/pending and fire the transition to machine root
@@ -816,7 +815,7 @@ pub fn tick_after_event_timers<E: TransitionEvent + RegisteredTransitionEvent + 
 }
 
 /// Cancel a pending delayed event for a source when it exits
-pub fn cancel_pending_event_on_exit<E: EntityEvent + RegisteredTransitionEvent + Clone + 'static>(
+pub fn cancel_pending_event_on_exit<E: EntityEvent + Clone + 'static>(
     exit_state: On<ExitState>,
     q_transitions: Query<&Transitions>,
     q_pending: Query<&PendingEvent<E>>,

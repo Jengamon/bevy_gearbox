@@ -999,7 +999,7 @@ fn push_event(tracker: &mut MachineTracker, ev: Value) {
 
 
 fn on_transition_edge(
-    transition: On<gearbox::TransitionActions>,
+    transition: On<gearbox::EdgeTraversed>,
     q_source: Query<&gearbox::transitions::Source>,
     q_substate_of: Query<&gearbox::SubstateOf>,
     mut trackers: ResMut<MachineTrackers>,

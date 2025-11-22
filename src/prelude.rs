@@ -5,7 +5,7 @@ pub use crate::{
     ExitState,
     ResetRegion,
     Transition,
-    TransitionActions,
+    EdgeTraversed,
     state_component::Reset,
     // Components
     SubstateOf,

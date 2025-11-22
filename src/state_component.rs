@@ -51,7 +51,7 @@ pub fn state_component_exit<T: Component + Reflect + Clone>(
     let root_entity = q_substate_of.root_ancestor(exited_state);
 
     if root_entity != exited_state {
-        commands.entity(root_entity).remove::<T>();
+        commands.entity(root_entity).try_remove::<T>();
     }
 }
 
@@ -71,7 +71,7 @@ pub fn state_inactive_component_enter<T: Component + Reflect + Clone>(
     let root_entity = q_substate_of.root_ancestor(entered_state);
 
     if root_entity != entered_state {
-        commands.entity(root_entity).remove::<T>();
+        commands.entity(root_entity).try_remove::<T>();
     }
 }
 

@@ -8,9 +8,6 @@ use crate::transitions::TransitionEvent;
 use crate::transitions::{edge_event_listener, PhaseEvents, tick_after_event_timers, cancel_pending_event_on_exit, replay_deferred_event};
 use crate::bevy_state::bridge_chart_to_bevy_state;
 
-/// Marker trait implemented by macros for events that are auto-registered.
-pub trait RegisteredTransitionEvent: 'static {}
-
 /// Internal resource to dedupe per-event installation.
 #[derive(Resource, Default)]
 pub struct InstalledTransitions(pub HashSet<TypeId>);
@@ -65,7 +62,7 @@ inventory::collect!(SubstateBridgeInstaller);
 pub trait RegistrationAppExt {
     fn register_transition<E>(&mut self) -> &mut Self
     where
-        E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static + bevy::reflect::TypePath,
+        E: TransitionEvent + Clone + 'static + bevy::reflect::TypePath,
         for<'a> <E as Event>::Trigger<'a>: Default,
         for<'a> <<E as TransitionEvent>::ExitEvent as Event>::Trigger<'a>: Default,
         for<'a> <<E as TransitionEvent>::EdgeEvent as Event>::Trigger<'a>: Default,
@@ -109,7 +106,7 @@ pub trait RegistrationAppExt {
 impl RegistrationAppExt for App {
     fn register_transition<E>(&mut self) -> &mut Self
     where
-        E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static + bevy::reflect::TypePath,
+        E: TransitionEvent + Clone + 'static + bevy::reflect::TypePath,
         for<'a> <E as Event>::Trigger<'a>: Default,
         for<'a> <<E as TransitionEvent>::ExitEvent as Event>::Trigger<'a>: Default,
         for<'a> <<E as TransitionEvent>::EdgeEvent as Event>::Trigger<'a>: Default,
@@ -307,7 +304,7 @@ impl RegistrationAppExt for App {
 // These delegate to the corresponding `RegistrationAppExt` methods.
 pub fn register_transition<E>(app: &mut App)
 where
-    E: TransitionEvent + RegisteredTransitionEvent + Clone + 'static + bevy::reflect::TypePath,
+    E: TransitionEvent + Clone + 'static + bevy::reflect::TypePath,
     for<'a> <E as Event>::Trigger<'a>: Default,
     for<'a> <<E as TransitionEvent>::ExitEvent as Event>::Trigger<'a>: Default,
     for<'a> <<E as TransitionEvent>::EdgeEvent as Event>::Trigger<'a>: Default,

@@ -58,9 +58,8 @@ impl TransitionEvent for Attack {
     fn to_entry_event(
         &self,
         _entering: Entity,
-        _source: Entity,
+        _exiting: Entity,
         _edge: Entity,
-        _machine: Entity,
     ) -> Option<Self::EntryEvent> {
         Some(TryDamage { target: self.victim, amount: self.damage })
     }
@@ -76,9 +75,8 @@ impl TransitionEvent for TryDamage {
     fn to_entry_event(
         &self,
         _entering: Entity,
-        _source: Entity,
+        _exiting: Entity,
         _edge: Entity,
-        _machine: Entity,
     ) -> Option<Self::EntryEvent> {
         Some(TakeDamage { target: self.target, amount: self.amount })
     }
@@ -364,7 +362,7 @@ fn on_add_dead_despawn(
     let mut pos = Vec3::ZERO;
     if let Ok(tf) = q_transform.get(root) { pos = tf.translation; }
     respawns.0.push(RespawnRequest { position: pos, delay: 1.0, timer: 0.0 });
-    commands.entity(root).despawn();
+    commands.entity(root).try_despawn();
 }
 
 fn process_respawn_queue(

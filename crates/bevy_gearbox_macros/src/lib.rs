@@ -28,9 +28,9 @@ use syn::Token;
 ///     type EdgeEvent = NoEvent;
 ///     type EntryEvent = NoEvent;
 ///     
-///     fn to_exit_event(&self, _source: Entity, _machine: Entity) -> Option<Self::ExitEvent> { None }
-///     fn to_edge_event(&self, _edge: Entity, _source: Entity, _target: Entity, _machine: Entity) -> Option<Self::EdgeEvent> { None }
-///     fn to_entry_event(&self, _entering: Entity, _source: Entity, _edge: Entity, _machine: Entity) -> Option<Self::EntryEvent> { None }
+///     fn to_exit_event(&self, _exiting: Entity, _entering: Entity, _edge: Entity) -> Option<Self::ExitEvent> { None }
+///     fn to_edge_event(&self, _edge: Entity) -> Option<Self::EdgeEvent> { None }
+///     fn to_entry_event(&self, _entering: Entity, _exiting: Entity, _edge: Entity) -> Option<Self::EntryEvent> { None }
 /// }
 /// ```
 #[proc_macro_derive(SimpleTransition)]
@@ -45,12 +45,10 @@ pub fn derive_simple_transition(input: TokenStream) -> TokenStream {
             type EntryEvent = bevy_gearbox::NoEvent;
             type Validator = bevy_gearbox::AcceptAll;
             
-            fn to_exit_event(&self, _source: bevy::prelude::Entity, _machine: bevy::prelude::Entity) -> Option<Self::ExitEvent> { None }
-            fn to_edge_event(&self, _edge: bevy::prelude::Entity, _source: bevy::prelude::Entity, _target: bevy::prelude::Entity, _machine: bevy::prelude::Entity) -> Option<Self::EdgeEvent> { None }
-            fn to_entry_event(&self, _entering: bevy::prelude::Entity, _source: bevy::prelude::Entity, _edge: bevy::prelude::Entity, _machine: bevy::prelude::Entity) -> Option<Self::EntryEvent> { None }
+            fn to_exit_event(&self, _exiting: bevy::prelude::Entity, _entering: bevy::prelude::Entity, _edge: bevy::prelude::Entity) -> Option<Self::ExitEvent> { None }
+            fn to_edge_event(&self, _edge: bevy::prelude::Entity) -> Option<Self::EdgeEvent> { None }
+            fn to_entry_event(&self, _entering: bevy::prelude::Entity, _exiting: bevy::prelude::Entity, _edge: bevy::prelude::Entity) -> Option<Self::EntryEvent> { None }
         }
-
-        impl bevy_gearbox::registration::RegisteredTransitionEvent for #name {}
 
         bevy_gearbox::inventory::submit! {
             bevy_gearbox::registration::TransitionInstaller { install: bevy_gearbox::registration::register_transition::<#name> }
@@ -100,8 +98,6 @@ pub fn transition_event(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         #parsed
-
-        impl bevy_gearbox::registration::RegisteredTransitionEvent for #name {}
 
         bevy_gearbox::inventory::submit! {
             bevy_gearbox::registration::TransitionInstaller { install: bevy_gearbox::registration::register_transition::<#name> }
