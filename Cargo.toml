@@ -11,13 +11,17 @@ keywords = ["bevy", "state-machine", "gamedev", "ecs"]
 categories = ["game-development", "game-engines"]
 build = "build.rs"
 
+[lib]
+name = "bevy_gearbox"
+path = "src/lib.rs"
+
 [workspace]
 members = [
   "crates/bevy_gearbox_editor",
   "crates/bevy_gearbox_macros", 
   "crates/bevy_gearbox_protocol",
 ]
-resolver = "2"
+resolver = "3"
 
 [dependencies]
 bevy = { version = "0.17", default-features = false, features = ["bevy_state"] }
