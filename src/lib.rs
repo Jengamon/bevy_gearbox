@@ -1,5 +1,3 @@
-#![cfg_attr(all(feature = "nightly", compiler_nightly), feature(associated_type_defaults))]
-
 use bevy::{prelude::*, reflect::Reflect};
 use bevy::platform::collections::HashSet;
 

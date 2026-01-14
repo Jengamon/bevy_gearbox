@@ -1,6 +1,6 @@
 [package]
 name = "bevy_gearbox"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "State machine system for the bevy game engine"
 license = "MIT OR Apache-2.0"
@@ -9,7 +9,6 @@ homepage = "https://github.com/DEMIURGE-studio/bevy_gearbox"
 readme = "README.md"
 keywords = ["bevy", "state-machine", "gamedev", "ecs"]
 categories = ["game-development", "game-engines"]
-build = "build.rs"
 
 [lib]
 name = "bevy_gearbox"
@@ -24,21 +23,20 @@ members = [
 resolver = "3"
 
 [dependencies]
-bevy = { version = "0.17", default-features = false, features = ["bevy_state"] }
+bevy = { version = "0.18", default-features = false, features = ["bevy_state"] }
 bevy_gearbox_macros = { version = "0.4.0", path = "./crates/bevy_gearbox_macros" }
 inventory = "0.3.21"
 rustversion = "1"
 
 [dev-dependencies]
-bevy = "0.17"
-bevy-inspector-egui = "0.35.0"
-bevy_gearbox_editor = { version = "0.5.0", path = "./crates/bevy_gearbox_editor" }
-bevy_gearbox_protocol = { version = "0.1.0", path = "./crates/bevy_gearbox_protocol", features = ["server"] }
+bevy = "0.18"
+# bevy-inspector-egui = "0.35.0"
+bevy_gearbox_editor = { path = "./crates/bevy_gearbox_editor" }
+bevy_gearbox_protocol = { path = "./crates/bevy_gearbox_protocol", features = ["server"] }
 
 [features]
 default = []
 # Opt-in flag. Effective only on nightly channel; ignored on stable.
-nightly = []
 
 [build-dependencies]
 rustc_version = "0.4"

@@ -38,6 +38,8 @@ impl Plugin for ServerPlugin {
         // Trackers and observers for +watch ring buffers
         app.init_resource::<MachineTrackers>()
             .add_observer(on_transition_edge)
+            .add_observer(on_state_entered)
+            .add_observer(on_state_exited)
             ;
 
         // Register RPCs (+watch and convenience endpoints). Start minimal; extend as needed.
@@ -429,7 +431,7 @@ fn machine_watch_handler(In(_params): In<Option<Value>>, _world: &World) -> BrpR
                 let kind = ev.get("kind").and_then(|v| v.as_str()).unwrap_or("");
                 let seq = ev.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
                 match kind {
-                    "transition_edge" if seq > p.last_transition_seq => out.push(ev.clone()),
+                    "transition_edge" | "state_entered" | "state_exited" if seq > p.last_transition_seq => out.push(ev.clone()),
                     _ => {}
                 }
             }
@@ -1012,7 +1014,43 @@ fn on_transition_edge(
     let ev = serde_json::json!({
         "kind": "transition_edge",
         "seq": tr.transition_seq,
-        "edge": entity_to_bits(edge),
+        "edge": entity_to_bits(edge).to_string(),
+    });
+    push_event(tr, ev);
+}
+
+fn on_state_entered(
+    enter_state: On<gearbox::EnterState>,
+    q_substate_of: Query<&gearbox::SubstateOf>,
+    mut trackers: ResMut<MachineTrackers>,
+) {
+    let target = enter_state.target;
+    let root = q_substate_of.root_ancestor(target);
+    println!("[SERVER] State Entered: {:?} (Root: {:?})", target, root);
+    let tr = trackers.trackers.entry(root).or_default();
+    tr.transition_seq = tr.transition_seq.saturating_add(1);
+    let ev = serde_json::json!({
+        "kind": "state_entered",
+        "seq": tr.transition_seq,
+        "entity": entity_to_bits(target).to_string(),
+    });
+    push_event(tr, ev);
+}
+
+fn on_state_exited(
+    exit_state: On<gearbox::ExitState>,
+    q_substate_of: Query<&gearbox::SubstateOf>,
+    mut trackers: ResMut<MachineTrackers>,
+) {
+    let target = exit_state.target;
+    let root = q_substate_of.root_ancestor(target);
+    println!("[SERVER] State Exited: {:?} (Root: {:?})", target, root);
+    let tr = trackers.trackers.entry(root).or_default();
+    tr.transition_seq = tr.transition_seq.saturating_add(1);
+    let ev = serde_json::json!({
+        "kind": "state_exited",
+        "seq": tr.transition_seq,
+        "entity": entity_to_bits(target).to_string(),
     });
     push_event(tr, ev);
 }

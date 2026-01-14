@@ -1,10 +1,8 @@
-// Ported from bevy_gearbox_editor/examples/repeater.rs
-// Uses protocol server to enable optional remote editor connection
 use bevy::prelude::*;
 use bevy::reflect::Reflect;
 use bevy_gearbox::prelude::*;
-use bevy_gearbox::GearboxPlugin;
 use bevy_gearbox::transitions::EventEdge;
+use bevy_gearbox::GearboxPlugin;
 use bevy_gearbox_editor::ServerPlugin;
 
 fn main() {
@@ -53,12 +51,18 @@ struct AbilityMachine;
 // Component to attach to the Repeat state
 #[derive(Component, Reflect)]
 #[reflect(Component, Default)]
-struct Repeater { remaining: u32, initial: u32 }
+struct Repeater {
+    remaining: u32,
+    initial: u32,
+}
 
-impl Default for Repeater { 
-    fn default() -> Self { 
-        Self { remaining: 5, initial: 5 } 
-    } 
+impl Default for Repeater {
+    fn default() -> Self {
+        Self {
+            remaining: 5,
+            initial: 5,
+        }
+    }
 }
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -76,7 +80,10 @@ fn input_system(
     q_machine: Query<Entity, With<AbilityMachine>>,
     mut commands: Commands,
 ) {
-    let Ok(machine) = q_machine.single() else { println!("No machine found"); return; };
+    let Ok(machine) = q_machine.single() else {
+        println!("No machine found");
+        return;
+    };
     if keyboard_input.just_pressed(KeyCode::KeyC) {
         println!("\n--- 'C' Pressed: Sending CastAbility event! ---");
         commands.trigger(CastAbility { target: machine });
@@ -89,7 +96,9 @@ fn on_enter_repeating_emit_events(
     mut q_repeater: Query<&mut Repeater>,
     mut commands: Commands,
 ) {
-    let Ok(mut repeater) = q_repeater.get_mut(enter_state.target) else { return; };
+    let Ok(mut repeater) = q_repeater.get_mut(enter_state.target) else {
+        return;
+    };
     let root = enter_state.state_machine;
     repeater.remaining -= 1;
     if repeater.remaining > 0 {
@@ -99,15 +108,14 @@ fn on_enter_repeating_emit_events(
     }
 }
 
-fn reset_repeater(
-    reset: On<Reset>,
-    mut q_repeater: Query<&mut Repeater>,
-) {
+fn reset_repeater(reset: On<Reset>, mut q_repeater: Query<&mut Repeater>) {
     let state = reset.target;
 
     println!("Resetting repeater for state: {:?}", state);
 
-    let Ok(mut repeater) = q_repeater.get_mut(state) else { return; };
+    let Ok(mut repeater) = q_repeater.get_mut(state) else {
+        return;
+    };
     repeater.remaining = repeater.initial;
 }
 
@@ -125,5 +133,3 @@ fn print_onrepeat(_t: On<OnRepeat>) {
 fn print_oncomplete(_t: On<OnComplete>) {
     println!("OnComplete event emitted");
 }
-
-

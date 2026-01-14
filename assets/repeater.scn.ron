@@ -42,7 +42,7 @@
       components: {
         "bevy_ecs::hierarchy::ChildOf": (51539607468),
         "bevy_ecs::name::Name": "Always",
-        "bevy_gearbox::transitions::After": (
+        "bevy_gearbox::transitions::Delay": (
           duration: (
             secs: 1,
             nanos: 0,

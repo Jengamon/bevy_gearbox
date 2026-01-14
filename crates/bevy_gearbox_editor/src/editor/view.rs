@@ -570,19 +570,23 @@ pub fn draw_doc_on_board(
                 painter.rect_filled(rect_screen, rounding, base_fill);
                 let header_rect_world = layout.header_rect(id, &cfg).unwrap_or(rect_world);
                 let header_rect = egui::Rect::from_min_max(doc.transform.to_screen(header_rect_world.min), doc.transform.to_screen(header_rect_world.max));
-                // Header color: active -> yellow family; deactivated fades from yellow -> gray
                 let is_active = doc.graph.as_ref().map(|g| g.is_active(id)).unwrap_or(false);
                 let flash_t = doc.node_flash.get(id).copied().unwrap_or(0.0);
                 let fade_t = doc.node_fade.get(id).copied().unwrap_or(0.0);
-                let mut header_color = egui::Color32::from_rgb(38, 38, 46);
+
+                let base_header_color = egui::Color32::from_rgb(38, 38, 46);
+                let mut header_color = base_header_color;
+
                 if is_active {
-                    let alpha = 1.0 - flash_t;
-                    header_color = lerp_color(bright_yellow, base_yellow, alpha);
+                    header_color = base_yellow;
                 } else if fade_t > 0.0 {
-                    // fade down from base yellow to header gray
-                    let alpha = 1.0 - fade_t;
-                    header_color = lerp_color(base_yellow, egui::Color32::from_rgb(38, 38, 46), alpha);
+                    header_color = lerp_color(base_yellow, base_header_color, 1.0 - fade_t);
                 }
+
+                if flash_t > 0.0 {
+                    header_color = lerp_color(header_color, bright_yellow, flash_t);
+                }
+
                 painter.rect_filled(header_rect, egui::CornerRadius::same(6), header_color);
                 painter.hline(header_rect.x_range(), header_rect.max.y, egui::Stroke::new(1.0, egui::Color32::from_gray(90)));
                 // Text color: black when header is yellow, else white; lerp on fade
@@ -681,13 +685,19 @@ pub fn draw_doc_on_board(
                 let is_active = doc.graph.as_ref().map(|g| g.is_active(id)).unwrap_or(false);
                 let flash_t = doc.node_flash.get(id).copied().unwrap_or(0.0);
                 let fade_t = doc.node_fade.get(id).copied().unwrap_or(0.0);
-                let fill_color = if is_active {
-                    let alpha = 1.0 - flash_t;
-                    lerp_color(bright_yellow, base_yellow, alpha)
+
+                let mut fill_color = base_fill;
+
+                if is_active {
+                    fill_color = base_yellow;
                 } else if fade_t > 0.0 {
-                    let alpha = 1.0 - fade_t;
-                    lerp_color(base_yellow, base_fill, alpha)
-                } else { base_fill };
+                    fill_color = lerp_color(base_yellow, base_fill, 1.0 - fade_t);
+                }
+
+                if flash_t > 0.0 {
+                    fill_color = lerp_color(fill_color, bright_yellow, flash_t);
+                }
+
                 painter.rect_filled(rect_screen, rounding, fill_color);
                 // Selection halo (drawn before border so border stays crisp)
                 let is_selected = selection.as_ref().map(|s| *s == *id).unwrap_or(false);

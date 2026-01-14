@@ -317,9 +317,9 @@ fn poll_network(
                 let mut max_t = ui.last_transition_seq.get(&doc_id).copied().unwrap_or(0);
                 for ev in events.iter() {
                     let seq = ev.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
-                    match ev.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
-                        "transition_edge" => { if seq > max_t { max_t = seq; } }
-                        _ => {}
+                    let kind = ev.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                    if kind == "transition_edge" || kind == "state_entered" || kind == "state_exited" {
+                        if seq > max_t { max_t = seq; }
                     }
                 }
                 ui.last_transition_seq.insert(doc_id, max_t);
@@ -456,21 +456,65 @@ fn sync_snapshots_to_workspace(
     // Flash edges in any open doc that contains the edge (root or substates)
     let pending_events = std::mem::take(&mut ui.pending_machine_events);
     let mut edges_to_flash: Vec<EntityId> = Vec::new();
+    let mut states_to_flash: Vec<EntityId> = Vec::new();
+    let mut states_to_fade: Vec<EntityId> = Vec::new();
+
     for (_id, events) in pending_events.into_iter() {
         for ev in events.into_iter() {
             let kind = ev.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            if kind == "transition_edge" {
-                if let Some(edge) = ev.get("edge").and_then(|v| v.as_u64()) {
-                    let edge = crate::util::canonicalize_entity_u64(edge);
-                    edges_to_flash.push(EntityId(edge));
+            match kind {
+                "transition_edge" => {
+                    let edge_raw = ev.get("edge").and_then(|v| {
+                        v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                    });
+                    if let Some(edge) = edge_raw {
+                        let edge = crate::util::canonicalize_entity_u64(edge);
+                        println!("[EDITOR] Transition Edge Event: {}", edge);
+                        edges_to_flash.push(EntityId(edge));
+                    }
                 }
+                "state_entered" => {
+                    let entity_raw = ev.get("entity").and_then(|v| {
+                        v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                    });
+                    if let Some(entity) = entity_raw {
+                        let entity = crate::util::canonicalize_entity_u64(entity);
+                        println!("[EDITOR] State Entered Event: {}", entity);
+                        states_to_flash.push(EntityId(entity));
+                    }
+                }
+                "state_exited" => {
+                    let entity_raw = ev.get("entity").and_then(|v| {
+                        v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                    });
+                    if let Some(entity) = entity_raw {
+                        let entity = crate::util::canonicalize_entity_u64(entity);
+                        println!("[EDITOR] State Exited Event: {}", entity);
+                        states_to_fade.push(EntityId(entity));
+                    }
+                }
+                _ => {}
             }
         }
     }
-    if !edges_to_flash.is_empty() {
-        for (_doc_id, doc) in docs.map.iter_mut() {
-            for eid in edges_to_flash.iter().copied() {
-                if doc.scene.edges.contains_key(&eid) { doc.flash_edge(eid); }
+
+    for (_doc_id, doc) in docs.map.iter_mut() {
+        for eid in edges_to_flash.iter().copied() {
+            if doc.scene.edges.contains_key(&eid) {
+                println!("[EDITOR] Flashing Edge: {}", eid.0);
+                doc.flash_edge(eid);
+            }
+        }
+        for sid in states_to_flash.iter().copied() {
+            if doc.scene.states.contains_key(&sid) {
+                println!("[EDITOR] Flashing State: {}", sid.0);
+                doc.node_flash.insert(sid, 1.0);
+            }
+        }
+        for sid in states_to_fade.iter().copied() {
+            if doc.scene.states.contains_key(&sid) {
+                println!("[EDITOR] Fading State: {}", sid.0);
+                doc.node_fade.insert(sid, 1.0);
             }
         }
     }

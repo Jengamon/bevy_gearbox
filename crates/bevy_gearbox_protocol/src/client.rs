@@ -642,7 +642,8 @@ fn ensure_watch_manager(rt: &tokio::runtime::Runtime, mgr: &mut WatchManager) {
                                                         if !events.is_empty() {
                                                             for ev in events.iter() {
                                                                 if let Some(seq) = ev.get("seq").and_then(|v| v.as_u64()) {
-                                                                    if ev.get("kind").and_then(|v| v.as_str()) == Some("transition_edge") {
+                                                                    let kind = ev.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                                                                    if kind == "transition_edge" || kind == "state_entered" || kind == "state_exited" {
                                                                         if seq > last_transition_seq { last_transition_seq = seq; }
                                                                     }
                                                                 }
