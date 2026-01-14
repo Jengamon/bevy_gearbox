@@ -166,8 +166,8 @@ fn count_ready_entities(
 ## Your first State Machine/Chart
 
 Inside [DOCS.md](DOCS.md) you'll find an in-depth step by step guide into everything you need to build your first
-State Machine, interact with it through the ECS and explanations for every how different parts of the API can be used.
-Don't worry, gearbox is pretty simple and intuitive to use, so it isn't as daunting as it sounds!
+State Machine, interact with it through the ECS, and explanations for every how different parts of the API can be used.
+States and transitions in gearbox are all just entities. Therefore, if you know how use bevy, you know how to use gearbox.
 
 <!-- TODO: Maybe move this section and everything regarding to the
 editor into the editor repository and link to it.-->
@@ -197,7 +197,7 @@ fn main() {
 ```
 
 3. Run your app `cargo run`
-4. Launch the editor as a separate process and connect to your running app (see the editor repository for launch instructions).
+4. Launch the editor as a separate process and connect to your running app (see the [editor](https://crates.io/crates/bevy_gearbox) for launch instructions).
 
 ### Creating an state machine in the editor
 
@@ -208,8 +208,7 @@ Coming soon.
 - Improve usability and erogonomics  
   Through user experimentation new edgecases and api ergonomic gotchas are bound to be discovered and improved.
 - Integrate with `bsn!` and `Scenes V2`  
-  This will make defining state machines in code much more powerful, and the entity patching will massively improve usability of statemachine scene assets. Fingers crossed for 0.18!
-- Use inventory more liberally to get rid of other component registration requirements, such as for state components and parameters.
+  This will make defining state machines in code much more powerful, and the entity patching will massively improve usability of statemachine scene assets. Fingers crossed for 0.19!
 - Make the editor completely standalone through [BRP](https://docs.rs/bevy/0.17.2/bevy/remote) (Bevy Remote Protocol).
 
 > [!WARNING]
@@ -229,8 +228,8 @@ Coming soon.
 
 | Bevy | Gearbox |
 | ---- | ------- |
-| 0.18 | 0.6     |
-| 0.17 | 0.5     |
+| 0.18 | 0.5     |
+| 0.17 | 0.4     |
 
 ## Contributing
 

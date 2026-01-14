@@ -1026,7 +1026,6 @@ fn on_state_entered(
 ) {
     let target = enter_state.target;
     let root = q_substate_of.root_ancestor(target);
-    println!("[SERVER] State Entered: {:?} (Root: {:?})", target, root);
     let tr = trackers.trackers.entry(root).or_default();
     tr.transition_seq = tr.transition_seq.saturating_add(1);
     let ev = serde_json::json!({
@@ -1044,7 +1043,6 @@ fn on_state_exited(
 ) {
     let target = exit_state.target;
     let root = q_substate_of.root_ancestor(target);
-    println!("[SERVER] State Exited: {:?} (Root: {:?})", target, root);
     let tr = trackers.trackers.entry(root).or_default();
     tr.transition_seq = tr.transition_seq.saturating_add(1);
     let ev = serde_json::json!({

@@ -1,6 +1,6 @@
 [package]
 name = "bevy_gearbox"
-version = "0.6.0"
+version = "0.5.0"
 edition = "2021"
 description = "State machine system for the bevy game engine"
 license = "MIT OR Apache-2.0"
@@ -31,8 +31,8 @@ rustversion = "1"
 [dev-dependencies]
 bevy = "0.18"
 # bevy-inspector-egui = "0.35.0"
-bevy_gearbox_editor = { version = "0.6.0", path = "./crates/bevy_gearbox_editor" }
-bevy_gearbox_protocol = { version = "0.6.0", path = "./crates/bevy_gearbox_protocol", features = ["server"] }
+bevy_gearbox_editor = { version = "0.5.0", path = "./crates/bevy_gearbox_editor" }
+bevy_gearbox_protocol = { version = "0.5.0", path = "./crates/bevy_gearbox_protocol", features = ["server"] }
 
 [features]
 default = []
