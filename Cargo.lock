@@ -878,9 +878,20 @@ name = "bevy_gearbox"
 version = "0.5.0"
 dependencies = [
  "bevy",
+ "bevy_gearbox_core",
  "bevy_gearbox_editor",
- "bevy_gearbox_macros",
  "bevy_gearbox_protocol",
+ "inventory",
+ "rustc_version",
+ "rustversion",
+]
+
+[[package]]
+name = "bevy_gearbox_core"
+version = "0.5.0"
+dependencies = [
+ "bevy",
+ "bevy_gearbox_macros",
  "inventory",
  "rustc_version",
  "rustversion",
@@ -915,7 +926,7 @@ name = "bevy_gearbox_protocol"
 version = "0.5.0"
 dependencies = [
  "bevy",
- "bevy_gearbox",
+ "bevy_gearbox_core",
  "futures-util",
  "reqwest",
  "serde",

@@ -27,6 +27,7 @@ fn bridge_sets_bevy_state_on_enter_and_updates_on_transition() {
     let mut app = test_app();
 
     // Enable Bevy state and bridge for TestState
+    app.init_state::<TestState>();
     app.register_state_bridge::<TestState>();
 
     // Build a simple machine: root -> s_a (initial) and sibling s_b
@@ -55,6 +56,7 @@ fn bridge_sets_bevy_state_on_enter_and_updates_on_transition() {
 #[test]
 fn state_scoped_entities_are_despawned_on_exit_of_chart_state() {
     let mut app = test_app();
+    app.init_state::<TestState>();
     app.register_state_bridge::<TestState>();
 
     let root = app.world_mut().spawn_empty().id();

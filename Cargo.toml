@@ -16,6 +16,7 @@ path = "src/lib.rs"
 
 [workspace]
 members = [
+  "crates/bevy_gearbox_core",
   "crates/bevy_gearbox_editor",
   "crates/bevy_gearbox_macros", 
   "crates/bevy_gearbox_protocol",
@@ -24,19 +25,21 @@ resolver = "3"
 
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = ["bevy_state"] }
-bevy_gearbox_macros = { version = "0.4.0", path = "./crates/bevy_gearbox_macros" }
+bevy_gearbox_core = { version = "0.5.0", path = "./crates/bevy_gearbox_core" }
+bevy_gearbox_editor = { version = "0.5.0", path = "./crates/bevy_gearbox_editor", optional = true }
+bevy_gearbox_protocol = { version = "0.5.0", path = "./crates/bevy_gearbox_protocol", features = ["server"], optional = true }
 inventory = "0.3.21"
 rustversion = "1"
 
 [dev-dependencies]
 bevy = "0.18"
-# bevy-inspector-egui = "0.35.0"
 bevy_gearbox_editor = { version = "0.5.0", path = "./crates/bevy_gearbox_editor" }
 bevy_gearbox_protocol = { version = "0.5.0", path = "./crates/bevy_gearbox_protocol", features = ["server"] }
 
 [features]
 default = []
-# Opt-in flag. Effective only on nightly channel; ignored on stable.
+editor = ["dep:bevy_gearbox_editor"]
+protocol = ["dep:bevy_gearbox_protocol"]
 
 [build-dependencies]
 rustc_version = "0.4"
