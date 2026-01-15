@@ -6,7 +6,6 @@ description = "State machine system for the bevy game engine"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/DEMIURGE-studio/bevy_gearbox"
 homepage = "https://github.com/DEMIURGE-studio/bevy_gearbox"
-readme = "README.md"
 keywords = ["bevy", "state-machine", "gamedev", "ecs"]
 categories = ["game-development", "game-engines"]
 
