@@ -7,7 +7,7 @@ use bevy_gearbox::GearboxPlugin;
 use bevy::math::primitives::{Plane3d, Sphere, Cuboid};
 use bevy_gearbox::transitions::{AlwaysEdge, Delay};
 use bevy_gearbox::transitions::EdgeKind;
-use bevy_gearbox_editor::ServerPlugin;
+use bevy_gearbox::server::ServerPlugin;
 
 // This example focuses on TransitionEvent payloads: mapping a trigger event into
 // typed Entry/Exit/Effect phase events that carry data (like target and damage).

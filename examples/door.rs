@@ -5,7 +5,7 @@ use bevy_gearbox::prelude::*;
 use bevy_gearbox::transitions::{Source, Delay, DeferEvent};
 use bevy_gearbox::GearboxPlugin;
 use std::time::Duration;
-use bevy_gearbox_editor::ServerPlugin;
+use bevy_gearbox::server::ServerPlugin;
 
 fn main() {
     App::new()

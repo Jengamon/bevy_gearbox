@@ -22,7 +22,7 @@ use bevy_gearbox_protocol::components as c;
 use serde_json::Map as JsonMap;
 use serde_json::Value as JsonValue;
 
-pub(crate) struct EditorPlugin;
+pub struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {

@@ -26,20 +26,18 @@ resolver = "3"
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = ["bevy_state"] }
 bevy_gearbox_core = { version = "0.5.0", path = "./crates/bevy_gearbox_core" }
-bevy_gearbox_editor = { version = "0.5.0", path = "./crates/bevy_gearbox_editor", optional = true }
 bevy_gearbox_protocol = { version = "0.5.0", path = "./crates/bevy_gearbox_protocol", features = ["server"], optional = true }
 inventory = "0.3.21"
 rustversion = "1"
 
 [dev-dependencies]
 bevy = "0.18"
-bevy_gearbox_editor = { version = "0.5.0", path = "./crates/bevy_gearbox_editor" }
 bevy_gearbox_protocol = { version = "0.5.0", path = "./crates/bevy_gearbox_protocol", features = ["server"] }
 
 [features]
 default = []
-editor = ["dep:bevy_gearbox_editor"]
 protocol = ["dep:bevy_gearbox_protocol"]
+server = ["protocol", "bevy_gearbox_protocol/server"]
 
 [build-dependencies]
 rustc_version = "0.4"
@@ -47,3 +45,19 @@ rustc_version = "0.4"
 [[example]]
 name = "repeater"
 path = "examples/repeater.rs"
+required-features = ["server"]
+
+[[example]]
+name = "door"
+path = "examples/door.rs"
+required-features = ["server"]
+
+[[example]]
+name = "custom_payload"
+path = "examples/custom_payload.rs"
+required-features = ["server"]
+
+[[example]]
+name = "app_state"
+path = "examples/app_state.rs"
+required-features = ["server"]

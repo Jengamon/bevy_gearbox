@@ -1,13 +1,14 @@
 use bevy::prelude::*;
 use bevy_egui::EguiPlugin;
-use plugin::EditorPlugin;
 
-mod persistence;
+pub mod editor;
+pub mod model;
+pub mod persistence;
 mod plugin;
-mod types;
-mod util;
-mod model;
-mod editor;
+pub mod types;
+pub mod util;
+
+use plugin::EditorPlugin;
 
 fn main() {
     App::new()
@@ -16,4 +17,3 @@ fn main() {
         .add_plugins(EditorPlugin)
         .run();
 }
-

@@ -879,7 +879,6 @@ version = "0.5.0"
 dependencies = [
  "bevy",
  "bevy_gearbox_core",
- "bevy_gearbox_editor",
  "bevy_gearbox_protocol",
  "inventory",
  "rustc_version",

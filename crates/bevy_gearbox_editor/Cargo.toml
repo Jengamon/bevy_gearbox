@@ -9,10 +9,6 @@ homepage = "https://github.com/DEMIURGE-studio/bevy_gearbox_editor"
 keywords = ["bevy", "state-machine", "gamedev", "ecs"]
 categories = ["game-development", "game-engines"]
 
-[lib]
-name = "bevy_gearbox_editor"
-path = "src/lib.rs"
-
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = [
     "bevy_asset",

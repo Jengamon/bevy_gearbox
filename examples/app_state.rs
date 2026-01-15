@@ -5,7 +5,7 @@ use bevy_gearbox::StateMachineId;
 use bevy_gearbox::prelude::*;
 use bevy_gearbox::GearboxPlugin;
 use bevy_gearbox::state_bridge;
-use bevy_gearbox_editor::ServerPlugin;
+use bevy_gearbox::server::ServerPlugin;
 
 #[derive(States, Component, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
 #[state_bridge]

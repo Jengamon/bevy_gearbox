@@ -176,7 +176,7 @@ editor into the editor repository and link to it.-->
 
 ### Installing the editor
 
-1. Run `cargo add bevy_gearbox_editor`
+1. Run `cargo add bevy_gearbox --features server`
 2. Add the server plugin to your app
 
 ```rust
@@ -189,7 +189,7 @@ fn main() {
     app.add_plugins((
         DefaultPlugins,
         GearboxPlugin,
-        bevy_gearbox_editor::ServerPlugin::default(),
+        bevy_gearbox::server::ServerPlugin::default(),
     ));
 
     app.run();
