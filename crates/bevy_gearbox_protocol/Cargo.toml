@@ -1,6 +1,6 @@
 [package]
 name = "bevy_gearbox_protocol"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "Protocol (client/server) for Bevy Gearbox editor/app communication"
 license = "MIT OR Apache-2.0"
