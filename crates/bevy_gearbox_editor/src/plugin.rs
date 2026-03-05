@@ -238,11 +238,27 @@ fn poll_network(
 ) {
     let mut processed = 0usize;
     const MAX_PER_FRAME: usize = 64;
+
+    // Helper to ensure we are marked as connected if we're receiving traffic
+    let mut ensure_connected = |store: &mut EditorStore| {
+        if !matches!(store.connection, EditorConnectionState::Connected { .. }) {
+            let ep = store
+                .last_endpoint
+                .clone()
+                .unwrap_or_else(|| "http://127.0.0.1:15703".to_string());
+            store.connection = EditorConnectionState::Connected {
+                session_id: store.session_id,
+                endpoint: ep,
+            };
+        }
+    };
+
     // Handle client responses (e.g., RefreshMachines)
     for msg in client_msgs.read() {
         if processed >= MAX_PER_FRAME {
             break;
         }
+        ensure_connected(&mut store);
         match msg {
             ClientMessage::RefreshResult(Ok(list)) => {
                 // Update UI cache and editor index
@@ -342,6 +358,7 @@ fn poll_network(
         if processed >= MAX_PER_FRAME {
             break;
         }
+        ensure_connected(&mut store);
         match msg.clone() {
             NetMessage::Discovery(batch) => {
                 for m in batch.into_iter() {

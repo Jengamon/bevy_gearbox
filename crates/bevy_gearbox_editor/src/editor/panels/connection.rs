@@ -12,12 +12,24 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands)
         };
         ui.label("Endpoint");
         ui.text_edit_singleline(&mut endpoint);
-        let is_connected = matches!(store.connection, ConnectionState::Connected { .. });
-        if ui.button(if is_connected { "Disconnect" } else { "Connect" }).clicked() {
-            if is_connected { commands.trigger(DisconnectRequested); }
-            else { commands.trigger(ConnectRequested { endpoint }); }
+
+        let button_text = match store.connection {
+            ConnectionState::Connected { .. } => "Disconnect",
+            ConnectionState::Connecting => "Connecting...",
+            ConnectionState::Disconnected => "Connect",
+        };
+
+        if ui.button(button_text).clicked() {
+            match store.connection {
+                ConnectionState::Connected { .. } | ConnectionState::Connecting => {
+                    commands.trigger(DisconnectRequested);
+                }
+                ConnectionState::Disconnected => {
+                    commands.trigger(ConnectRequested { endpoint });
+                }
+            }
         }
-        if is_connected {
+        if matches!(store.connection, ConnectionState::Connected { .. }) {
             if ui.button("Reconnect").clicked() {
                 commands.trigger(ReconnectRequested);
             }

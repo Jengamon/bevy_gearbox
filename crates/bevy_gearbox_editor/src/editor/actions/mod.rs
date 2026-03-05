@@ -28,7 +28,6 @@ pub fn reconnect(store: &mut EditorStore) {
     if let Some(ep) = endpoint {
         store.connection = ConnectionState::Connecting;
         store.session_id = store.session_id.wrapping_add(1);
-        store.connection = ConnectionState::Connected { session_id: store.session_id, endpoint: ep };
     }
 }
 
