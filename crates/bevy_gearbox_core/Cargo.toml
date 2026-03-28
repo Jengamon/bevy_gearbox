@@ -1,6 +1,6 @@
 [package]
 name = "bevy_gearbox_core"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "State machine system for the bevy game engine"
 license = "MIT OR Apache-2.0"

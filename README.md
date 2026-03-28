@@ -228,7 +228,7 @@ Coming soon.
 
 | Bevy | Gearbox |
 | ---- | ------- |
-| 0.18 | 0.5     |
+| 0.18 | 0.5.2   |
 | 0.17 | 0.4     |
 
 ## Contributing
