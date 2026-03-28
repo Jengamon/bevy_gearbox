@@ -22,6 +22,7 @@ pub use crate::{
     history::History,
     // Traits
     guards::Guard,
+    guards::GuardProvider,
     // Systems
     get_all_leaf_states,
     state_component::state_component_enter,
@@ -38,6 +39,12 @@ pub use crate::{
     transitions::TransitionEvent,
     transitions::NoEvent,
     transitions::AcceptAll,
+    // Commands extensions
+    commands::SpawnSubstate,
+    commands::SpawnTransition,
+    commands::BuildTransition,
+    commands::TransitionExt,
+    commands::InitStateMachine,
     // Bevy state integration
     bevy_state::GearboxCommandsExt,
     // Derive macros

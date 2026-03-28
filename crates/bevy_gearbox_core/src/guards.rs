@@ -62,3 +62,13 @@ impl Guard for &str {
         self.to_string()
     }
 }
+
+/// A component that acts as a guard provider. When inserted on a transition edge,
+/// it manages a named guard in the `Guards` set.
+///
+/// Implement this on components that should automatically register their guard
+/// name when added via [`TransitionExt::init_guard`](crate::commands::TransitionExt::init_guard).
+pub trait GuardProvider: bevy::ecs::bundle::Bundle {
+    /// The guard name this provider manages.
+    fn guard_name() -> &'static str;
+}

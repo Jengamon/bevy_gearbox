@@ -13,6 +13,7 @@ pub use bevy_gearbox_macros::state_bridge;
 pub use transitions::{TransitionEvent, NoEvent, AcceptAll};
 pub use inventory;
 
+pub mod commands;
 pub mod guards;
 pub mod history;
 pub mod prelude;
