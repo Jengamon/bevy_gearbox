@@ -854,7 +854,7 @@ fn self_transition_with_parallel_children_fires_once() {
 
     let log = app.world().resource::<OrderLog>().0.clone();
 
-    // Count how many times flying is entered — should be exactly 1
+    // Count how many times flying is entered - should be exactly 1
     let flying_enters = log.iter().filter(|s| *s == "enter:flying").count();
     let flying_exits = log.iter().filter(|s| *s == "exit:flying").count();
 
