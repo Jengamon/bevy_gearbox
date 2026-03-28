@@ -806,6 +806,80 @@ fn after_timer_handles_missing_target_during_delay() {
 }
 
 #[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
+struct EvtSelfHit { #[event_target] target: Entity }
+
+/// Self-transition on a state with parallel children should produce exactly one
+/// exit/enter cycle, not cascade repeatedly.
+#[test]
+fn self_transition_with_parallel_children_fires_once() {
+    let mut app = test_app();
+    app.insert_resource(OrderLog::default());
+    app.add_observer(log_enter);
+    app.add_observer(log_exit);
+
+    // Hierarchy:
+    //   root
+    //     └── flying  (no InitialState → parallel children)
+    //           ├── child_a
+    //           └── child_b
+    //
+    // Edge: flying →[EvtSelfHit]→ flying (external self-transition)
+
+    let root = app.world_mut().spawn((Name::new("root"),)).id();
+    let flying = app.world_mut().spawn((Name::new("flying"),)).id();
+    let child_a = app.world_mut().spawn((Name::new("child_a"),)).id();
+    let child_b = app.world_mut().spawn((Name::new("child_b"),)).id();
+
+    app.world_mut().entity_mut(flying).insert(SubstateOf(root));
+    app.world_mut().entity_mut(child_a).insert(SubstateOf(flying));
+    app.world_mut().entity_mut(child_b).insert(SubstateOf(flying));
+
+    // Self-transition edge
+    app.world_mut().spawn((
+        Name::new("self_edge"),
+        Source(flying),
+        Target(flying),
+        EventEdge::<EvtSelfHit>::default(),
+    ));
+
+    app.world_mut().entity_mut(root).insert((InitialState(flying), StateMachine::new()));
+    app.update();
+
+    // Clear init logs
+    app.world_mut().resource_mut::<OrderLog>().0.clear();
+
+    // Fire ONE event
+    app.world_mut().commands().trigger(EvtSelfHit { target: root });
+    app.update();
+
+    let log = app.world().resource::<OrderLog>().0.clone();
+
+    // Count how many times flying is entered — should be exactly 1
+    let flying_enters = log.iter().filter(|s| *s == "enter:flying").count();
+    let flying_exits = log.iter().filter(|s| *s == "exit:flying").count();
+
+    assert_eq!(
+        flying_enters, 1,
+        "flying should be entered exactly once, got {flying_enters}. Full log: {log:?}"
+    );
+    assert_eq!(
+        flying_exits, 1,
+        "flying should be exited exactly once, got {flying_exits}. Full log: {log:?}"
+    );
+
+    // Children should also enter/exit exactly once each
+    let child_a_enters = log.iter().filter(|s| *s == "enter:child_a").count();
+    let child_b_enters = log.iter().filter(|s| *s == "enter:child_b").count();
+    assert_eq!(child_a_enters, 1, "child_a should enter once, got {child_a_enters}. Full log: {log:?}");
+    assert_eq!(child_b_enters, 1, "child_b should enter once, got {child_b_enters}. Full log: {log:?}");
+
+    // Machine should still be in the same state
+    let sm = app.world().get::<StateMachine>(root).unwrap();
+    assert!(sm.active_leaves.contains(&child_a), "child_a should be active leaf");
+    assert!(sm.active_leaves.contains(&child_b), "child_b should be active leaf");
+}
+
+#[derive(SimpleTransition, EntityEvent, Reflect, Clone)]
 struct DelayedTestEvt { #[event_target] target: Entity }
 
 #[test]

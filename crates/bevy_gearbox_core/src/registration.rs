@@ -16,6 +16,10 @@ pub struct InstalledTransitions(pub HashSet<TypeId>);
 #[derive(Resource, Default)]
 pub struct InstalledStateComponents(pub HashSet<TypeId>);
 
+/// Internal resource to dedupe transition_observer registration by PhaseEvents type.
+#[derive(Resource, Default)]
+pub struct InstalledTransitionObservers(pub HashSet<TypeId>);
+
 #[derive(Resource, Default)]
 pub struct InstalledFloatParams(pub HashSet<TypeId>);
 
@@ -121,13 +125,28 @@ impl RegistrationAppExt for App {
         let already = !installed.0.insert(TypeId::of::<E>());
         drop(installed);
         if already { return self; }
-    
+
         // Ensure reflect registrations for EventEdge<E> and validator type are present for scene I/O
         self.register_type::<crate::transitions::EventEdge<E>>();
         self.register_type::<<E as TransitionEvent>::Validator>();
-    
+
+        // Deduplicate transition_observer registration by PhaseEvents type.
+        // Multiple event types may share the same PhaseEvents<Exit, Edge, Entry> combo
+        // (e.g. all SimpleTransition types use PhaseEvents<Option<NoEvent>, ...>).
+        // Without this check, the same observer runs N times per transition.
+        {
+            if !self.world().contains_resource::<InstalledTransitionObservers>() {
+                self.insert_resource(InstalledTransitionObservers(HashSet::new()));
+            }
+            let mut installed_observers = self.world_mut().resource_mut::<InstalledTransitionObservers>();
+            let observer_already = !installed_observers.0.insert(TypeId::of::<PhaseEvents<E::ExitEvent, E::EdgeEvent, E::EntryEvent>>());
+            drop(installed_observers);
+            if !observer_already {
+                self.add_observer(crate::transition_observer::<PhaseEvents<E::ExitEvent, E::EdgeEvent, E::EntryEvent>>);
+            }
+        }
+
         self.add_observer(edge_event_listener::<E>)
-            .add_observer(crate::transition_observer::<PhaseEvents<E::ExitEvent, E::EdgeEvent, E::EntryEvent>>)
             .add_systems(Update, tick_after_event_timers::<E>)
             .add_observer(cancel_pending_event_on_exit::<E>)
             .add_observer(replay_deferred_event::<E>);
