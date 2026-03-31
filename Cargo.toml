@@ -37,6 +37,7 @@ criterion = "0.5"
 
 [features]
 default = ["server"]
+gauge = ["bevy_gearbox_core/gauge"]
 protocol = ["dep:bevy_gearbox_protocol"]
 server = ["protocol", "bevy_gearbox_protocol/server"]
 trace_tracy = ["bevy/trace_tracy"]

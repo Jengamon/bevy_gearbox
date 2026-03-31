@@ -40,6 +40,9 @@ pub mod registration;
 pub mod prelude;
 pub mod helpers;
 
+#[cfg(feature = "gauge")]
+pub mod gauge;
+
 use bevy::ecs::schedule::ScheduleLabel;
 use bevy::prelude::*;
 
