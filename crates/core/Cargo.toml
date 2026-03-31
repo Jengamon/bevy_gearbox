@@ -1,11 +1,16 @@
 [package]
-name = "bevy_gearbox_schedule"
-version = "0.2.0"
+name = "bevy_gearbox_core"
+version = "0.6.0"
 edition = "2021"
-description = "Schedule-based state machine resolution for bevy_gearbox"
+description = "State machine system for the bevy game engine"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/DEMIURGE-studio/bevy_gearbox"
+homepage = "https://github.com/DEMIURGE-studio/bevy_gearbox"
+keywords = ["bevy", "state-machine", "gamedev", "ecs"]
+categories = ["game-development", "game-engines"]
 
 [lib]
-name = "bevy_gearbox_schedule"
+name = "bevy_gearbox_core"
 path = "src/lib.rs"
 
 [dependencies]

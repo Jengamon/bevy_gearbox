@@ -972,7 +972,7 @@ fn extract_event_edge_variants(schema: &serde_json::Value) -> Vec<String> {
     collect_strings(schema, &mut strings);
     let mut out: Vec<String> = Vec::new();
     for s in strings.into_iter() {
-        if s.contains(crate::components::EVENT_EDGE_SUBSTR) {
+        if s.contains(crate::components::MESSAGE_EDGE_SUBSTR) {
             if let Some(inner) = inner_generic(&s) { out.push(simple_type(&inner)); }
         }
     }

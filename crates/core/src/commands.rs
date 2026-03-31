@@ -6,19 +6,6 @@ use bevy::prelude::*;
 use crate::components::*;
 use crate::messages::{GearboxMessage, MessageEdge};
 
-/// Extension trait to write [`Message`] types from [`Commands`].
-pub trait WriteMessageExt {
-    fn write_message<M: Message + Send + 'static>(&mut self, msg: M);
-}
-
-impl WriteMessageExt for Commands<'_, '_> {
-    fn write_message<M: Message + Send + 'static>(&mut self, msg: M) {
-        self.queue(move |world: &mut World| {
-            world.write_message(msg);
-        });
-    }
-}
-
 /// Extension trait for spawning substates with less boilerplate.
 pub trait SpawnSubstate {
     type Out<'a>
@@ -244,5 +231,91 @@ impl InitStateMachine for EntityCommands<'_> {
         } else {
             self.insert(StateMachine::new())
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Chart lookup helpers (find machine by marker component)
+// ---------------------------------------------------------------------------
+
+/// Commands helper to interact with a state machine found by a marker component.
+///
+/// This is useful when you know a machine carries a marker `M` but don't have
+/// the `Entity` at hand.
+pub trait GearboxCommandsExt {
+    /// Trigger an [`Event`] on the machine root found by marker `M`.
+    ///
+    /// The closure receives the root `Entity` and returns the event to trigger.
+    ///
+    /// ```rust,ignore
+    /// commands.emit_to_chart::<PlayerMarker>(|root| MyEvent::new(root));
+    /// ```
+    fn emit_to_chart<M>(&mut self, make: impl BuildEntityEvent + Send + 'static)
+    where
+        M: Component;
+
+    /// Write a [`Message`] addressed to the machine root found by marker `M`.
+    ///
+    /// ```rust,ignore
+    /// commands.write_message_to_chart::<PlayerMarker, _>(|root| Attack { machine: root });
+    /// ```
+    fn write_message_to_chart<M, Msg>(&mut self, make: impl FnOnce(Entity) -> Msg + Send + 'static)
+    where
+        M: Component,
+        Msg: Message + Send + 'static;
+}
+
+impl GearboxCommandsExt for Commands<'_, '_> {
+    fn emit_to_chart<M>(&mut self, make: impl BuildEntityEvent + Send + 'static)
+    where
+        M: Component,
+    {
+        self.queue(move |world: &mut World| {
+            let mut q = world.query_filtered::<Entity, With<M>>();
+            if let Ok(root) = q.single(world) {
+                make.trigger_into_world(world, root);
+            }
+        });
+    }
+
+    fn write_message_to_chart<M, Msg>(
+        &mut self,
+        make: impl FnOnce(Entity) -> Msg + Send + 'static,
+    ) where
+        M: Component,
+        Msg: Message + Send + 'static,
+    {
+        self.queue(move |world: &mut World| {
+            let mut q = world.query_filtered::<Entity, With<M>>();
+            if let Ok(root) = q.single(world) {
+                let msg = make(root);
+                world.write_message(msg);
+            }
+        });
+    }
+}
+
+/// Helper trait to build and trigger an event given a root entity.
+///
+/// Blanket-implemented for closures `FnOnce(Entity) -> E` where `E: Event`.
+/// The event type is inferred from the closure return type, so callers only
+/// need to specify the marker:
+///
+/// ```rust,ignore
+/// commands.emit_to_chart::<PlayerMarker>(|root| MyEntityEvent { target: root });
+/// ```
+pub trait BuildEntityEvent {
+    fn trigger_into_world(self, world: &mut World, root: Entity);
+}
+
+impl<F, E> BuildEntityEvent for F
+where
+    F: FnOnce(Entity) -> E + Send + 'static,
+    E: Event,
+    for<'a> <E as Event>::Trigger<'a>: Default,
+{
+    fn trigger_into_world(self, world: &mut World, root: Entity) {
+        let event = self(root);
+        world.trigger(event);
     }
 }

@@ -768,7 +768,6 @@ dependencies = [
  "bevy_gearbox_core",
  "bevy_gearbox_macros",
  "bevy_gearbox_protocol",
- "bevy_gearbox_schedule",
  "criterion",
  "inventory",
  "rustc_version",
@@ -777,22 +776,11 @@ dependencies = [
 
 [[package]]
 name = "bevy_gearbox_core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bevy",
- "bevy_gearbox_legacy_macros",
+ "criterion",
  "inventory",
- "rustc_version",
- "rustversion",
-]
-
-[[package]]
-name = "bevy_gearbox_legacy_macros"
-version = "0.4.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -817,15 +805,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "walkdir",
-]
-
-[[package]]
-name = "bevy_gearbox_schedule"
-version = "0.2.0"
-dependencies = [
- "bevy",
- "criterion",
- "inventory",
 ]
 
 [[package]]

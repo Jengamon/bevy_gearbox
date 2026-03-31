@@ -60,11 +60,14 @@ commands.spawn_transition::<Attack>(a, b);
 // Before
 commands.trigger(Attack { target: machine_entity });
 
-// After
+// After (preferred, requires access to writer)
 writer.write(Attack { machine: machine_entity });
+
+// After (quick migration, drop in replacement)
+commands.write_message(Attack { machine: machine_entity });
 ```
 
-Use `MessageWriter<Attack>` as a system parameter instead of `Commands::trigger()`.
+`MessageWriter<Attack>` is the preferred system parameter for writing messages. If you want a minimal diff during migration, Bevy's `Commands::write_message()` is a drop-in replacement for the old `commands.trigger()` pattern — just change the struct layout and the method name.
 
 ## Reacting to state changes
 
@@ -199,7 +202,7 @@ app.add_systems(Update, my_system.after(GearboxSet));
 | ------------------------------------------ | ----------------------------------------------------------------- |
 | `#[derive(SimpleTransition, EntityEvent)]` | `#[gearbox_message]`                       |
 | `EventEdge::<E>`                           | `MessageEdge::<M>`                                                |
-| `commands.trigger(event)`                  | `writer.write(message)`                                           |
+| `commands.trigger(event)`                  | `writer.write(message)` or `commands.write_message(message)`      |
 | `On<EnterState>` (`state_machine` field)   | `Query<&Active, Added<Active>>` or `On<EnterState>` (`machine` field) |
 | `On<ExitState>` (`state_machine` field)    | `RemovedComponents<Active>` or `On<ExitState>` (`machine` field)      |
 | `TransitionEvent::to_entry_event()`        | `impl SideEffect<M> for S`                                        |

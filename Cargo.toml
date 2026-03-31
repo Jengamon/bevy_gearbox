@@ -17,7 +17,6 @@ path = "src/lib.rs"
 [workspace]
 members = [
   "crates/core",
-  "crates/legacy",
   "crates/macros",
   "crates/protocol",
 ]
@@ -25,8 +24,7 @@ resolver = "3"
 
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = ["bevy_state"] }
-bevy_gearbox_core = { version = "0.5.1", path = "./crates/legacy" }
-bevy_gearbox_schedule = { version = "0.2.0", path = "./crates/core" }
+bevy_gearbox_core = { version = "0.6.0", path = "./crates/core" }
 bevy_gearbox_macros = { version = "0.6.0", path = "./crates/macros" }
 bevy_gearbox_protocol = { version = "0.5", path = "./crates/protocol", features = ["server"], optional = true }
 inventory = "0.3.21"
@@ -46,10 +44,6 @@ debug = ["bevy/debug"]
 
 [build-dependencies]
 rustc_version = "0.4"
-
-[[bench]]
-name = "observer_bench"
-harness = false
 
 [[example]]
 name = "door"

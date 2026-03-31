@@ -12,6 +12,17 @@ use crate::methods::EDITOR_RESET_REGION;
 use crate::methods::EDITOR_CREATE_TRANSITION;
 use std::collections::{HashMap, VecDeque};
 
+// StateMachineId was in the old core; define here until it's added to the new core.
+#[derive(Component, Reflect, Default)]
+#[reflect(Component)]
+pub struct StateMachineId(pub String);
+
+impl StateMachineId {
+    pub fn new(id: &str) -> Self {
+        Self(id.to_string())
+    }
+}
+
 #[derive(Default)]
 pub struct ServerPlugin {
     pub headers: Vec<(String, String)>,
@@ -37,10 +48,11 @@ impl Plugin for ServerPlugin {
 
         // Trackers and observers for +watch ring buffers
         app.init_resource::<MachineTrackers>()
-            .add_observer(on_transition_edge)
             .add_observer(on_state_entered)
             .add_observer(on_state_exited)
             ;
+        // Register StateMachineId for reflection (scene serialization)
+        app.register_type::<StateMachineId>();
 
         // Register RPCs (+watch and convenience endpoints). Start minimal; extend as needed.
         register_editor_subscription_rpcs(app);
@@ -109,7 +121,7 @@ fn collect_state_machine_entities(world: &mut World, root: Entity) -> Vec<Entity
     // Include transition edges referenced by any visited node
     let snapshot = out.clone();
     for e in snapshot.into_iter() {
-        if let Some(transitions) = world.get::<gearbox::transitions::Transitions>(e) {
+        if let Some(transitions) = world.get::<gearbox::Transitions>(e) {
             for &edge in transitions.into_iter() {
                 if world.entities().contains(edge) && seen.insert(edge) { out.push(edge); }
             }
@@ -211,7 +223,7 @@ fn iter_descendants_with_id(world: &mut World, root: Entity) -> Vec<(Entity, Str
     let mut q_children_state = world.query::<&gearbox::Substates>();
     let q_children = q_children_state.query(world);
     for cur in q_children.iter_descendants(root) {
-        if let Some(id) = world.get::<gearbox::StateMachineId>(cur) {
+        if let Some(id) = world.get::<StateMachineId>(cur) {
             if !id.0.is_empty() { out.push((cur, id.0.clone())); }
         }
     }
@@ -326,7 +338,7 @@ fn set_state_machine_id_handler(In(params): In<Option<Value>>, world: &mut World
         return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
     }
     let mut e = world.entity_mut(p.entity);
-    e.insert(gearbox::StateMachineId(p.path));
+    e.insert(StateMachineId(p.path));
     Ok(serde_json::json!({"ok": true}))
 }
 
@@ -339,7 +351,7 @@ fn sidecar_for_machine_handler(In(params): In<Option<Value>>, world: &mut World)
         return Err(BrpError { code: error_codes::INVALID_PARAMS, message: "invalid entity".to_string(), data: None });
     }
     // Resolve by StateMachineId("id") -> assets/<id>.sm.ron
-    if let Some(id) = world.get::<gearbox::StateMachineId>(p.entity) {
+    if let Some(id) = world.get::<StateMachineId>(p.entity) {
         let fname = format!("{}.sm.ron", id.0);
         let mut path = std::path::PathBuf::from(&fname);
         if !path.is_absolute() { path = std::path::PathBuf::from("assets").join(path); }
@@ -676,10 +688,14 @@ fn delete_subtree_handler(In(params): In<Option<Value>>, world: &mut World) -> B
     // Collect related transition edges for those states
     use std::collections::HashSet;
     let mut edges: HashSet<Entity> = HashSet::new();
+    let delete_set: HashSet<Entity> = to_delete_states.iter().copied().collect();
     for s in to_delete_states.iter().copied() {
-        if let Some(ts) = world.get::<gearbox::transitions::Transitions>(s) { for &e in ts.into_iter() { edges.insert(e); } }
-        if let Some(incoming) = world.get::<gearbox::transitions::TargetedBy>(s) { for &e in incoming.into_iter() { edges.insert(e); } }
+        if let Some(ts) = world.get::<gearbox::Transitions>(s) { for &e in ts.into_iter() { edges.insert(e); } }
     }
+    // Find incoming edges (Target no longer has a TargetedBy inverse)
+    let mut q_edge_target = world.query::<(Entity, &gearbox::Target)>();
+    let incoming: Vec<Entity> = q_edge_target.iter(world).filter(|(_, t)| delete_set.contains(&t.0)).map(|(e, _)| e).collect();
+    edges.extend(incoming);
     // Despawn edges first, then states
     for e in edges.into_iter() { let _ = world.despawn(e); }
     for s in to_delete_states.into_iter() { let _ = world.despawn(s); }
@@ -800,9 +816,9 @@ fn create_transition_handler(In(params): In<Option<Value>>, world: &mut World) -
     let entity = {
         let mut e = world.spawn_empty();
         let entity = e.id();
-        e.insert(gearbox::transitions::Source(p.source))
-            .insert(gearbox::transitions::Target(p.target))
-            .insert(gearbox::transitions::EdgeKind::External);
+        e.insert(gearbox::Source(p.source))
+            .insert(gearbox::Target(p.target))
+            .insert(gearbox::EdgeKind::External);
         entity
     };
 
@@ -810,7 +826,7 @@ fn create_transition_handler(In(params): In<Option<Value>>, world: &mut World) -
     let edge_label: String;
     if p.kind == "Always" {
         // Insert AlwaysEdge outside the spawn scope
-        world.entity_mut(entity).insert(gearbox::transitions::AlwaysEdge);
+        world.entity_mut(entity).insert(gearbox::AlwaysEdge);
         edge_label = "Always".to_string();
     } else {
         // Find a reflected component registration for EventEdge<T> whose inner T simple name matches p.kind
@@ -820,7 +836,7 @@ fn create_transition_handler(In(params): In<Option<Value>>, world: &mut World) -
         let mut found: Option<&TypeRegistration> = None;
         for registration in reg_read.iter() {
             let ty_path = registration.type_info().type_path();
-            if !ty_path.contains(crate::components::EVENT_EDGE_SUBSTR) { continue; }
+            if !ty_path.contains(crate::components::MESSAGE_EDGE_SUBSTR) { continue; }
             if let Some(inner) = inner_generic(ty_path) {
                 if simple_type_name(inner) == p.kind {
                     found = Some(registration);
@@ -890,8 +906,8 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
     let mut q_children = world.query::<&gearbox::Substates>();
     let mut q_name = world.query::<&Name>();
     let mut q_initial = world.query::<Option<&gearbox::InitialState>>();
-    let mut q_transitions = world.query::<Option<&gearbox::transitions::Transitions>>();
-    let mut q_targeted_by = world.query::<Option<&gearbox::transitions::TargetedBy>>();
+    let mut q_transitions = world.query::<Option<&gearbox::Transitions>>();
+
 
     let mut nodes: Vec<Value> = Vec::new();
     let mut edges: Vec<Value> = Vec::new();
@@ -908,7 +924,7 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
             components.insert(crate::components::INITIAL_STATE.to_string(), Value::String(init.0.to_bits().to_string()));
         }
         // Include StateMachineId if present to allow clients to resolve sidecar path
-        if let Some(id) = world.get::<gearbox::StateMachineId>(cur) {
+        if let Some(id) = world.get::<StateMachineId>(cur) {
             components.insert(crate::components::STATE_MACHINE_ID.to_string(), Value::String(id.0.clone()));
         }
         // Children
@@ -931,16 +947,6 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
                 components.insert(crate::components::TRANSITIONS.to_string(), Value::Array(ids));
             }
         }
-        if let Some(incoming) = q_targeted_by.get(world, cur).ok().flatten() {
-            let ids: Vec<Value> = incoming
-                .into_iter()
-                .copied()
-                .map(|e| Value::String(e.to_bits().to_string()))
-                .collect();
-            if !ids.is_empty() {
-                components.insert(crate::components::TARGETED_BY.to_string(), Value::Array(ids));
-            }
-        }
 
         nodes.push(serde_json::json!({
             "id": cur.to_bits().to_string(),
@@ -953,10 +959,10 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
             for edge in transitions.into_iter().copied() {
                 // Minimal edge fields: id/source/target and a few components as strings
                 let mut ecomps: BTreeMap<String, Value> = BTreeMap::new();
-                if let Some(t) = world.get::<gearbox::transitions::Target>(edge) {
+                if let Some(t) = world.get::<gearbox::Target>(edge) {
                     ecomps.insert(crate::components::TARGET.to_string(), Value::String(t.0.to_bits().to_string()));
                 }
-                if world.get::<gearbox::transitions::AlwaysEdge>(edge).is_some() {
+                if world.get::<gearbox::AlwaysEdge>(edge).is_some() {
                     ecomps.insert(crate::components::ALWAYS_EDGE.to_string(), Value::String("true".to_string()));
                 }
                 if let Some(name) = world.get::<Name>(edge) {
@@ -1000,55 +1006,34 @@ fn push_event(tracker: &mut MachineTracker, ev: Value) {
 }
 
 
-fn on_transition_edge(
-    transition: On<gearbox::EdgeTraversed>,
-    q_source: Query<&gearbox::transitions::Source>,
-    q_substate_of: Query<&gearbox::SubstateOf>,
-    mut trackers: ResMut<MachineTrackers>,
-) {
-    let edge = transition.target;
-    let Ok(source) = q_source.get(edge) else { return; };
-    let root = q_substate_of.root_ancestor(source.0);
-    let tr = trackers.trackers.entry(root).or_default();
-    tr.transition_seq = tr.transition_seq.saturating_add(1);
-    let ev = serde_json::json!({
-        "kind": "transition_edge",
-        "seq": tr.transition_seq,
-        "edge": entity_to_bits(edge).to_string(),
-    });
-    push_event(tr, ev);
-}
-
 fn on_state_entered(
     enter_state: On<gearbox::EnterState>,
-    q_substate_of: Query<&gearbox::SubstateOf>,
     mut trackers: ResMut<MachineTrackers>,
 ) {
-    let target = enter_state.target;
-    let root = q_substate_of.root_ancestor(target);
+    let state = enter_state.state;
+    let root = enter_state.machine;
     let tr = trackers.trackers.entry(root).or_default();
     tr.transition_seq = tr.transition_seq.saturating_add(1);
     let ev = serde_json::json!({
         "kind": "state_entered",
         "seq": tr.transition_seq,
-        "entity": entity_to_bits(target).to_string(),
+        "entity": entity_to_bits(state).to_string(),
     });
     push_event(tr, ev);
 }
 
 fn on_state_exited(
     exit_state: On<gearbox::ExitState>,
-    q_substate_of: Query<&gearbox::SubstateOf>,
     mut trackers: ResMut<MachineTrackers>,
 ) {
-    let target = exit_state.target;
-    let root = q_substate_of.root_ancestor(target);
+    let state = exit_state.state;
+    let root = exit_state.machine;
     let tr = trackers.trackers.entry(root).or_default();
     tr.transition_seq = tr.transition_seq.saturating_add(1);
     let ev = serde_json::json!({
         "kind": "state_exited",
         "seq": tr.transition_seq,
-        "entity": entity_to_bits(target).to_string(),
+        "entity": entity_to_bits(state).to_string(),
     });
     push_event(tr, ev);
 }

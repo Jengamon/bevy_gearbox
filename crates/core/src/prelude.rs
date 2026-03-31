@@ -18,7 +18,8 @@ pub use crate::messages::{
 };
 pub use crate::commands::{
     SpawnSubstate, SpawnTransition, BuildTransition,
-    TransitionExt, InitStateMachine, WriteMessageExt,
+    TransitionExt, InitStateMachine,
+    GearboxCommandsExt, BuildEntityEvent,
 };
 pub use crate::{GearboxSchedule, GearboxPhase, GearboxSet};
 pub use crate::resolve::{

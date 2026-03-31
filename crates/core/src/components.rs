@@ -4,9 +4,12 @@ use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
 
 /// Marks an entity as a state machine root and tracks active states.
-#[derive(Component, Default, Debug)]
+#[derive(Component, Default, Debug, Reflect)]
+#[reflect(Component)]
 pub struct StateMachine {
+    #[reflect(ignore)]
     pub active: HashSet<Entity>,
+    #[reflect(ignore)]
     pub active_leaves: HashSet<Entity>,
 }
 
@@ -35,7 +38,8 @@ pub struct Active {
 pub struct InitialState(pub Entity);
 
 /// Relationship: this state is a substate of another.
-#[derive(Component, Clone, PartialEq, Eq, Debug)]
+#[derive(Component, Clone, PartialEq, Eq, Debug, Reflect)]
+#[reflect(Component)]
 #[relationship(relationship_target = Substates)]
 pub struct SubstateOf(#[entities] pub Entity);
 

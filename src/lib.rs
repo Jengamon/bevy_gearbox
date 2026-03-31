@@ -1,4 +1,4 @@
-pub use bevy_gearbox_schedule::*;
+pub use bevy_gearbox_core::*;
 
 // Attribute macros
 pub use bevy_gearbox_macros::gearbox_message;
