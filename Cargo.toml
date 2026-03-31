@@ -1,6 +1,6 @@
 [package]
 name = "bevy_gearbox"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2021"
 description = "State machine system for the bevy game engine"
 license = "MIT OR Apache-2.0"
@@ -16,36 +16,40 @@ path = "src/lib.rs"
 
 [workspace]
 members = [
-  "crates/bevy_gearbox_core",
-  "crates/bevy_gearbox_editor",
-  "crates/bevy_gearbox_macros", 
-  "crates/bevy_gearbox_protocol",
+  "crates/core",
+  "crates/legacy",
+  "crates/macros",
+  "crates/protocol",
 ]
 resolver = "3"
 
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = ["bevy_state"] }
-bevy_gearbox_core = { version = "0.5.1", path = "./crates/bevy_gearbox_core" }
-bevy_gearbox_protocol = { version = "0.5", path = "./crates/bevy_gearbox_protocol", features = ["server"], optional = true }
+bevy_gearbox_core = { version = "0.5.1", path = "./crates/legacy" }
+bevy_gearbox_schedule = { version = "0.2.0", path = "./crates/core" }
+bevy_gearbox_macros = { version = "0.6.0", path = "./crates/macros" }
+bevy_gearbox_protocol = { version = "0.5", path = "./crates/protocol", features = ["server"], optional = true }
 inventory = "0.3.21"
 rustversion = "1"
 
 [dev-dependencies]
 bevy = "0.18"
-bevy_gearbox_protocol = { version = "0.5", path = "./crates/bevy_gearbox_protocol", features = ["server"] }
+bevy_gearbox_protocol = { version = "0.5", path = "./crates/protocol", features = ["server"] }
+criterion = "0.5"
 
 [features]
 default = ["server"]
 protocol = ["dep:bevy_gearbox_protocol"]
 server = ["protocol", "bevy_gearbox_protocol/server"]
+trace_tracy = ["bevy/trace_tracy"]
+debug = ["bevy/debug"]
 
 [build-dependencies]
 rustc_version = "0.4"
 
-[[example]]
-name = "repeater"
-path = "examples/repeater.rs"
-required-features = ["server"]
+[[bench]]
+name = "observer_bench"
+harness = false
 
 [[example]]
 name = "door"
