@@ -26,8 +26,10 @@ pub trait GearboxMessage: Message + Clone + Send + Sync + bevy::reflect::TypePat
     /// message type should match unconditionally.
     type Validator: MessageValidator<Self> + Default + Clone + Send + Sync;
 
-    /// Which machine this message is addressed to.
-    fn machine(&self) -> Entity;
+    /// Which entity this message is addressed to. Can be a state machine root
+    /// or any substate - the message listener walks `SubstateOf` to find the
+    /// root machine automatically.
+    fn target(&self) -> Entity;
 }
 
 /// Per-edge filter that accepts or rejects a message for a specific edge.
@@ -157,7 +159,7 @@ pub fn message_edge_listener<M: GearboxMessage>(
 ) {
     let msgs: Vec<_> = reader.read().cloned().collect();
     for msg in msgs {
-        let machine_entity = msg.machine();
+        let machine_entity = q_substate_of.root_ancestor(msg.target());
         let Ok(machine) = q_machine.get(machine_entity) else {
             continue;
         };

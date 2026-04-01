@@ -354,9 +354,6 @@ pub(crate) fn check_always_edges(
                     let Ok(target) = q_target.get(edge) else {
                         continue;
                     };
-                    if machine.is_active(&target.0) {
-                        continue;
-                    }
 
                     let source_state = q_source.get(edge).map(|s| s.0).unwrap_or(state);
 
