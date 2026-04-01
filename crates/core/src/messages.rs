@@ -21,7 +21,7 @@ use crate::resolve::TransitionMessage;
 ///     fn machine(&self) -> Entity { self.machine }
 /// }
 /// ```
-pub trait GearboxMessage: Message + Clone + Send + Sync + 'static {
+pub trait GearboxMessage: Message + Clone + Send + Sync + bevy::reflect::TypePath + 'static {
     /// Per-edge validator type. Use [`AcceptAll`] if every edge of this
     /// message type should match unconditionally.
     type Validator: MessageValidator<Self> + Default + Clone + Send + Sync;
@@ -52,10 +52,13 @@ impl<M> MessageValidator<M> for AcceptAll {
 /// 1. The source state is active
 /// 2. Guards (if any) are passing
 /// 3. The validator (if set) accepts the message
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component, where M: bevy::reflect::TypePath)]
 pub struct MessageEdge<M: GearboxMessage> {
+    #[reflect(ignore)]
     _marker: PhantomData<M>,
     /// Optional per-edge validator. When `None`, all messages of type `M` are accepted.
+    #[reflect(ignore)]
     pub validator: Option<M::Validator>,
 }
 

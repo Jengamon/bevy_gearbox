@@ -7,9 +7,7 @@ use bevy::prelude::*;
 #[derive(Component, Default, Debug, Reflect)]
 #[reflect(Component)]
 pub struct StateMachine {
-    #[reflect(ignore)]
     pub active: HashSet<Entity>,
-    #[reflect(ignore)]
     pub active_leaves: HashSet<Entity>,
 }
 
@@ -91,7 +89,8 @@ impl<'a> IntoIterator for &'a Transitions {
 pub struct Target(pub Entity);
 
 /// Marker: this edge fires automatically when its source is active.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct AlwaysEdge;
 
 /// Whether a transition is External (default, exits/re-enters the LCA) or

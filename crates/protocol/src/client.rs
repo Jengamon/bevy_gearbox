@@ -965,15 +965,20 @@ fn extract_event_edge_variants(schema: &serde_json::Value) -> Vec<String> {
         }
         None
     }
-    fn simple_type(name: &str) -> String {
-        name.rsplit("::").next().unwrap_or(name).to_string()
+    /// Extract the simple type name from a potentially generic, fully-qualified path.
+    fn simple_generic_name(s: &str) -> String {
+        let base = match s.find('<') {
+            Some(pos) => &s[..pos],
+            None => s,
+        };
+        base.rsplit("::").next().unwrap_or(base).to_string()
     }
     let mut strings: Vec<String> = Vec::new();
     collect_strings(schema, &mut strings);
     let mut out: Vec<String> = Vec::new();
     for s in strings.into_iter() {
         if s.contains(crate::components::MESSAGE_EDGE_SUBSTR) {
-            if let Some(inner) = inner_generic(&s) { out.push(simple_type(&inner)); }
+            if let Some(inner) = inner_generic(&s) { out.push(simple_generic_name(&inner)); }
         }
     }
     out.sort();

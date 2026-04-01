@@ -79,6 +79,7 @@ impl RegistrationAppExt for App {
         if dedup!(self, InstalledTransitions, TypeId::of::<M>()) { return self; }
         self.add_message::<M>();
         self.add_message::<Matched<M>>();
+        self.register_type::<MessageEdge<M>>();
         self.add_systems(Update, message_edge_listener::<M>.before(GearboxSet));
         self
     }

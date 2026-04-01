@@ -968,6 +968,20 @@ fn machine_graph_handler(In(params): In<Option<Value>>, world: &mut World) -> Br
                 if let Some(name) = world.get::<Name>(edge) {
                     ecomps.insert(crate::components::NAME.to_string(), Value::String(name.as_str().to_string()));
                 }
+                // Detect MessageEdge<T> components on the edge entity
+                {
+                    let reg_arc = world.resource::<bevy::prelude::AppTypeRegistry>().0.clone();
+                    let reg_read = reg_arc.read();
+                    for registration in reg_read.iter() {
+                        let ty_path = registration.type_info().type_path();
+                        if !ty_path.contains(crate::components::MESSAGE_EDGE_SUBSTR) { continue; }
+                        if let Some(refl_comp) = registration.data::<bevy::ecs::reflect::ReflectComponent>() {
+                            if refl_comp.reflect(world.entity(edge)).is_some() {
+                                ecomps.insert(ty_path.to_string(), Value::String("true".to_string()));
+                            }
+                        }
+                    }
+                }
                 edges.push(serde_json::json!({
                     "id": edge.to_bits().to_string(),
                     "source": cur.to_bits().to_string(),

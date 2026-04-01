@@ -325,17 +325,16 @@ pub(crate) fn choose_edge_label_bag(bag: &ComponentBag) -> String {
         }
     }
 
-    // 2) Otherwise, prefer EventEdge<T> → use inner T (simple name)
+    // 2) Otherwise, prefer MessageEdge<T> → use inner T (simple name)
     let keys: HashSet<String> = bag.entries.keys().cloned().collect();
-    let mut event_edge_types: Vec<&String> = keys.iter().filter(|s| s.contains(c::EVENT_EDGE_SUBSTR)).collect();
+    let mut event_edge_types: Vec<&String> = keys.iter().filter(|s| s.contains(c::MESSAGE_EDGE_SUBSTR)).collect();
     event_edge_types.sort();
     if let Some(ty) = event_edge_types.first() {
         let s = ty.as_str();
         if let (Some(start), Some(end)) = (s.find('<'), s.rfind('>')) {
             if end > start + 1 {
                 let inner = &s[start + 1..end];
-                if let Some(simple) = inner.rsplit("::").next() { return simple.to_string(); }
-                return inner.to_string();
+                return simple_generic_name(inner);
             }
         }
         if let Some(simple) = s.rsplit("::").next() { return simple.to_string(); }
@@ -349,5 +348,15 @@ pub(crate) fn choose_edge_label_bag(bag: &ComponentBag) -> String {
     "Edge".to_string()
 }
 
-
+/// Extract the simple type name from a potentially generic, fully-qualified path.
+/// e.g. `bevy_diesel::events::StartInvoke<bevy::math::Vec3>` → `StartInvoke`
+fn simple_generic_name(s: &str) -> String {
+    // Strip generic args: take everything before the first `<`
+    let base = match s.find('<') {
+        Some(pos) => &s[..pos],
+        None => s,
+    };
+    // Take the last `::` segment
+    base.rsplit("::").next().unwrap_or(base).to_string()
+}
 
