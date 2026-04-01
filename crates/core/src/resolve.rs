@@ -300,11 +300,12 @@ pub(crate) fn resolve_transitions(
     }
 }
 
-/// After transitions resolve, check if any AlwaysEdge is now eligible and write new messages.
+/// After transitions resolve, check if any AlwaysEdge is now eligible on
+/// states that were just entered or re-entered (Changed<Active>).
 pub(crate) fn check_always_edges(
     mut writer: MessageWriter<TransitionMessage>,
     mut pending: ResMut<PendingCount>,
-    q_machine: Query<(Entity, &StateMachine)>,
+    q_changed: Query<(Entity, &Active), Changed<Active>>,
     q_transitions: Query<&Transitions>,
     q_always: Query<(), With<AlwaysEdge>>,
     q_target: Query<&Target>,
@@ -315,74 +316,54 @@ pub(crate) fn check_always_edges(
 ) {
     pending.0 = 0;
 
-    for (machine_entity, machine) in &q_machine {
-        let mut handled_leaves: HashSet<Entity> = HashSet::new();
+    let mut states_to_check: Vec<(Entity, Entity)> = Vec::new(); // (state, machine)
+    for (state, active) in &q_changed {
+        let machine_entity = q_substate_of.root_ancestor(state);
+        states_to_check.push((state, machine_entity));
+        // Also check ancestors up to the root
+        for ancestor in q_substate_of.iter_ancestors(state) {
+            states_to_check.push((ancestor, machine_entity));
+        }
+    }
+    states_to_check.dedup();
 
-        for &leaf in &machine.active_leaves {
-            if handled_leaves.contains(&leaf) {
+    let mut fired_machines: HashSet<Entity> = HashSet::new();
+
+    for (state, machine_entity) in states_to_check {
+        if fired_machines.contains(&machine_entity) {
+            continue;
+        }
+        let Ok(transitions) = q_transitions.get(state) else {
+            continue;
+        };
+        for &edge in transitions {
+            if q_always.get(edge).is_err() {
                 continue;
             }
-
-            let mut states_to_check = vec![leaf];
-            states_to_check.extend(
-                q_substate_of
-                    .iter_ancestors(leaf)
-                    .take_while(|a| machine.active.contains(a)),
-            );
-
-            let mut fired = false;
-            for state in states_to_check {
-                if fired {
-                    break;
-                }
-                let Ok(transitions) = q_transitions.get(state) else {
+            // Skip delayed edges — the timer system handles them
+            if q_delay.get(edge).is_ok() {
+                continue;
+            }
+            if let Ok(guards) = q_guards.get(edge) {
+                if !guards.is_empty() {
                     continue;
-                };
-                for &edge in transitions {
-                    if q_always.get(edge).is_err() {
-                        continue;
-                    }
-                    // Skip delayed edges — the timer system handles them
-                    if q_delay.get(edge).is_ok() {
-                        continue;
-                    }
-                    if let Ok(guards) = q_guards.get(edge) {
-                        if !guards.is_empty() {
-                            continue;
-                        }
-                    }
-                    let Ok(target) = q_target.get(edge) else {
-                        continue;
-                    };
-
-                    let source_state = q_source.get(edge).map(|s| s.0).unwrap_or(state);
-
-                    writer.write(TransitionMessage {
-                        machine: machine_entity,
-                        source: source_state,
-                        target: target.0,
-                        edge: Some(edge),
-                    });
-                    pending.0 += 1;
-                    fired = true;
-
-                    // Mark all leaves under this source as handled so sibling
-                    // leaves don't independently fire the same parent edge.
-                    for &other_leaf in &machine.active_leaves {
-                        if other_leaf == leaf {
-                            continue;
-                        }
-                        if q_substate_of
-                            .iter_ancestors(other_leaf)
-                            .any(|a| a == source_state)
-                        {
-                            handled_leaves.insert(other_leaf);
-                        }
-                    }
-
-                    break;
                 }
             }
+            let Ok(target) = q_target.get(edge) else {
+                continue;
+            };
+
+            let source_state = q_source.get(edge).map(|s| s.0).unwrap_or(state);
+
+            writer.write(TransitionMessage {
+                machine: machine_entity,
+                source: source_state,
+                target: target.0,
+                edge: Some(edge),
+            });
+            pending.0 += 1;
+            fired_machines.insert(machine_entity);
+            break;
         }
     }
 }
