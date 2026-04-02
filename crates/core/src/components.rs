@@ -190,6 +190,13 @@ impl Delay {
 #[derive(Component)]
 pub struct EdgeTimer(pub Timer);
 
+/// Marks a state as terminal (XState "final state"). When entered, a [`Done`]
+/// message is emitted targeting the parent state (via [`SubstateOf`]). The
+/// parent can then transition out via a `MessageEdge<Done>`.
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
+pub struct TerminalState;
+
 /// Marker to request reset of subtree(s) when an edge fires.
 #[derive(Component, Default)]
 pub struct ResetEdge(pub ResetScope);

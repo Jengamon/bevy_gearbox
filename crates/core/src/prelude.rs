@@ -1,5 +1,5 @@
 pub use crate::components::{
-    Active,
+    Active, TerminalState,
     SubstateOf, Substates, StateMachine, InitialState,
     Source, Target, Transitions, AlwaysEdge, EdgeKind,
     Guards, Delay,
@@ -15,6 +15,7 @@ pub use crate::history::{History, HistoryState};
 pub use crate::registration::DeferEvent;
 pub use crate::messages::{
     GearboxMessage, MessageValidator, AcceptAll, MessageEdge,
+    Done,
 };
 pub use crate::commands::{
     SpawnSubstate, SpawnTransition, BuildTransition,

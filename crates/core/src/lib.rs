@@ -53,7 +53,7 @@ use resolve::PendingCount;
 // ---------------------------------------------------------------------------
 
 pub use components::{
-    Active,
+    Active, TerminalState,
     StateMachine, InitialState, SubstateOf, Substates, Source, Transitions, Target,
     AlwaysEdge, EdgeKind, Guards, Guard, GuardProvider, Delay, EdgeTimer,
     ResetEdge, ResetScope,
@@ -71,6 +71,7 @@ pub use resolve::{
 pub use messages::{
     GearboxMessage, MessageValidator, AcceptAll, MessageEdge, Matched,
     SideEffect, produce_side_effects, message_edge_listener,
+    Done, emit_terminal_done,
 };
 pub use parameters::{
     FloatParam, IntParam, BoolParam,
@@ -216,6 +217,8 @@ impl Plugin for GearboxPlugin {
             .init_resource::<PendingCount>()
             .init_resource::<IterationCap>();
 
+        app.register_transition::<Done>();
+
         let mut schedule = Schedule::new(GearboxSchedule);
         schedule.configure_sets((
             GearboxPhase::TransitionPhase,
@@ -236,6 +239,9 @@ impl Plugin for GearboxPlugin {
                     .before(GearboxPhase::ExitPhase),
                 delay::cancel_delay_timers.in_set(GearboxPhase::ExitPhase),
                 delay::start_delay_timers.in_set(GearboxPhase::EntryPhase),
+                messages::emit_terminal_done
+                    .in_set(GearboxPhase::EdgeCheckPhase)
+                    .before(resolve::check_always_edges),
                 resolve::check_always_edges.in_set(GearboxPhase::EdgeCheckPhase),
             ),
         );

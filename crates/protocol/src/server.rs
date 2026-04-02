@@ -50,6 +50,7 @@ impl Plugin for ServerPlugin {
         app.init_resource::<MachineTrackers>()
             .add_observer(on_state_entered)
             .add_observer(on_state_exited)
+            .add_systems(Update, track_transition_edges.after(gearbox::GearboxSet))
             ;
         // Register StateMachineId for reflection (scene serialization)
         app.register_type::<StateMachineId>();
@@ -1019,6 +1020,23 @@ fn push_event(tracker: &mut MachineTracker, ev: Value) {
     tracker.events.push_back(ev);
 }
 
+
+fn track_transition_edges(
+    mut reader: MessageReader<gearbox::TransitionMessage>,
+    mut trackers: ResMut<MachineTrackers>,
+) {
+    for msg in reader.read() {
+        let Some(edge) = msg.edge else { continue };
+        let tr = trackers.trackers.entry(msg.machine).or_default();
+        tr.transition_seq = tr.transition_seq.saturating_add(1);
+        let ev = serde_json::json!({
+            "kind": "transition_edge",
+            "seq": tr.transition_seq,
+            "edge": entity_to_bits(edge).to_string(),
+        });
+        push_event(tr, ev);
+    }
+}
 
 fn on_state_entered(
     enter_state: On<gearbox::EnterState>,

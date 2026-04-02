@@ -320,6 +320,41 @@ fn try_fire_edge_at_state<M: GearboxMessage>(
     false
 }
 
+// ---------------------------------------------------------------------------
+// Done message — emitted when a TerminalState is entered
+// ---------------------------------------------------------------------------
+
+/// Emitted when a [`TerminalState`](crate::TerminalState) is entered.
+/// Targets the parent state so `MessageEdge<Done>` on the parent can fire.
+#[derive(Message, Clone, Debug, Reflect)]
+pub struct Done {
+    entity: Entity,
+}
+
+impl Done {
+    pub fn new(parent: Entity) -> Self {
+        Self { entity: parent }
+    }
+}
+
+impl GearboxMessage for Done {
+    type Validator = AcceptAll;
+    fn target(&self) -> Entity {
+        self.entity
+    }
+}
+
+/// System that emits [`Done`] messages when a [`TerminalState`] gains [`Active`].
+/// Runs in [`GearboxPhase::EntryPhase`].
+pub fn emit_terminal_done(
+    q_new: Query<(Entity, &SubstateOf), (Added<Active>, With<TerminalState>)>,
+    mut writer: MessageWriter<Done>,
+) {
+    for (_entity, parent) in &q_new {
+        writer.write(Done::new(parent.0));
+    }
+}
+
 /// Find the parallel region root for a state. If the state is under a
 /// parallel parent (has children, no InitialState), returns the immediate
 /// child of that parallel parent that contains `state`.
