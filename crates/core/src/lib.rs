@@ -17,6 +17,7 @@
 //!   apply_deferred  <- flush commands so Active is visible
 //!   ExitPhase       <- user systems reacting to RemovedComponents<Active>
 //!   EntryPhase      <- user systems reacting to Added<Active>
+//!   GaugeSync       <- (gauge feature) sync WriteBack + AttributeDerived components
 //!   EdgeCheckPhase  <- check_always_edges (internal)
 //! ```
 //!
@@ -132,6 +133,11 @@ pub enum GearboxPhase {
     /// User systems that react to states being entered.
     /// Query `Added<Active>` to detect entries.
     EntryPhase,
+    /// Syncs gauge [`WriteBack`](bevy_gauge::prelude::WriteBack) and
+    /// [`AttributeDerived`](bevy_gauge::prelude::AttributeDerived) components
+    /// so that derived values are current before edge checks.
+    #[cfg(feature = "gauge")]
+    GaugeSync,
     /// Internal: checks AlwaysEdge eligibility and writes new messages.
     EdgeCheckPhase,
 }
@@ -220,13 +226,36 @@ impl Plugin for GearboxPlugin {
         app.register_transition::<Done>();
 
         let mut schedule = Schedule::new(GearboxSchedule);
+        #[cfg(not(feature = "gauge"))]
         schedule.configure_sets((
             GearboxPhase::TransitionPhase,
             GearboxPhase::ExitPhase,
             GearboxPhase::EntryPhase,
             GearboxPhase::EdgeCheckPhase,
         ).chain());
+        #[cfg(feature = "gauge")]
+        schedule.configure_sets((
+            GearboxPhase::TransitionPhase,
+            GearboxPhase::ExitPhase,
+            GearboxPhase::EntryPhase,
+            GearboxPhase::GaugeSync,
+            GearboxPhase::EdgeCheckPhase,
+        ).chain());
         app.add_schedule(schedule);
+
+        #[cfg(feature = "gauge")]
+        {
+            bevy_gauge::derived::add_gauge_sync_to_schedule(app, GearboxSchedule);
+            app.configure_sets(
+                GearboxSchedule,
+                (
+                    bevy_gauge::prelude::WriteBackSet
+                        .in_set(GearboxPhase::GaugeSync),
+                    bevy_gauge::prelude::AttributeDerivedSet
+                        .in_set(GearboxPhase::GaugeSync),
+                ),
+            );
+        }
 
         app.add_systems(
             GearboxSchedule,
