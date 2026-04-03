@@ -4,6 +4,10 @@ version = "0.6.0"
 edition = "2021"
 description = "Protocol (client/server) for Bevy Gearbox editor/app communication"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/DEMIURGE-studio/bevy_gearbox"
+homepage = "https://github.com/DEMIURGE-studio/bevy_gearbox"
+keywords = ["bevy", "state-machine", "gamedev", "ecs"]
+categories = ["game-development", "game-engines"]
 
 [features]
 default = ["client"]

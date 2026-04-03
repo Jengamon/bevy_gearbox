@@ -105,7 +105,7 @@ fn wrong_message_type_does_not_fire() {
 /// A custom MessageValidator can filter messages per-edge.
 #[test]
 fn message_with_custom_validator() {
-    #[derive(Message, Clone)]
+    #[derive(Message, Clone, Reflect)]
     struct TypedAttack {
         machine: Entity,
         damage: u32,

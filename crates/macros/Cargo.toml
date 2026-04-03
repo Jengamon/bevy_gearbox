@@ -4,8 +4,8 @@ version = "0.6.0"
 edition = "2021"
 description = "Derive macros for bevy_gearbox (schedule-based API)"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/DEMIURGE-studio/bevy_diesel"
-homepage = "https://github.com/DEMIURGE-studio/bevy_diesel"
+repository = "https://github.com/DEMIURGE-studio/bevy_gearbox"
+homepage = "https://github.com/DEMIURGE-studio/bevy_gearbox"
 keywords = ["bevy", "macros", "state-machine", "gamedev"]
 categories = ["game-development", "development-tools::procedural-macro-helpers"]
 
