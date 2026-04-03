@@ -151,6 +151,7 @@ pub fn message_edge_listener<M: GearboxMessage>(
     q_transitions: Query<&Transitions>,
     q_edge: Query<&MessageEdge<M>>,
     q_target: Query<&Target>,
+    q_branch: Query<&BranchTransition>,
     q_source: Query<&Source>,
     q_guards: Query<&Guards>,
     q_substate_of: Query<&SubstateOf>,
@@ -189,6 +190,7 @@ pub fn message_edge_listener<M: GearboxMessage>(
                 &q_transitions,
                 &q_edge,
                 &q_target,
+                &q_branch,
                 &q_source,
                 &q_guards,
                 &q_substate_of,
@@ -210,6 +212,7 @@ pub fn message_edge_listener<M: GearboxMessage>(
                 &q_transitions,
                 &q_edge,
                 &q_target,
+                &q_branch,
                 &q_source,
                 &q_guards,
                 &mut writer,
@@ -227,6 +230,7 @@ fn try_fire_edge_on_branch<M: GearboxMessage>(
     q_transitions: &Query<&Transitions>,
     q_edge: &Query<&MessageEdge<M>>,
     q_target: &Query<&Target>,
+    q_branch: &Query<&BranchTransition>,
     q_source: &Query<&Source>,
     q_guards: &Query<&Guards>,
     q_substate_of: &Query<&SubstateOf>,
@@ -254,6 +258,7 @@ fn try_fire_edge_on_branch<M: GearboxMessage>(
             q_transitions,
             q_edge,
             q_target,
+            q_branch,
             q_source,
             q_guards,
             writer,
@@ -274,11 +279,14 @@ fn try_fire_edge_at_state<M: GearboxMessage>(
     q_transitions: &Query<&Transitions>,
     q_edge: &Query<&MessageEdge<M>>,
     q_target: &Query<&Target>,
+    q_branch: &Query<&BranchTransition>,
     q_source: &Query<&Source>,
     q_guards: &Query<&Guards>,
     writer: &mut MessageWriter<TransitionMessage>,
     matched_writer: &mut MessageWriter<Matched<M>>,
 ) -> bool {
+    use crate::resolve::resolve_edge_target;
+
     let Ok(transitions) = q_transitions.get(state) else {
         return false;
     };
@@ -286,9 +294,12 @@ fn try_fire_edge_at_state<M: GearboxMessage>(
         let Ok(me) = q_edge.get(edge) else {
             continue;
         };
-        if let Ok(guards) = q_guards.get(edge) {
-            if !guards.is_empty() {
-                continue;
+        // For non-branch edges, check guards on the edge itself
+        if q_branch.get(edge).is_err() {
+            if let Ok(guards) = q_guards.get(edge) {
+                if !guards.is_empty() {
+                    continue;
+                }
             }
         }
         if let Some(v) = &me.validator {
@@ -296,7 +307,7 @@ fn try_fire_edge_at_state<M: GearboxMessage>(
                 continue;
             }
         }
-        let Ok(target) = q_target.get(edge) else {
+        let Some(target) = resolve_edge_target(edge, q_branch, q_target, q_guards) else {
             continue;
         };
 
@@ -305,14 +316,14 @@ fn try_fire_edge_at_state<M: GearboxMessage>(
         writer.write(TransitionMessage {
             machine: machine_entity,
             source: source_state,
-            target: target.0,
+            target,
             edge: Some(edge),
         });
         matched_writer.write(Matched {
             message: msg.clone(),
             machine: machine_entity,
             source: source_state,
-            target: target.0,
+            target,
             edge,
         });
         return true;

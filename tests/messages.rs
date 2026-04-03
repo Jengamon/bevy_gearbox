@@ -11,27 +11,27 @@ use bevy::prelude::*;
 use bevy_gearbox::prelude::*;
 use bevy_gearbox::GearboxPlugin;
 
-#[derive(Message, Clone)]
+#[derive(Message, Clone, Reflect)]
 struct Attack {
-    machine: Entity,
+    target: Entity,
 }
 
 impl GearboxMessage for Attack {
     type Validator = AcceptAll;
-    fn machine(&self) -> Entity {
-        self.machine
+    fn target(&self) -> Entity {
+        self.target
     }
 }
 
-#[derive(Message, Clone)]
+#[derive(Message, Clone, Reflect)]
 struct Dodge {
-    machine: Entity,
+    target: Entity,
 }
 
 impl GearboxMessage for Dodge {
     type Validator = AcceptAll;
-    fn machine(&self) -> Entity {
-        self.machine
+    fn target(&self) -> Entity {
+        self.target
     }
 }
 
@@ -61,7 +61,7 @@ fn message_triggers_transition() {
             .is_active(&idle)
     );
 
-    app.world_mut().write_message(Attack { machine });
+    app.world_mut().write_message(Attack { target: machine });
     app.update();
 
     let state = app.world().get::<StateMachine>(machine).unwrap();
@@ -90,7 +90,7 @@ fn wrong_message_type_does_not_fire() {
 
     app.update();
 
-    app.world_mut().write_message(Dodge { machine });
+    app.world_mut().write_message(Dodge { target: machine });
     app.update();
 
     assert!(
@@ -122,7 +122,7 @@ fn message_with_custom_validator() {
 
     impl GearboxMessage for TypedAttack {
         type Validator = HighDamageOnly;
-        fn machine(&self) -> Entity {
+        fn target(&self) -> Entity {
             self.machine
         }
     }
@@ -211,7 +211,7 @@ fn deeper_state_has_priority() {
 
     app.update();
 
-    app.world_mut().write_message(Attack { machine });
+    app.world_mut().write_message(Attack { target: machine });
     app.update();
 
     let state = app.world().get::<StateMachine>(machine).unwrap();
@@ -249,7 +249,7 @@ fn guarded_message_edge_blocks() {
 
     app.update();
 
-    app.world_mut().write_message(Attack { machine });
+    app.world_mut().write_message(Attack { target: machine });
     app.update();
 
     assert!(
@@ -290,7 +290,7 @@ fn multiple_message_types_on_same_machine() {
     app.update();
 
     // Send Dodge — should go to dodging, not hit
-    app.world_mut().write_message(Dodge { machine });
+    app.world_mut().write_message(Dodge { target: machine });
     app.update();
 
     let state = app.world().get::<StateMachine>(machine).unwrap();
@@ -332,7 +332,7 @@ fn parallel_regions_each_fire_on_same_message() {
     assert!(state.active_leaves.contains(&a));
     assert!(state.active_leaves.contains(&b));
 
-    app.world_mut().write_message(Attack { machine });
+    app.world_mut().write_message(Attack { target: machine });
     app.update();
 
     let state = app.world().get::<StateMachine>(machine).unwrap();
@@ -368,7 +368,7 @@ fn register_transition_dedup() {
         .insert((StateMachine::new(), InitialState(a)));
 
     app.update();
-    app.world_mut().write_message(Attack { machine });
+    app.world_mut().write_message(Attack { target: machine });
     app.update();
 
     let state = app.world().get::<StateMachine>(machine).unwrap();

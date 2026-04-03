@@ -5,6 +5,7 @@ pub use crate::components::{
     Guards, Delay,
     Guard, GuardProvider,
     ResetEdge, ResetScope,
+    BranchTransition, BranchArm,
 };
 pub use crate::state_component::{
     StateComponent, StateInactiveComponent,
@@ -18,7 +19,7 @@ pub use crate::messages::{
     Done,
 };
 pub use crate::commands::{
-    SpawnSubstate, SpawnTransition, BuildTransition,
+    SpawnSubstate, SpawnTransition, BuildTransition, SpawnBranch, BranchBuilder,
     TransitionExt, InitStateMachine,
     GearboxCommandsExt, BuildEntityEvent,
 };

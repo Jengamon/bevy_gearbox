@@ -8,14 +8,14 @@ use bevy::prelude::*;
 use bevy_gearbox::prelude::*;
 use bevy_gearbox::GearboxPlugin;
 
-#[derive(Message, Clone)]
+#[derive(Message, Clone, Reflect)]
 struct Trigger {
     machine: Entity,
 }
 
 impl GearboxMessage for Trigger {
     type Validator = AcceptAll;
-    fn machine(&self) -> Entity {
+    fn target(&self) -> Entity {
         self.machine
     }
 }

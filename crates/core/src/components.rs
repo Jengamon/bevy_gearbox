@@ -197,6 +197,27 @@ pub struct EdgeTimer(pub Timer);
 #[reflect(Component)]
 pub struct TerminalState;
 
+/// A single arm of a [`BranchTransition`]. Each arm has a target state
+/// and a guard entity whose [`Guards`] component determines eligibility.
+#[derive(Clone, Debug)]
+pub struct BranchArm {
+    /// The destination state if this arm is taken.
+    pub target: Entity,
+    /// The entity carrying [`Guards`] for this arm.
+    pub guard: Entity,
+}
+
+/// Replaces the single [`Target`] on an edge with conditional branching.
+/// Arms are evaluated in order; the first with passing guards wins.
+/// If no arm passes, the `otherwise` target is used.
+///
+/// Works with both [`AlwaysEdge`] and [`MessageEdge`].
+#[derive(Component, Debug)]
+pub struct BranchTransition {
+    pub arms: Vec<BranchArm>,
+    pub otherwise: Entity,
+}
+
 /// Marker to request reset of subtree(s) when an edge fires.
 #[derive(Component, Default)]
 pub struct ResetEdge(pub ResetScope);

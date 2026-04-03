@@ -300,6 +300,29 @@ pub(crate) fn resolve_transitions(
     }
 }
 
+/// Resolve the target entity for an edge. If the edge has a [`BranchTransition`],
+/// walk its arms in order and take the first whose guards pass; otherwise use
+/// the fallback. If no branch is present, fall back to the plain [`Target`] component.
+pub(crate) fn resolve_edge_target(
+    edge: Entity,
+    q_branch: &Query<&BranchTransition>,
+    q_target: &Query<&Target>,
+    q_guards: &Query<&Guards>,
+) -> Option<Entity> {
+    if let Ok(branch) = q_branch.get(edge) {
+        for arm in &branch.arms {
+            if let Ok(guards) = q_guards.get(arm.guard) {
+                if !guards.is_empty() {
+                    continue;
+                }
+            }
+            return Some(arm.target);
+        }
+        return Some(branch.otherwise);
+    }
+    q_target.get(edge).ok().map(|t| t.0)
+}
+
 /// After transitions resolve, check if any AlwaysEdge is now eligible on
 /// states that were just entered or re-entered (Changed<Active>).
 pub(crate) fn check_always_edges(
@@ -309,6 +332,7 @@ pub(crate) fn check_always_edges(
     q_transitions: Query<&Transitions>,
     q_always: Query<(), With<AlwaysEdge>>,
     q_target: Query<&Target>,
+    q_branch: Query<&BranchTransition>,
     q_source: Query<&Source>,
     q_guards: Query<&Guards>,
     q_substate_of: Query<&SubstateOf>,
@@ -344,12 +368,15 @@ pub(crate) fn check_always_edges(
             if q_delay.get(edge).is_ok() {
                 continue;
             }
-            if let Ok(guards) = q_guards.get(edge) {
-                if !guards.is_empty() {
-                    continue;
+            // For non-branch edges, check guards on the edge itself
+            if q_branch.get(edge).is_err() {
+                if let Ok(guards) = q_guards.get(edge) {
+                    if !guards.is_empty() {
+                        continue;
+                    }
                 }
             }
-            let Ok(target) = q_target.get(edge) else {
+            let Some(target) = resolve_edge_target(edge, &q_branch, &q_target, &q_guards) else {
                 continue;
             };
 
@@ -358,7 +385,7 @@ pub(crate) fn check_always_edges(
             writer.write(TransitionMessage {
                 machine: machine_entity,
                 source: source_state,
-                target: target.0,
+                target,
                 edge: Some(edge),
             });
             pending.0 += 1;

@@ -87,12 +87,12 @@ impl SpawnTransition for ChildSpawnerCommands<'_> {
 
 /// Builder for guarded always-transitions.
 pub struct TransitionBuilder {
-    guards: Vec<String>,
-    deferred: Vec<Box<dyn FnOnce(&mut EntityCommands) + Send + Sync>>,
+    pub(crate) guards: Vec<String>,
+    pub(crate) deferred: Vec<Box<dyn FnOnce(&mut EntityCommands) + Send + Sync>>,
 }
 
 impl TransitionBuilder {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             guards: Vec::new(),
             deferred: Vec::new(),
@@ -201,6 +201,162 @@ impl BuildTransition for ChildSpawnerCommands<'_> {
             f(&mut ec);
         }
         ec
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Branching transitions
+// ---------------------------------------------------------------------------
+
+/// Builder for configuring branch arms.
+pub struct BranchBuilder {
+    arms: Vec<BranchArmBuilder>,
+    otherwise: Option<Entity>,
+}
+
+struct BranchArmBuilder {
+    target: Entity,
+    configure: Box<dyn FnOnce(&mut TransitionBuilder) + Send + Sync>,
+}
+
+impl BranchBuilder {
+    fn new() -> Self {
+        Self {
+            arms: Vec::new(),
+            otherwise: None,
+        }
+    }
+
+    /// Add a conditional arm. The `configure` closure sets up guards on the arm
+    /// (same API as [`TransitionBuilder`]). Arms are evaluated in registration order.
+    pub fn when(
+        &mut self,
+        target: Entity,
+        configure: impl FnOnce(&mut TransitionBuilder) + Send + Sync + 'static,
+    ) -> &mut Self {
+        self.arms.push(BranchArmBuilder {
+            target,
+            configure: Box::new(configure),
+        });
+        self
+    }
+
+    /// Set the fallback target if no arm's guards pass.
+    pub fn otherwise(&mut self, target: Entity) -> &mut Self {
+        self.otherwise = Some(target);
+        self
+    }
+}
+
+/// Extension trait for spawning branching transitions.
+pub trait SpawnBranch {
+    type Out<'a>
+    where
+        Self: 'a;
+
+    /// Spawn a branching always-edge from `source`.
+    fn spawn_branch_always(
+        &mut self,
+        source: Entity,
+        configure: impl FnOnce(&mut BranchBuilder),
+    ) -> Self::Out<'_>;
+
+    /// Spawn a branching message-edge from `source`.
+    fn spawn_branch<M: GearboxMessage>(
+        &mut self,
+        source: Entity,
+        configure: impl FnOnce(&mut BranchBuilder),
+    ) -> Self::Out<'_>;
+}
+
+impl SpawnBranch for ChildSpawnerCommands<'_> {
+    type Out<'a>
+        = EntityCommands<'a>
+    where
+        Self: 'a;
+
+    fn spawn_branch_always(
+        &mut self,
+        source: Entity,
+        configure: impl FnOnce(&mut BranchBuilder),
+    ) -> EntityCommands<'_> {
+        let mut builder = BranchBuilder::new();
+        configure(&mut builder);
+
+        let otherwise = builder.otherwise.expect("BranchBuilder requires an otherwise() target");
+
+        // Spawn guard entities for each arm
+        let arms: Vec<BranchArm> = builder
+            .arms
+            .into_iter()
+            .map(|arm_builder| {
+                let mut tb = TransitionBuilder::new();
+                (arm_builder.configure)(&mut tb);
+                let guard_entity = if tb.guards.is_empty() {
+                    self.spawn(Guards::new()).id()
+                } else {
+                    self.spawn(Guards::init(tb.guards)).id()
+                };
+                // Apply deferred inserts (e.g. AttributeRequirements) to the guard entity
+                let commands = self.commands_mut();
+                let mut ec = commands.entity(guard_entity);
+                for f in tb.deferred {
+                    f(&mut ec);
+                }
+                BranchArm {
+                    target: arm_builder.target,
+                    guard: guard_entity,
+                }
+            })
+            .collect();
+
+        self.spawn((
+            Source(source),
+            Target(otherwise),
+            AlwaysEdge,
+            BranchTransition { arms, otherwise },
+        ))
+    }
+
+    fn spawn_branch<M: GearboxMessage>(
+        &mut self,
+        source: Entity,
+        configure: impl FnOnce(&mut BranchBuilder),
+    ) -> EntityCommands<'_> {
+        let mut builder = BranchBuilder::new();
+        configure(&mut builder);
+
+        let otherwise = builder.otherwise.expect("BranchBuilder requires an otherwise() target");
+
+        let arms: Vec<BranchArm> = builder
+            .arms
+            .into_iter()
+            .map(|arm_builder| {
+                let mut tb = TransitionBuilder::new();
+                (arm_builder.configure)(&mut tb);
+                let guard_entity = if tb.guards.is_empty() {
+                    self.spawn(Guards::new()).id()
+                } else {
+                    self.spawn(Guards::init(tb.guards)).id()
+                };
+                let commands = self.commands_mut();
+                let mut ec = commands.entity(guard_entity);
+                for f in tb.deferred {
+                    f(&mut ec);
+                }
+                BranchArm {
+                    target: arm_builder.target,
+                    guard: guard_entity,
+                }
+            })
+            .collect();
+
+        self.spawn((
+            Source(source),
+            Target(otherwise),
+            MessageEdge::<M>::default(),
+            BranchTransition { arms, otherwise },
+        ))
     }
 }
 
