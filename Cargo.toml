@@ -1,6 +1,6 @@
 [package]
 name = "bevy_gearbox"
-version = "0.6.0"
+version = "0.5.9"
 edition = "2021"
 description = "State machine system for the bevy game engine"
 license = "MIT OR Apache-2.0"
@@ -25,9 +25,9 @@ resolver = "3"
 
 [dependencies]
 bevy = { version = "0.18", default-features = false, features = ["bevy_state"] }
-bevy_gearbox_core = { version = "0.6.0", path = "./crates/core" }
-bevy_gearbox_macros = { version = "0.6.0", path = "./crates/macros" }
-bevy_gearbox_protocol = { version = "0.6.0", path = "./crates/protocol", features = ["server"], optional = true }
+bevy_gearbox_core = { version = "0.5.9", path = "./crates/core" }
+bevy_gearbox_macros = { version = "0.5.9", path = "./crates/macros" }
+bevy_gearbox_protocol = { version = "0.5.9", path = "./crates/protocol", features = ["server"], optional = true }
 inventory = "0.3.21"
 rustversion = "1"
 

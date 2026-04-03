@@ -1,6 +1,6 @@
 [package]
 name = "bevy_gearbox_editor"
-version = "0.6.0"
+version = "0.5.9"
 edition = "2021"
 description = "Visual editor for bevy_gearbox"
 license = "MIT OR Apache-2.0"

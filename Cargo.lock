@@ -926,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_gauge"
-version = "0.4.5"
+version = "0.4.4"
 dependencies = [
  "bevy",
  "bevy_gauge_macros",
@@ -936,7 +936,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_gauge_macros"
-version = "0.4.4"
+version = "0.4.3"
 dependencies = [
  "proc-macro2",
  "quote",
