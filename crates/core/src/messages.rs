@@ -4,7 +4,7 @@ use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
 
 use crate::components::*;
-use crate::resolve::TransitionMessage;
+use crate::resolve::{PendingCount, TransitionMessage};
 
 /// Trait implemented by user message types that can trigger state machine
 /// transitions. The schedule version of core's `TransitionEvent`.
@@ -141,12 +141,18 @@ pub fn produce_side_effects<M: GearboxMessage, S: SideEffect<M>>(
 /// active states (leaf-first, walk ancestors), and writes [`TransitionMessage`]s
 /// and [`Matched<M>`] messages.
 ///
-/// Runs in [`Update`] before [`GearboxSet`](crate::GearboxSet) so messages are resolved in the
-/// same frame they are sent.
+/// Runs inside [`GearboxSchedule`](crate::GearboxSchedule) in
+/// [`GearboxPhase::EdgeCheckPhase`](crate::GearboxPhase::EdgeCheckPhase) so
+/// it participates in the per-frame resolution loop. This matters when a
+/// user message is written the same frame a [`StateMachine`](crate::StateMachine)
+/// is spawned: the first loop iteration activates the initial state and the
+/// next iteration's listener pass sees populated `active_leaves` and fires
+/// the transition, so the whole cascade resolves before the frame ends.
 pub fn message_edge_listener<M: GearboxMessage>(
     mut reader: MessageReader<M>,
     mut writer: MessageWriter<TransitionMessage>,
     mut matched_writer: MessageWriter<Matched<M>>,
+    mut pending: ResMut<PendingCount>,
     q_machine: Query<&StateMachine>,
     q_transitions: Query<&Transitions>,
     q_edge: Query<&MessageEdge<M>>,
@@ -198,6 +204,7 @@ pub fn message_edge_listener<M: GearboxMessage>(
                 &mut visited,
                 &mut writer,
                 &mut matched_writer,
+                &mut pending.0,
             ) {
                 fired_regions.insert(region_root);
             }
@@ -217,6 +224,7 @@ pub fn message_edge_listener<M: GearboxMessage>(
                 &q_guards,
                 &mut writer,
                 &mut matched_writer,
+                &mut pending.0,
             );
         }
     }
@@ -238,6 +246,7 @@ fn try_fire_edge_on_branch<M: GearboxMessage>(
     visited: &mut HashSet<Entity>,
     writer: &mut MessageWriter<TransitionMessage>,
     matched_writer: &mut MessageWriter<Matched<M>>,
+    pending: &mut usize,
 ) -> bool {
     let mut current = Some(start);
     while let Some(state) = current {
@@ -263,6 +272,7 @@ fn try_fire_edge_on_branch<M: GearboxMessage>(
             q_guards,
             writer,
             matched_writer,
+            pending,
         ) {
             return true;
         }
@@ -284,6 +294,7 @@ fn try_fire_edge_at_state<M: GearboxMessage>(
     q_guards: &Query<&Guards>,
     writer: &mut MessageWriter<TransitionMessage>,
     matched_writer: &mut MessageWriter<Matched<M>>,
+    pending: &mut usize,
 ) -> bool {
     use crate::resolve::resolve_edge_target;
 
@@ -326,6 +337,7 @@ fn try_fire_edge_at_state<M: GearboxMessage>(
             target,
             edge,
         });
+        *pending += 1;
         return true;
     }
     false

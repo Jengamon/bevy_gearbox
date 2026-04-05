@@ -223,8 +223,6 @@ impl Plugin for GearboxPlugin {
             .init_resource::<PendingCount>()
             .init_resource::<IterationCap>();
 
-        app.register_transition::<Done>();
-
         let mut schedule = Schedule::new(GearboxSchedule);
         #[cfg(not(feature = "gauge"))]
         schedule.configure_sets((
@@ -242,6 +240,14 @@ impl Plugin for GearboxPlugin {
             GearboxPhase::EdgeCheckPhase,
         ).chain());
         app.add_schedule(schedule);
+
+        // NOTE: `register_transition::<Done>` must come AFTER `add_schedule`.
+        // `register_transition` calls `add_systems(GearboxSchedule, ..)`,
+        // which lazily creates a `GearboxSchedule` entry if none exists. If
+        // called before `add_schedule`, that lazy entry gets clobbered by
+        // `add_schedule`'s `insert` — losing the Done listener — while the
+        // dedup resource still thinks the registration succeeded.
+        app.register_transition::<Done>();
 
         #[cfg(feature = "gauge")]
         {
@@ -275,14 +281,21 @@ impl Plugin for GearboxPlugin {
             ),
         );
 
-        // Outer driver: detect new machines, run loop, tick timers,
-        // then flush entity events for observer users.
+        // Outer driver: detect new machines, tick delay timers (so their
+        // transition messages are in the buffer before the loop runs), run
+        // the loop, then flush entity events for observer users.
+        //
+        // Ticking delays before the loop means a delay that finishes this
+        // frame gets its transition applied in the same frame, and any
+        // cascade it triggers resolves in the same frame too. Ticking after
+        // the loop (the old layout) would leak a one-frame latency on every
+        // delayed transition.
         app.add_systems(
             Update,
             (
                 enqueue_machine_init,
-                run_gearbox_schedule,
                 delay::tick_delay_timers,
+                run_gearbox_schedule,
             )
                 .chain()
                 .in_set(GearboxSet),
@@ -291,7 +304,7 @@ impl Plugin for GearboxPlugin {
             Update,
             resolve::flush_state_events
                 .in_set(GearboxSet)
-                .after(delay::tick_delay_timers),
+                .after(run_gearbox_schedule),
         );
     }
 }

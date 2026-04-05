@@ -348,6 +348,46 @@ fn parallel_regions_each_fire_on_same_message() {
     );
 }
 
+/// Regression: a message written the same frame a `StateMachine` is spawned
+/// must still fire its transition. Previously `message_edge_listener` ran in
+/// `Update` before `GearboxSet`, which meant it saw an empty `active_leaves`
+/// on a freshly-added machine and dropped the message. The listener was
+/// moved into `GearboxSchedule::EdgeCheckPhase` so the per-frame loop
+/// resolves the init transition first and then re-runs the listener against
+/// a populated machine in a subsequent iteration.
+#[test]
+fn message_in_same_frame_as_spawn_fires_transition() {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.register_transition::<Attack>();
+
+    let world = app.world_mut();
+    let machine = world.spawn_empty().id();
+    let idle = world.spawn(SubstateOf(machine)).id();
+    let hit = world.spawn(SubstateOf(machine)).id();
+
+    world.spawn((Source(idle), Target(hit), MessageEdge::<Attack>::default()));
+
+    world
+        .entity_mut(machine)
+        .insert((StateMachine::new(), InitialState(idle)));
+
+    // Critically: write the message BEFORE any `app.update()` call so the
+    // machine is still "newly added" when the message arrives.
+    world.write_message(Attack { target: machine });
+
+    app.update();
+
+    let state = app.world().get::<StateMachine>(machine).unwrap();
+    assert!(
+        state.active_leaves.contains(&hit),
+        "Transition should have fired in the same frame the machine was \
+         spawned, got leaves: {:?}",
+        state.active_leaves
+    );
+    assert!(!state.active_leaves.contains(&idle));
+}
+
 /// Double registration of the same message type should be idempotent.
 #[test]
 fn register_transition_dedup() {

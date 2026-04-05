@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::components::*;
-use crate::resolve::TransitionMessage;
+use crate::resolve::{PendingCount, TransitionMessage};
 
 /// Start timers for AlwaysEdge+Delay edges when their source state is entered.
 /// Runs in [`GearboxPhase::EntryPhase`](crate::GearboxPhase::EntryPhase).
@@ -49,7 +49,9 @@ pub(crate) fn cancel_delay_timers(
 }
 
 /// Tick all active delay timers and write TransitionMessages when they fire.
-/// Runs in [`Update`] after [`GearboxSet`](crate::GearboxSet).
+/// Runs in [`Update`] before the per-frame [`GearboxSchedule`](crate::GearboxSchedule)
+/// loop, so any transition a delay fires this frame is resolved — and any
+/// cascade it triggers is fully processed — inside the same frame's loop.
 pub(crate) fn tick_delay_timers(
     time: Res<Time>,
     q_transitions: Query<(Entity, &Transitions)>,
@@ -61,6 +63,7 @@ pub(crate) fn tick_delay_timers(
     q_substate_of: Query<&SubstateOf>,
     q_machine: Query<&StateMachine>,
     mut writer: MessageWriter<TransitionMessage>,
+    mut pending: ResMut<PendingCount>,
 ) {
     for (source, transitions) in &q_transitions {
         let root = q_substate_of.root_ancestor(source);
@@ -91,12 +94,17 @@ pub(crate) fn tick_delay_timers(
                 continue;
             };
 
+            info!(
+                "tick_delay_timers: timer fired on edge={:?} source={:?} target={:?} (machine={:?})",
+                edge, source, target.0, root
+            );
             writer.write(TransitionMessage {
                 machine: root,
                 source,
                 target: target.0,
                 edge: Some(edge),
             });
+            pending.0 += 1;
             break; // one delayed transition per source per frame
         }
     }

@@ -46,18 +46,3 @@ debug = ["bevy/debug"]
 
 [build-dependencies]
 rustc_version = "0.4"
-
-[[example]]
-name = "door"
-path = "examples/door.rs"
-required-features = ["server"]
-
-[[example]]
-name = "custom_payload"
-path = "examples/custom_payload.rs"
-required-features = ["server"]
-
-[[example]]
-name = "app_state"
-path = "examples/app_state.rs"
-required-features = ["server"]

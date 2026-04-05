@@ -20,10 +20,14 @@ pub struct TransitionMessage {
     pub edge: Option<Entity>,
 }
 
-/// Tracks how many messages were produced during the current schedule iteration.
-/// The outer loop checks this to decide whether to keep iterating.
+/// Tracks how many transition messages were queued during the current
+/// schedule iteration. The outer loop checks this after each iteration to
+/// decide whether to run another one. Reset at the top of
+/// [`resolve_transitions`] and incremented by every system that writes a
+/// [`TransitionMessage`] inside [`GearboxSchedule`](crate::GearboxSchedule)
+/// (message listeners, [`check_always_edges`]).
 #[derive(Resource, Default)]
-pub(crate) struct PendingCount(pub(crate) usize);
+pub struct PendingCount(pub usize);
 
 // ---------------------------------------------------------------------------
 // EnterState / ExitState entity events
@@ -84,6 +88,11 @@ pub(crate) fn flush_state_events(
 
 /// Resolve all pending transition messages: compute exits, entries, update
 /// StateMachine, save history, handle ResetEdge, and insert/remove [`Active`].
+///
+/// Resets [`PendingCount`] at the top of the iteration. Any system that
+/// writes a [`TransitionMessage`] later in the same iteration (message
+/// listeners, always-edge checks, delay timers) increments the counter so
+/// the outer loop knows whether to iterate again.
 pub(crate) fn resolve_transitions(
     mut reader: MessageReader<TransitionMessage>,
     mut q_machine: Query<&mut StateMachine>,
@@ -94,10 +103,20 @@ pub(crate) fn resolve_transitions(
     mut q_history_state: Query<&mut HistoryState>,
     q_edge_kind: Query<&EdgeKind>,
     q_reset_edge: Query<&ResetEdge>,
+    mut pending: ResMut<PendingCount>,
     mut commands: Commands,
 ) {
+    // New iteration: clear the counter so later systems' writes reflect
+    // only transitions queued during *this* iteration.
+    pending.0 = 0;
+
     for msg in reader.read() {
+        info!(
+            "resolve_transitions: machine={:?} source={:?} target={:?} edge={:?}",
+            msg.machine, msg.source, msg.target, msg.edge
+        );
         let Ok(mut machine) = q_machine.get_mut(msg.machine) else {
+            info!("resolve_transitions: no machine component on {:?}", msg.machine);
             continue;
         };
 
@@ -290,11 +309,15 @@ pub(crate) fn resolve_transitions(
         for &state in &machine.active {
             if !old_active.contains(&state) || exited_all.contains(&state) {
                 // New or re-entered: insert (triggers Added<Active>)
+                info!("resolve_transitions: insert Active on {:?} (new/re-entered)", state);
                 commands.entity(state).insert(Active { machine: msg.machine });
             } else if state == msg.target {
                 // Target stayed active (e.g. child→parent): re-insert to
                 // trigger Changed<Active> so systems can detect re-entry.
+                info!("resolve_transitions: re-insert Active on {:?} (target stayed active)", state);
                 commands.entity(state).insert(Active { machine: msg.machine });
+            } else {
+                info!("resolve_transitions: leaving Active untouched on {:?}", state);
             }
         }
     }
@@ -325,6 +348,11 @@ pub(crate) fn resolve_edge_target(
 
 /// After transitions resolve, check if any AlwaysEdge is now eligible on
 /// states that were just entered or re-entered (Changed<Active>).
+///
+/// Increments [`PendingCount`] for each transition it queues. The counter
+/// is reset once per iteration by [`resolve_transitions`]; every system
+/// that writes a [`TransitionMessage`] in the same iteration must
+/// increment here to keep the outer loop driven correctly.
 pub(crate) fn check_always_edges(
     mut writer: MessageWriter<TransitionMessage>,
     mut pending: ResMut<PendingCount>,
@@ -338,8 +366,6 @@ pub(crate) fn check_always_edges(
     q_substate_of: Query<&SubstateOf>,
     q_delay: Query<(), With<Delay>>,
 ) {
-    pending.0 = 0;
-
     let mut states_to_check: Vec<(Entity, Entity)> = Vec::new(); // (state, machine)
     for (state, active) in &q_changed {
         let machine_entity = q_substate_of.root_ancestor(state);

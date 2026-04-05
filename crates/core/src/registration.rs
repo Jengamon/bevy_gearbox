@@ -80,17 +80,27 @@ impl RegistrationAppExt for App {
         self.add_message::<M>();
         self.add_message::<Matched<M>>();
         self.register_type::<MessageEdge<M>>();
-        self.add_systems(Update, message_edge_listener::<M>.before(GearboxSet));
+        // Edge-check listeners run inside the per-frame schedule loop so that
+        // messages fired the same frame a machine is spawned are processed
+        // after the machine's initial state has been activated. Placing them
+        // in `EdgeCheckPhase` means the first iteration resolves init
+        // transitions, the second iteration's listener sees populated
+        // `active_leaves` and fires the user transition, and the loop
+        // converges in one frame.
+        self.add_systems(
+            GearboxSchedule,
+            message_edge_listener::<M>.in_set(GearboxPhase::EdgeCheckPhase),
+        );
         self
     }
 
     fn register_side_effect<M: GearboxMessage, S: SideEffect<M>>(&mut self) -> &mut Self {
         self.add_message::<S>();
         self.add_systems(
-            Update,
+            GearboxSchedule,
             produce_side_effects::<M, S>
-                .after(message_edge_listener::<M>)
-                .before(GearboxSet),
+                .in_set(GearboxPhase::EdgeCheckPhase)
+                .after(message_edge_listener::<M>),
         );
         self
     }
