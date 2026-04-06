@@ -222,9 +222,15 @@ fn stale_source_skipped_after_parallel_exit() {
     app.update();
 
     let state = app.world().get::<StateMachine>(machine).unwrap();
-    // One of (d, e) should be active, the other should not
-    assert!(state.active_leaves.contains(&d));
+    // Exactly one of (d, e) should be active — whichever parallel leaf's
+    // AlwaysEdge fired first. The other is stale-skipped because its
+    // source was exited when the parallel region was left.
+    let d_active = state.active_leaves.contains(&d);
+    let e_active = state.active_leaves.contains(&e);
+    assert!(
+        d_active ^ e_active,
+        "exactly one of d/e should be active, got d={d_active} e={e_active}"
+    );
     assert!(!state.active_leaves.contains(&a));
     assert!(!state.active_leaves.contains(&b));
-    assert!(!state.active_leaves.contains(&e));
 }

@@ -267,13 +267,20 @@ impl Plugin for GearboxPlugin {
             GearboxSchedule,
             (
                 resolve::resolve_transitions.in_set(GearboxPhase::TransitionPhase),
-                // ApplyDeferred flushes Active insert/remove commands
-                // so ExitPhase/EntryPhase systems see the changes.
+                // Flush Active insert/remove commands so ExitPhase/EntryPhase
+                // systems see the changes.
                 ApplyDeferred
                     .after(GearboxPhase::TransitionPhase)
                     .before(GearboxPhase::ExitPhase),
                 delay::cancel_delay_timers.in_set(GearboxPhase::ExitPhase),
                 delay::start_delay_timers.in_set(GearboxPhase::EntryPhase),
+                // Flush deferred commands from ExitPhase/EntryPhase (e.g.
+                // StateComponent insert/remove) so they are visible to
+                // EdgeCheckPhase and to the convergence check before the
+                // loop potentially exits.
+                ApplyDeferred
+                    .after(GearboxPhase::EntryPhase)
+                    .before(GearboxPhase::EdgeCheckPhase),
                 messages::emit_terminal_done
                     .in_set(GearboxPhase::EdgeCheckPhase)
                     .before(resolve::check_always_edges),

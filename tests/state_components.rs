@@ -170,6 +170,64 @@ fn different_state_components_swap_on_transition() {
     );
 }
 
+/// Root-sourced transition exits a state with children: the parent state's
+/// StateComponent must be removed even when the active leaf is a child
+/// substate, not the parent itself.
+///
+/// Hierarchy:
+///   Machine (root)
+///   ├── A  [StateComponent(Speed)]
+///   │   └── A_child  (InitialState of A — active leaf when A is active)
+///   └── B
+///
+/// Transition: root → B (any-state edge, like IntoBag in survivors).
+/// Expected: Speed is removed because A is exited. Bug: Active was only
+/// removed from A_child (the leaf) and the root (the source), but NOT from
+/// A itself, so state_component_exit never fired for A.
+#[test]
+fn root_sourced_transition_removes_state_component_from_intermediate_parent() {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.register_state_component::<Speed>();
+
+    let world = app.world_mut();
+    let machine = world.spawn_empty().id();
+
+    let a = world
+        .spawn((SubstateOf(machine), StateComponent(Speed(5.0))))
+        .id();
+    let a_child = world.spawn(SubstateOf(a)).id();
+    let b = world.spawn(SubstateOf(machine)).id();
+
+    world.entity_mut(a).insert(InitialState(a_child));
+    world
+        .entity_mut(machine)
+        .insert((StateMachine::new(), InitialState(a)));
+
+    app.update();
+
+    // A is active (via a_child as leaf), Speed is on the root.
+    assert_eq!(
+        app.world().get::<Speed>(machine).map(|s| s.0),
+        Some(5.0),
+        "Speed should be on machine root after entering A"
+    );
+
+    // Root-sourced transition: machine → B (simulates an any-state edge).
+    app.world_mut().write_message(TransitionMessage {
+        machine,
+        source: machine,
+        target: b,
+        edge: None,
+    });
+    app.update();
+
+    assert!(
+        app.world().get::<Speed>(machine).is_none(),
+        "Speed should be removed when A is exited via a root-sourced transition"
+    );
+}
+
 /// A StateComponent on a deeply nested state should still apply to the
 /// machine root entity (not the intermediate parent).
 #[test]

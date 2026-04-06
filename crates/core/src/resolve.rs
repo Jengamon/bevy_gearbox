@@ -111,10 +111,6 @@ pub(crate) fn resolve_transitions(
     pending.0 = 0;
 
     for msg in reader.read() {
-        info!(
-            "resolve_transitions: machine={:?} source={:?} target={:?} edge={:?}",
-            msg.machine, msg.source, msg.target, msg.edge
-        );
         let Ok(mut machine) = q_machine.get_mut(msg.machine) else {
             info!("resolve_transitions: no machine component on {:?}", msg.machine);
             continue;
@@ -290,13 +286,15 @@ pub(crate) fn resolve_transitions(
             compute_active_from_leaves(&machine.active_leaves, &q_substate_of);
         machine.active.insert(msg.machine);
 
-        // Build the full exited set (leaves + their ancestors up to LCA).
-        let mut exited_all: Vec<Entity> = exited_leaves;
-        for &a in &exited_ancestors {
-            if !exited_all.contains(&a) {
-                exited_all.push(a);
-            }
-        }
+        // Build the full exited set: every state that was active before but
+        // is no longer active. This catches intermediate states (e.g. a parent
+        // with StateComponent) that sit between the exited leaves and the
+        // transition source.
+        let exited_all: Vec<Entity> = old_active
+            .iter()
+            .copied()
+            .filter(|e| !machine.active.contains(e))
+            .collect();
 
         // Remove Active from exited states
         for &state in &exited_all {
@@ -309,15 +307,11 @@ pub(crate) fn resolve_transitions(
         for &state in &machine.active {
             if !old_active.contains(&state) || exited_all.contains(&state) {
                 // New or re-entered: insert (triggers Added<Active>)
-                info!("resolve_transitions: insert Active on {:?} (new/re-entered)", state);
                 commands.entity(state).insert(Active { machine: msg.machine });
             } else if state == msg.target {
                 // Target stayed active (e.g. child→parent): re-insert to
                 // trigger Changed<Active> so systems can detect re-entry.
-                info!("resolve_transitions: re-insert Active on {:?} (target stayed active)", state);
                 commands.entity(state).insert(Active { machine: msg.machine });
-            } else {
-                info!("resolve_transitions: leaving Active untouched on {:?}", state);
             }
         }
     }
@@ -356,7 +350,7 @@ pub(crate) fn resolve_edge_target(
 pub(crate) fn check_always_edges(
     mut writer: MessageWriter<TransitionMessage>,
     mut pending: ResMut<PendingCount>,
-    q_changed: Query<(Entity, &Active), Changed<Active>>,
+    q_active: Query<(Entity, &Active)>,
     q_transitions: Query<&Transitions>,
     q_always: Query<(), With<AlwaysEdge>>,
     q_target: Query<&Target>,
@@ -367,13 +361,8 @@ pub(crate) fn check_always_edges(
     q_delay: Query<(), With<Delay>>,
 ) {
     let mut states_to_check: Vec<(Entity, Entity)> = Vec::new(); // (state, machine)
-    for (state, active) in &q_changed {
-        let machine_entity = q_substate_of.root_ancestor(state);
-        states_to_check.push((state, machine_entity));
-        // Also check ancestors up to the root
-        for ancestor in q_substate_of.iter_ancestors(state) {
-            states_to_check.push((ancestor, machine_entity));
-        }
+    for (state, active) in &q_active {
+        states_to_check.push((state, active.machine));
     }
     states_to_check.dedup();
 

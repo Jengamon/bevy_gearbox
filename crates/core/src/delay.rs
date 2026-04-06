@@ -94,10 +94,6 @@ pub(crate) fn tick_delay_timers(
                 continue;
             };
 
-            info!(
-                "tick_delay_timers: timer fired on edge={:?} source={:?} target={:?} (machine={:?})",
-                edge, source, target.0, root
-            );
             writer.write(TransitionMessage {
                 machine: root,
                 source,
