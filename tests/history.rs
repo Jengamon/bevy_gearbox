@@ -80,6 +80,7 @@ fn shallow_history_restores_immediate_child() {
         source: a,
         target: b,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -89,6 +90,7 @@ fn shallow_history_restores_immediate_child() {
         source: p,
         target: d,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -98,6 +100,7 @@ fn shallow_history_restores_immediate_child() {
         source: d,
         target: p,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -157,6 +160,7 @@ fn shallow_history_drills_down_from_restored_child() {
         source: q,
         target: r,
         edge: None,
+        blocked: false,
     });
     app.update();
     assert!(
@@ -173,6 +177,7 @@ fn shallow_history_drills_down_from_restored_child() {
         source: p,
         target: d,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -182,6 +187,7 @@ fn shallow_history_drills_down_from_restored_child() {
         source: d,
         target: p,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -234,6 +240,7 @@ fn deep_history_restores_exact_leaves() {
         source: x,
         target: y,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -243,6 +250,7 @@ fn deep_history_restores_exact_leaves() {
         source: p,
         target: d,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -252,6 +260,7 @@ fn deep_history_restores_exact_leaves() {
         source: d,
         target: p,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -298,6 +307,7 @@ fn reset_edge_clears_history_before_entry() {
         source: x,
         target: y,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -307,6 +317,7 @@ fn reset_edge_clears_history_before_entry() {
         source: p,
         target: d,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -316,6 +327,7 @@ fn reset_edge_clears_history_before_entry() {
         source: d,
         target: p,
         edge: Some(reset_edge),
+        blocked: false,
     });
     app.update();
 

@@ -3,7 +3,6 @@
 //! - Wrong message type does not fire
 //! - Custom MessageValidator filtering
 //! - Deeper states have priority over ancestors
-//! - Guarded message edges block
 //! - Multiple message types on the same machine
 //! - Parallel regions each fire independently per message
 
@@ -220,45 +219,6 @@ fn deeper_state_has_priority() {
         "Deeper state should win"
     );
     assert!(!state.active_leaves.contains(&parent_target));
-}
-
-/// A message edge with a non-empty guard set should not fire.
-#[test]
-fn guarded_message_edge_blocks() {
-    let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
-    app.register_transition::<Attack>();
-
-    let world = app.world_mut();
-    let machine = world.spawn_empty().id();
-    let idle = world.spawn(SubstateOf(machine)).id();
-    let hit = world.spawn(SubstateOf(machine)).id();
-
-    let mut guards = Guards::default();
-    guards.add("invincible");
-    world.spawn((
-        Source(idle),
-        Target(hit),
-        MessageEdge::<Attack>::default(),
-        guards,
-    ));
-
-    world
-        .entity_mut(machine)
-        .insert((StateMachine::new(), InitialState(idle)));
-
-    app.update();
-
-    app.world_mut().write_message(Attack { target: machine });
-    app.update();
-
-    assert!(
-        app.world()
-            .get::<StateMachine>(machine)
-            .unwrap()
-            .is_active(&idle),
-        "Guard should block the message edge"
-    );
 }
 
 /// Two different message types can coexist on the same machine, each routing

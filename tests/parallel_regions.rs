@@ -106,6 +106,7 @@ fn transition_within_parallel_region_preserves_siblings() {
         source: a1,
         target: a2,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -152,6 +153,7 @@ fn exiting_parallel_parent_exits_all_children() {
         source: parallel,
         target: d,
         edge: None,
+        blocked: false,
     });
     app.update();
 

@@ -52,7 +52,7 @@ impl<M> MessageValidator<M> for AcceptAll {
 ///
 /// The edge fires when:
 /// 1. The source state is active
-/// 2. Guards (if any) are passing
+/// 2. The transition is not blocked by a blocker system
 /// 3. The validator (if set) accepts the message
 #[derive(Component, Reflect)]
 #[reflect(Component, where M: bevy::reflect::TypePath)]
@@ -83,14 +83,15 @@ impl<M: GearboxMessage> MessageEdge<M> {
 }
 
 // ---------------------------------------------------------------------------
-// Matched<M> + SideEffect trait
+// Matched<M>
 // ---------------------------------------------------------------------------
 
 /// Written by [`message_edge_listener`] when a message of type `M` successfully
 /// matches an edge and produces a [`TransitionMessage`]. Carries the original
 /// message along with the transition context.
 ///
-/// Use [`SideEffect`] to transform a `Matched<M>` into a downstream message.
+/// Read in [`SideEffectPhase`](crate::GearboxPhase::SideEffectPhase) systems.
+/// Check [`BlockedEdges`](crate::resolve::BlockedEdges) to skip blocked transitions.
 #[derive(Message, Clone, Debug)]
 pub struct Matched<M: GearboxMessage> {
     /// The original message that triggered the transition.
@@ -105,34 +106,6 @@ pub struct Matched<M: GearboxMessage> {
     pub edge: Entity,
 }
 
-/// Pure data transform: produce a side-effect message from a matched transition.
-///
-/// Register via [`RegistrationAppExt::register_side_effect`](crate::registration::RegistrationAppExt::register_side_effect).
-///
-/// ```rust,ignore
-/// impl SideEffect<StartInvoke<Vec3>> for GoOff<Vec3> {
-///     fn produce(matched: &Matched<StartInvoke<Vec3>>) -> Option<Self> {
-///         Some(GoOff::new(matched.target, matched.message.targets.clone()))
-///     }
-/// }
-/// ```
-pub trait SideEffect<Origin: GearboxMessage>: Message + Send + Sync + Sized + 'static {
-    fn produce(matched: &Matched<Origin>) -> Option<Self>;
-}
-
-/// System that reads [`Matched<M>`] messages and writes side-effect messages.
-/// Registered by [`RegistrationAppExt::register_side_effect`](crate::registration::RegistrationAppExt::register_side_effect).
-pub fn produce_side_effects<M: GearboxMessage, S: SideEffect<M>>(
-    mut reader: MessageReader<Matched<M>>,
-    mut writer: MessageWriter<S>,
-) {
-    for matched in reader.read() {
-        if let Some(effect) = S::produce(matched) {
-            writer.write(effect);
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // message_edge_listener
 // ---------------------------------------------------------------------------
@@ -142,7 +115,7 @@ pub fn produce_side_effects<M: GearboxMessage, S: SideEffect<M>>(
 /// and [`Matched<M>`] messages.
 ///
 /// Runs inside [`GearboxSchedule`](crate::GearboxSchedule) in
-/// [`GearboxPhase::EdgeCheckPhase`](crate::GearboxPhase::EdgeCheckPhase) so
+/// [`GearboxPhase::EdgeDetectPhase`](crate::GearboxPhase::EdgeDetectPhase) so
 /// it participates in the per-frame resolution loop. This matters when a
 /// user message is written the same frame a [`StateMachine`](crate::StateMachine)
 /// is spawned: the first loop iteration activates the initial state and the
@@ -159,7 +132,6 @@ pub fn message_edge_listener<M: GearboxMessage>(
     q_target: Query<&Target>,
     q_branch: Query<&BranchTransition>,
     q_source: Query<&Source>,
-    q_guards: Query<&Guards>,
     q_substate_of: Query<&SubstateOf>,
     q_initial: Query<&InitialState>,
     q_children: Query<&Substates>,
@@ -198,7 +170,6 @@ pub fn message_edge_listener<M: GearboxMessage>(
                 &q_target,
                 &q_branch,
                 &q_source,
-                &q_guards,
                 &q_substate_of,
                 machine,
                 &mut visited,
@@ -221,7 +192,6 @@ pub fn message_edge_listener<M: GearboxMessage>(
                 &q_target,
                 &q_branch,
                 &q_source,
-                &q_guards,
                 &mut writer,
                 &mut matched_writer,
                 &mut pending.0,
@@ -240,7 +210,6 @@ fn try_fire_edge_on_branch<M: GearboxMessage>(
     q_target: &Query<&Target>,
     q_branch: &Query<&BranchTransition>,
     q_source: &Query<&Source>,
-    q_guards: &Query<&Guards>,
     q_substate_of: &Query<&SubstateOf>,
     machine: &StateMachine,
     visited: &mut HashSet<Entity>,
@@ -269,7 +238,6 @@ fn try_fire_edge_on_branch<M: GearboxMessage>(
             q_target,
             q_branch,
             q_source,
-            q_guards,
             writer,
             matched_writer,
             pending,
@@ -291,7 +259,6 @@ fn try_fire_edge_at_state<M: GearboxMessage>(
     q_target: &Query<&Target>,
     q_branch: &Query<&BranchTransition>,
     q_source: &Query<&Source>,
-    q_guards: &Query<&Guards>,
     writer: &mut MessageWriter<TransitionMessage>,
     matched_writer: &mut MessageWriter<Matched<M>>,
     pending: &mut usize,
@@ -305,20 +272,12 @@ fn try_fire_edge_at_state<M: GearboxMessage>(
         let Ok(me) = q_edge.get(edge) else {
             continue;
         };
-        // For non-branch edges, check guards on the edge itself
-        if q_branch.get(edge).is_err() {
-            if let Ok(guards) = q_guards.get(edge) {
-                if !guards.is_empty() {
-                    continue;
-                }
-            }
-        }
         if let Some(v) = &me.validator {
             if !v.matches(msg) {
                 continue;
             }
         }
-        let Some(target) = resolve_edge_target(edge, q_branch, q_target, q_guards) else {
+        let Some(target) = resolve_edge_target(edge, q_branch, q_target) else {
             continue;
         };
 
@@ -329,6 +288,7 @@ fn try_fire_edge_at_state<M: GearboxMessage>(
             source: source_state,
             target,
             edge: Some(edge),
+            blocked: false,
         });
         matched_writer.write(Matched {
             message: msg.clone(),

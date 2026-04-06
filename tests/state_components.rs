@@ -72,6 +72,7 @@ fn state_component_removed_on_exit() {
         source: a,
         target: b,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -115,6 +116,7 @@ fn state_inactive_component_removed_on_enter_restored_on_exit() {
         source: a,
         target: b,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -157,6 +159,7 @@ fn different_state_components_swap_on_transition() {
         source: running,
         target: jumping,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -219,6 +222,7 @@ fn root_sourced_transition_removes_state_component_from_intermediate_parent() {
         source: machine,
         target: b,
         edge: None,
+        blocked: false,
     });
     app.update();
 

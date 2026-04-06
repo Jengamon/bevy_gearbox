@@ -53,6 +53,7 @@ fn two_machines_independent_state() {
         source: m1_a,
         target: m1_b,
         edge: None,
+        blocked: false,
     });
     app.update();
 

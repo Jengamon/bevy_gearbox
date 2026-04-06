@@ -18,16 +18,55 @@ pub struct TransitionMessage {
     /// The edge entity that triggered this transition (if known).
     /// Used for [`EdgeKind`] and [`ResetEdge`] checks.
     pub edge: Option<Entity>,
+    /// Set to `true` by blocker systems in [`BlockerPhase`](crate::GearboxPhase::BlockerPhase)
+    /// to prevent this transition from being applied.
+    pub blocked: bool,
 }
 
-/// Tracks how many transition messages were queued during the current
-/// schedule iteration. The outer loop checks this after each iteration to
-/// decide whether to run another one. Reset at the top of
-/// [`resolve_transitions`] and incremented by every system that writes a
-/// [`TransitionMessage`] inside [`GearboxSchedule`](crate::GearboxSchedule)
-/// (message listeners, [`check_always_edges`]).
+/// Tracks how much work was done during the current schedule iteration.
+/// The outer loop checks this after each iteration to decide whether to
+/// run another one. Reset by [`reset_pending_count`] at the top of each
+/// iteration. Incremented by edge detection systems that write
+/// [`TransitionMessage`]s and by [`resolve_transitions`] for each
+/// non-blocked transition it processes.
 #[derive(Resource, Default)]
 pub struct PendingCount(pub usize);
+
+/// Set of edge entities whose [`TransitionMessage`] was marked `blocked`
+/// this iteration. Populated by [`collect_blocked_edges`] after
+/// [`BlockerPhase`](crate::GearboxPhase::BlockerPhase). Side-effect systems
+/// check this to skip orphaned [`Matched`](crate::messages::Matched) messages.
+#[derive(Resource, Default)]
+pub struct BlockedEdges(pub HashSet<Entity>);
+
+impl BlockedEdges {
+    /// Returns `true` if the given edge was blocked this iteration.
+    pub fn is_blocked(&self, edge: Entity) -> bool {
+        self.0.contains(&edge)
+    }
+}
+
+/// Reset [`PendingCount`] at the start of each schedule iteration.
+pub(crate) fn reset_pending_count(mut pending: ResMut<PendingCount>) {
+    pending.0 = 0;
+}
+
+/// After [`BlockerPhase`](crate::GearboxPhase::BlockerPhase), collect all
+/// blocked edge entities into [`BlockedEdges`] so that side-effect systems
+/// can skip orphaned [`Matched`](crate::messages::Matched) messages.
+pub(crate) fn collect_blocked_edges(
+    mut reader: MessageReader<TransitionMessage>,
+    mut blocked: ResMut<BlockedEdges>,
+) {
+    blocked.0.clear();
+    for msg in reader.read() {
+        if msg.blocked {
+            if let Some(edge) = msg.edge {
+                blocked.0.insert(edge);
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // EnterState / ExitState entity events
@@ -89,10 +128,9 @@ pub(crate) fn flush_state_events(
 /// Resolve all pending transition messages: compute exits, entries, update
 /// StateMachine, save history, handle ResetEdge, and insert/remove [`Active`].
 ///
-/// Resets [`PendingCount`] at the top of the iteration. Any system that
-/// writes a [`TransitionMessage`] later in the same iteration (message
-/// listeners, always-edge checks, delay timers) increments the counter so
-/// the outer loop knows whether to iterate again.
+/// Skips messages marked `blocked` by blocker systems. Increments
+/// [`PendingCount`] for each non-blocked transition it processes so the
+/// outer loop knows work was done.
 pub(crate) fn resolve_transitions(
     mut reader: MessageReader<TransitionMessage>,
     mut q_machine: Query<&mut StateMachine>,
@@ -106,11 +144,10 @@ pub(crate) fn resolve_transitions(
     mut pending: ResMut<PendingCount>,
     mut commands: Commands,
 ) {
-    // New iteration: clear the counter so later systems' writes reflect
-    // only transitions queued during *this* iteration.
-    pending.0 = 0;
-
     for msg in reader.read() {
+        if msg.blocked {
+            continue;
+        }
         let Ok(mut machine) = q_machine.get_mut(msg.machine) else {
             info!("resolve_transitions: no machine component on {:?}", msg.machine);
             continue;
@@ -134,6 +171,7 @@ pub(crate) fn resolve_transitions(
             for &state in &machine.active {
                 commands.entity(state).insert(Active { machine: msg.machine });
             }
+            pending.0 += 1;
             continue;
         }
 
@@ -314,25 +352,22 @@ pub(crate) fn resolve_transitions(
                 commands.entity(state).insert(Active { machine: msg.machine });
             }
         }
+
+        pending.0 += 1;
     }
 }
 
 /// Resolve the target entity for an edge. If the edge has a [`BranchTransition`],
-/// walk its arms in order and take the first whose guards pass; otherwise use
-/// the fallback. If no branch is present, fall back to the plain [`Target`] component.
+/// walk its arms in order and take the first eligible; otherwise use the
+/// fallback. If no branch is present, fall back to the plain [`Target`] component.
 pub(crate) fn resolve_edge_target(
     edge: Entity,
     q_branch: &Query<&BranchTransition>,
     q_target: &Query<&Target>,
-    q_guards: &Query<&Guards>,
 ) -> Option<Entity> {
     if let Ok(branch) = q_branch.get(edge) {
-        for arm in &branch.arms {
-            if let Ok(guards) = q_guards.get(arm.guard) {
-                if !guards.is_empty() {
-                    continue;
-                }
-            }
+        // TODO: branch arm conditions — for now, first arm wins or fallback.
+        if let Some(arm) = branch.arms.first() {
             return Some(arm.target);
         }
         return Some(branch.otherwise);
@@ -340,13 +375,11 @@ pub(crate) fn resolve_edge_target(
     q_target.get(edge).ok().map(|t| t.0)
 }
 
-/// After transitions resolve, check if any AlwaysEdge is now eligible on
-/// states that were just entered or re-entered (Changed<Active>).
+/// Check if any AlwaysEdge is eligible on states that were just entered
+/// or re-entered (`Changed<Active>`). Fires once per state entry, aligned
+/// with XState / statechart semantics.
 ///
-/// Increments [`PendingCount`] for each transition it queues. The counter
-/// is reset once per iteration by [`resolve_transitions`]; every system
-/// that writes a [`TransitionMessage`] in the same iteration must
-/// increment here to keep the outer loop driven correctly.
+/// Increments [`PendingCount`] for each transition it queues.
 pub(crate) fn check_always_edges(
     mut writer: MessageWriter<TransitionMessage>,
     mut pending: ResMut<PendingCount>,
@@ -356,7 +389,6 @@ pub(crate) fn check_always_edges(
     q_target: Query<&Target>,
     q_branch: Query<&BranchTransition>,
     q_source: Query<&Source>,
-    q_guards: Query<&Guards>,
     q_delay: Query<(), With<Delay>>,
 ) {
     let mut states_to_check: Vec<(Entity, Entity)> = Vec::new(); // (state, machine)
@@ -382,15 +414,7 @@ pub(crate) fn check_always_edges(
             if q_delay.get(edge).is_ok() {
                 continue;
             }
-            // For non-branch edges, check guards on the edge itself
-            if q_branch.get(edge).is_err() {
-                if let Ok(guards) = q_guards.get(edge) {
-                    if !guards.is_empty() {
-                        continue;
-                    }
-                }
-            }
-            let Some(target) = resolve_edge_target(edge, &q_branch, &q_target, &q_guards) else {
+            let Some(target) = resolve_edge_target(edge, &q_branch, &q_target) else {
                 continue;
             };
 
@@ -401,6 +425,7 @@ pub(crate) fn check_always_edges(
                 source: source_state,
                 target,
                 edge: Some(edge),
+                blocked: false,
             });
             pending.0 += 1;
             fired_machines.insert(machine_entity);

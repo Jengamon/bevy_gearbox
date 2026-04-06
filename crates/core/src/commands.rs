@@ -85,26 +85,16 @@ impl SpawnTransition for ChildSpawnerCommands<'_> {
     }
 }
 
-/// Builder for guarded always-transitions.
+/// Builder for always-transitions with deferred component inserts.
 pub struct TransitionBuilder {
-    pub(crate) guards: Vec<String>,
     pub(crate) deferred: Vec<Box<dyn FnOnce(&mut EntityCommands) + Send + Sync>>,
 }
 
 impl TransitionBuilder {
     pub(crate) fn new() -> Self {
         Self {
-            guards: Vec::new(),
             deferred: Vec::new(),
         }
-    }
-
-    pub fn init_guard<G: GuardProvider>(&mut self, guard: G) -> &mut Self {
-        self.guards.push(G::guard_name().to_string());
-        self.deferred.push(Box::new(move |ec| {
-            ec.insert(guard);
-        }));
-        self
     }
 
     pub fn insert<B: Bundle>(&mut self, bundle: B) -> &mut Self {
@@ -156,16 +146,7 @@ impl BuildTransition for Commands<'_, '_> {
     ) -> EntityCommands<'_> {
         let mut builder = TransitionBuilder::new();
         configure(&mut builder);
-        let mut ec = if builder.guards.is_empty() {
-            self.spawn((Source(source), Target(target), AlwaysEdge))
-        } else {
-            self.spawn((
-                Source(source),
-                Target(target),
-                AlwaysEdge,
-                Guards::init(builder.guards),
-            ))
-        };
+        let mut ec = self.spawn((Source(source), Target(target), AlwaysEdge));
         for f in builder.deferred {
             f(&mut ec);
         }
@@ -187,16 +168,7 @@ impl BuildTransition for ChildSpawnerCommands<'_> {
     ) -> EntityCommands<'_> {
         let mut builder = TransitionBuilder::new();
         configure(&mut builder);
-        let mut ec = if builder.guards.is_empty() {
-            self.spawn((Source(source), Target(target), AlwaysEdge))
-        } else {
-            self.spawn((
-                Source(source),
-                Target(target),
-                AlwaysEdge,
-                Guards::init(builder.guards),
-            ))
-        };
+        let mut ec = self.spawn((Source(source), Target(target), AlwaysEdge));
         for f in builder.deferred {
             f(&mut ec);
         }
@@ -285,27 +257,22 @@ impl SpawnBranch for ChildSpawnerCommands<'_> {
 
         let otherwise = builder.otherwise.expect("BranchBuilder requires an otherwise() target");
 
-        // Spawn guard entities for each arm
         let arms: Vec<BranchArm> = builder
             .arms
             .into_iter()
             .map(|arm_builder| {
                 let mut tb = TransitionBuilder::new();
                 (arm_builder.configure)(&mut tb);
-                let guard_entity = if tb.guards.is_empty() {
-                    self.spawn(Guards::new()).id()
-                } else {
-                    self.spawn(Guards::init(tb.guards)).id()
-                };
-                // Apply deferred inserts (e.g. AttributeRequirements) to the guard entity
+                // Spawn an entity for the arm (deferred inserts apply here)
+                let arm_entity = self.spawn_empty().id();
                 let commands = self.commands_mut();
-                let mut ec = commands.entity(guard_entity);
+                let mut ec = commands.entity(arm_entity);
                 for f in tb.deferred {
                     f(&mut ec);
                 }
                 BranchArm {
                     target: arm_builder.target,
-                    guard: guard_entity,
+                    guard: arm_entity,
                 }
             })
             .collect();
@@ -334,19 +301,15 @@ impl SpawnBranch for ChildSpawnerCommands<'_> {
             .map(|arm_builder| {
                 let mut tb = TransitionBuilder::new();
                 (arm_builder.configure)(&mut tb);
-                let guard_entity = if tb.guards.is_empty() {
-                    self.spawn(Guards::new()).id()
-                } else {
-                    self.spawn(Guards::init(tb.guards)).id()
-                };
+                let arm_entity = self.spawn_empty().id();
                 let commands = self.commands_mut();
-                let mut ec = commands.entity(guard_entity);
+                let mut ec = commands.entity(arm_entity);
                 for f in tb.deferred {
                     f(&mut ec);
                 }
                 BranchArm {
                     target: arm_builder.target,
-                    guard: guard_entity,
+                    guard: arm_entity,
                 }
             })
             .collect();

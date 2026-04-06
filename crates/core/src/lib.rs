@@ -1,31 +1,26 @@
 //! Schedule-based state machine resolution.
 //!
-//! Instead of observers that resolve transitions recursively in one shot,
-//! this crate uses a dedicated [`GearboxSchedule`] that runs in a loop:
-//!
-//! 1. Systems read pending [`TransitionMessage`]s via [`MessageReader`]
-//! 2. They compute exits/entries, update [`StateMachine`], and insert/remove [`Active`]
-//! 3. Commands flush — [`Active`] changes are visible to subsequent phases
-//! 4. User systems in [`GearboxPhase::ExitPhase`] / [`GearboxPhase::EntryPhase`] react
-//!    via `Added<Active>` and `RemovedComponents<Active>` queries
-//! 5. [`check_always_edges`] may produce *new* messages (e.g. AlwaysEdge becoming eligible)
-//! 6. The schedule runs again until no new messages are produced or [`IterationCap`] is hit
+//! Uses a dedicated [`GearboxSchedule`] that runs in a loop:
 //!
 //! ```text
-//! GearboxSchedule (loops until converged):
-//!   TransitionPhase <- resolve_transitions (inserts/removes Active)
-//!   apply_deferred  <- flush commands so Active is visible
-//!   ExitPhase       <- user systems reacting to RemovedComponents<Active>
-//!   EntryPhase      <- user systems reacting to Added<Active>
-//!   GaugeSync       <- (gauge feature) sync WriteBack + AttributeDerived components
-//!   EdgeCheckPhase  <- check_always_edges (internal)
+//! GearboxSchedule (loops until no work done):
+//!   reset_pending_count
+//!   TransitionPhase  <- resolve_transitions (skips blocked, inserts/removes Active)
+//!   apply_deferred
+//!   ExitPhase        <- user systems reacting to RemovedComponents<Active>
+//!   EntryPhase       <- user systems reacting to Added<Active>
+//!   GaugeSync        <- (gauge feature) sync WriteBack + AttributeDerived
+//!   apply_deferred
+//!   EdgeDetectPhase  <- check_always_edges, message_edge_listener, emit_terminal_done
+//!   apply_deferred
+//!   BlockerPhase     <- user blocker systems (MessageMutator<TransitionMessage>)
+//!   collect_blocked  <- populates BlockedEdges resource
+//!   apply_deferred
+//!   SideEffectPhase  <- user side-effect systems (read Matched<M>, check BlockedEdges)
 //! ```
 //!
 //! After the schedule converges, [`EnterState`] / [`ExitState`] entity events
 //! are triggered for observer-based consumers.
-//!
-//! Timer ticking, parameter sync, and other per-frame work belongs in
-//! [`Update`] ordered relative to [`GearboxSet`].
 //!
 //! This is analogous to how Avian runs a physics schedule multiple times per frame.
 
@@ -34,7 +29,6 @@ pub mod history;
 pub mod state_component;
 pub mod resolve;
 pub mod messages;
-pub mod parameters;
 pub mod delay;
 pub mod commands;
 pub mod registration;
@@ -56,7 +50,7 @@ use resolve::PendingCount;
 pub use components::{
     Active, TerminalState,
     StateMachine, InitialState, SubstateOf, Substates, Source, Transitions, Target,
-    AlwaysEdge, EdgeKind, Guards, Guard, GuardProvider, Delay, EdgeTimer,
+    AlwaysEdge, EdgeKind, Delay, EdgeTimer,
     ResetEdge, ResetScope,
 };
 pub use history::{History, HistoryState};
@@ -66,21 +60,13 @@ pub use state_component::{
     state_inactive_component_enter, state_inactive_component_exit,
 };
 pub use resolve::{
-    TransitionMessage,
+    TransitionMessage, BlockedEdges,
     EnterState, ExitState,
 };
 pub use messages::{
     GearboxMessage, MessageValidator, AcceptAll, MessageEdge, Matched,
-    SideEffect, produce_side_effects, message_edge_listener,
+    message_edge_listener,
     Done, emit_terminal_done,
-};
-pub use parameters::{
-    FloatParam, IntParam, BoolParam,
-    FloatParamBinding, IntParamBinding, BoolParamBinding,
-    sync_float_param, sync_int_param, sync_bool_param,
-    FloatInRange, IntInRange, BoolEquals,
-    apply_float_param_guards, apply_int_param_guards, apply_bool_param_guards,
-    init_float_param_guard_on_add, init_int_param_guard_on_add, init_bool_param_guard_on_add,
 };
 pub use commands::{
     SpawnSubstate, SpawnTransition, BuildTransition, TransitionBuilder,
@@ -89,13 +75,9 @@ pub use commands::{
 };
 pub use registration::{
     InstalledTransitions, InstalledStateComponents,
-    InstalledFloatParams, InstalledIntParams, InstalledBoolParams,
-    InstalledFloatParamBindings, InstalledIntParamBindings, InstalledBoolParamBindings,
     InstalledStateBridges,
     RegistrationAppExt, gearbox_auto_register_plugin,
     TransitionInstaller, StateInstaller,
-    FloatParamInstaller, IntParamInstaller, BoolParamInstaller,
-    FloatParamBindingInstaller, IntParamBindingInstaller, BoolParamBindingInstaller,
     StateBridgeInstaller,
     DeferEvent, replay_deferred_messages, bridge_to_bevy_state,
 };
@@ -119,13 +101,23 @@ pub struct GearboxSchedule;
 pub struct GearboxSet;
 
 /// System sets within [`GearboxSchedule`], executed in order each iteration.
-///
-/// Commands are flushed between `TransitionPhase` and `ExitPhase` so that
-/// [`Active`] component changes are visible to user systems.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GearboxPhase {
-    /// Internal: reads transition messages, updates [`StateMachine`],
-    /// and inserts/removes [`Active`] components.
+    /// Internal: detects eligible edges (always-edges on `Changed<Active>`,
+    /// message edges, terminal-done) and writes [`TransitionMessage`]s +
+    /// [`Matched`](crate::messages::Matched) messages.
+    EdgeDetectPhase,
+    /// User blocker systems run here. Use
+    /// [`MessageMutator<TransitionMessage>`] to set `blocked = true` on
+    /// transitions that should not be applied.
+    BlockerPhase,
+    /// User side-effect systems run here. Read
+    /// [`Matched<M>`](crate::messages::Matched) and check
+    /// [`BlockedEdges`](crate::resolve::BlockedEdges) to skip blocked
+    /// transitions.
+    SideEffectPhase,
+    /// Internal: reads surviving (non-blocked) transition messages, updates
+    /// [`StateMachine`], and inserts/removes [`Active`] components.
     TransitionPhase,
     /// User systems that react to states being exited.
     /// Query `RemovedComponents<Active>` to detect exits.
@@ -138,7 +130,7 @@ pub enum GearboxPhase {
     /// so that derived values are current before edge checks.
     #[cfg(feature = "gauge")]
     GaugeSync,
-    /// Internal: checks AlwaysEdge eligibility and writes new messages.
+    /// Deprecated: use [`EdgeDetectPhase`](Self::EdgeDetectPhase) instead.
     EdgeCheckPhase,
 }
 
@@ -172,6 +164,7 @@ fn enqueue_machine_init(
             source: entity,
             target: initial.0,
             edge: None,
+            blocked: false,
         });
     }
 }
@@ -221,15 +214,24 @@ impl Plugin for GearboxPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<TransitionMessage>()
             .init_resource::<PendingCount>()
+            .init_resource::<resolve::BlockedEdges>()
             .init_resource::<IterationCap>();
 
         let mut schedule = Schedule::new(GearboxSchedule);
+        // TransitionPhase runs FIRST so that init messages (from
+        // enqueue_machine_init) and delay-timer messages (from
+        // tick_delay_timers) are resolved before EdgeDetect runs.
+        // EdgeDetect then proposes new transitions from the newly-active
+        // states, which pass through Blocker → SideEffect and are resolved
+        // in the NEXT iteration's TransitionPhase.
         #[cfg(not(feature = "gauge"))]
         schedule.configure_sets((
             GearboxPhase::TransitionPhase,
             GearboxPhase::ExitPhase,
             GearboxPhase::EntryPhase,
-            GearboxPhase::EdgeCheckPhase,
+            GearboxPhase::EdgeDetectPhase,
+            GearboxPhase::BlockerPhase,
+            GearboxPhase::SideEffectPhase,
         ).chain());
         #[cfg(feature = "gauge")]
         schedule.configure_sets((
@@ -237,7 +239,9 @@ impl Plugin for GearboxPlugin {
             GearboxPhase::ExitPhase,
             GearboxPhase::EntryPhase,
             GearboxPhase::GaugeSync,
-            GearboxPhase::EdgeCheckPhase,
+            GearboxPhase::EdgeDetectPhase,
+            GearboxPhase::BlockerPhase,
+            GearboxPhase::SideEffectPhase,
         ).chain());
         app.add_schedule(schedule);
 
@@ -266,25 +270,44 @@ impl Plugin for GearboxPlugin {
         app.add_systems(
             GearboxSchedule,
             (
-                resolve::resolve_transitions.in_set(GearboxPhase::TransitionPhase),
-                // Flush Active insert/remove commands so ExitPhase/EntryPhase
-                // systems see the changes.
+                // Reset work counter at the start of each iteration.
+                resolve::reset_pending_count
+                    .before(GearboxPhase::TransitionPhase),
+                // Resolve init/delay/previous-iteration edge messages.
+                resolve::resolve_transitions
+                    .in_set(GearboxPhase::TransitionPhase),
+                // Flush Active insert/remove so Exit/Entry phases see changes.
                 ApplyDeferred
                     .after(GearboxPhase::TransitionPhase)
                     .before(GearboxPhase::ExitPhase),
-                delay::cancel_delay_timers.in_set(GearboxPhase::ExitPhase),
-                delay::start_delay_timers.in_set(GearboxPhase::EntryPhase),
-                // Flush deferred commands from ExitPhase/EntryPhase (e.g.
+                delay::cancel_delay_timers
+                    .in_set(GearboxPhase::ExitPhase),
+                delay::start_delay_timers
+                    .in_set(GearboxPhase::EntryPhase),
+                // Flush deferred commands from Exit/Entry (e.g.
                 // StateComponent insert/remove) so they are visible to
-                // EdgeCheckPhase and to the convergence check before the
-                // loop potentially exits.
+                // EdgeDetect (Changed<Active>).
                 ApplyDeferred
                     .after(GearboxPhase::EntryPhase)
-                    .before(GearboxPhase::EdgeCheckPhase),
+                    .before(GearboxPhase::EdgeDetectPhase),
+                // Edge detection: propose new transitions.
                 messages::emit_terminal_done
-                    .in_set(GearboxPhase::EdgeCheckPhase)
+                    .in_set(GearboxPhase::EdgeDetectPhase)
                     .before(resolve::check_always_edges),
-                resolve::check_always_edges.in_set(GearboxPhase::EdgeCheckPhase),
+                resolve::check_always_edges
+                    .in_set(GearboxPhase::EdgeDetectPhase),
+                // Flush so blocker systems see edge-detect commands.
+                ApplyDeferred
+                    .after(GearboxPhase::EdgeDetectPhase)
+                    .before(GearboxPhase::BlockerPhase),
+                // After blockers, collect which edges were blocked.
+                resolve::collect_blocked_edges
+                    .after(GearboxPhase::BlockerPhase)
+                    .before(GearboxPhase::SideEffectPhase),
+                // Flush before side effects.
+                ApplyDeferred
+                    .after(GearboxPhase::BlockerPhase)
+                    .before(GearboxPhase::SideEffectPhase),
             ),
         );
 

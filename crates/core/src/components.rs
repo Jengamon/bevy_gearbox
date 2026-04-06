@@ -102,71 +102,6 @@ pub enum EdgeKind {
     Internal,
 }
 
-/// Guard conditions that block a transition. Edge fires only when empty.
-#[derive(Component, Default, Debug)]
-pub struct Guards {
-    pub guards: HashSet<String>,
-}
-
-impl Guards {
-    pub fn new() -> Self {
-        Self { guards: HashSet::new() }
-    }
-
-    pub fn init(guards: impl IntoIterator<Item = impl Guard>) -> Self {
-        Self {
-            guards: guards.into_iter().map(|g| g.name()).collect(),
-        }
-    }
-
-    pub fn check(&self) -> bool {
-        self.guards.is_empty()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.guards.is_empty()
-    }
-
-    pub fn has_guard(&self, guard: impl Guard) -> bool {
-        self.guards.contains(&guard.name())
-    }
-
-    pub fn add(&mut self, guard: impl Into<String>) {
-        self.guards.insert(guard.into());
-    }
-
-    pub fn add_guard(&mut self, guard: impl Guard) {
-        self.guards.insert(guard.name());
-    }
-
-    pub fn remove(&mut self, guard: &str) {
-        self.guards.remove(guard);
-    }
-
-    pub fn remove_guard(&mut self, guard: impl Guard) {
-        self.guards.remove(&guard.name());
-    }
-}
-
-/// Trait for types that can identify a guard by name.
-pub trait Guard {
-    fn name(&self) -> String;
-}
-
-impl Guard for String {
-    fn name(&self) -> String { self.clone() }
-}
-
-impl Guard for &str {
-    fn name(&self) -> String { self.to_string() }
-}
-
-/// A component that acts as a guard provider. When inserted on a transition
-/// edge, it manages a named guard in the [`Guards`] set.
-pub trait GuardProvider: Bundle {
-    fn guard_name() -> &'static str;
-}
-
 /// Delayed transition: fire after `duration` elapses while the source is active.
 #[derive(Component)]
 pub struct Delay {
@@ -198,12 +133,12 @@ pub struct EdgeTimer(pub Timer);
 pub struct TerminalState;
 
 /// A single arm of a [`BranchTransition`]. Each arm has a target state
-/// and a guard entity whose [`Guards`] component determines eligibility.
+/// and an associated entity for condition data.
 #[derive(Clone, Debug)]
 pub struct BranchArm {
     /// The destination state if this arm is taken.
     pub target: Entity,
-    /// The entity carrying [`Guards`] for this arm.
+    /// An entity associated with this arm (for condition components, etc.).
     pub guard: Entity,
 }
 

@@ -58,7 +58,6 @@ pub(crate) fn tick_delay_timers(
     mut q_timer: Query<&mut EdgeTimer>,
     q_delay: Query<&Delay>,
     q_always: Query<(), With<AlwaysEdge>>,
-    q_guards: Query<&Guards>,
     q_target: Query<&Target>,
     q_substate_of: Query<&SubstateOf>,
     q_machine: Query<&StateMachine>,
@@ -84,12 +83,6 @@ pub(crate) fn tick_delay_timers(
             if !timer.0.just_finished() {
                 continue;
             }
-            // Check guards
-            if let Ok(guards) = q_guards.get(edge) {
-                if !guards.is_empty() {
-                    continue;
-                }
-            }
             let Ok(target) = q_target.get(edge) else {
                 continue;
             };
@@ -99,6 +92,7 @@ pub(crate) fn tick_delay_timers(
                 source,
                 target: target.0,
                 edge: Some(edge),
+                blocked: false,
             });
             pending.0 += 1;
             break; // one delayed transition per source per frame

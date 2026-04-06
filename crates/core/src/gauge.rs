@@ -2,13 +2,12 @@
 //!
 //! Provides:
 //! - [`AttributeDerived`] for [`Delay`] — reads `"Cooldown"` from attributes
-//! - [`GuardProvider`] for [`AttributeRequirements`]
 
 use std::time::Duration;
 
-use bevy_gauge::prelude::{AttributeDerived, Attributes, AttributeRequirements};
+use bevy_gauge::prelude::{AttributeDerived, Attributes};
 
-use crate::components::{Delay, GuardProvider};
+use crate::components::Delay;
 
 // ---------------------------------------------------------------------------
 // AttributeDerived for Delay
@@ -29,13 +28,3 @@ impl AttributeDerived for Delay {
 }
 
 bevy_gauge::register_derived!(Delay);
-
-// ---------------------------------------------------------------------------
-// GuardProvider for AttributeRequirements
-// ---------------------------------------------------------------------------
-
-impl GuardProvider for AttributeRequirements {
-    fn guard_name() -> &'static str {
-        "stat_req_unmet"
-    }
-}

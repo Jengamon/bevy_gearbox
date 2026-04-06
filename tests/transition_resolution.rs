@@ -2,7 +2,6 @@
 //! - AlwaysEdge chains resolving across multiple schedule iterations
 //! - Manual TransitionMessages combining with AlwaysEdge chains
 //! - Stale source handling
-//! - Guarded edges blocking transitions
 //! - Hierarchical drill-down on initialization
 //! - Internal vs external edge kinds
 
@@ -70,6 +69,7 @@ fn manual_transition_chains_with_always_edge() {
         source: a,
         target: b,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -107,38 +107,13 @@ fn transition_from_inactive_source_is_ignored() {
         source: b,
         target: c,
         edge: None,
+        blocked: false,
     });
     app.update();
 
     let state = app.world().get::<StateMachine>(machine).unwrap();
     assert!(state.active_leaves.contains(&a), "Should still be in A");
     assert!(!state.active_leaves.contains(&c));
-}
-
-/// An AlwaysEdge with a non-empty Guards set must not fire.
-#[test]
-fn guarded_always_edge_does_not_fire() {
-    let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
-
-    let world = app.world_mut();
-    let machine = world.spawn_empty().id();
-    let a = world.spawn(SubstateOf(machine)).id();
-    let b = world.spawn(SubstateOf(machine)).id();
-
-    let mut guards = Guards::default();
-    guards.add("blocked");
-    world.spawn((Source(a), Target(b), AlwaysEdge, guards));
-
-    world
-        .entity_mut(machine)
-        .insert((StateMachine::new(), InitialState(a)));
-
-    app.update();
-
-    let state = app.world().get::<StateMachine>(machine).unwrap();
-    assert!(state.active_leaves.contains(&a), "Guard should block transition");
-    assert!(!state.active_leaves.contains(&b));
 }
 
 /// Self-transition exits and re-enters the state, causing EntryPhase to run
@@ -187,6 +162,7 @@ fn self_transition_exits_and_reenters() {
         source: a,
         target: a,
         edge: None,
+        blocked: false,
     });
     app.update();
 
@@ -309,63 +285,6 @@ fn stable_state_no_extra_iterations() {
     let state = app.world().get::<StateMachine>(machine).unwrap();
     assert!(state.is_active(&a));
     assert!(!state.is_active(&b));
-}
-
-/// A user system in EntryPhase that clears a guard should enable an
-/// AlwaysEdge within the same resolution cycle.
-#[test]
-fn user_system_clears_guard_mid_resolution() {
-    #[derive(Component)]
-    struct GuardedEdgeMarker;
-
-    fn clear_guard_when_active(
-        q_machine: Query<&StateMachine>,
-        mut q_guards: Query<&mut Guards, With<GuardedEdgeMarker>>,
-    ) {
-        for machine in &q_machine {
-            if !machine.active_leaves.is_empty() {
-                for mut guards in &mut q_guards {
-                    guards.remove("blocked");
-                }
-            }
-        }
-    }
-
-    let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
-    app.add_systems(
-        GearboxSchedule,
-        clear_guard_when_active.in_set(GearboxPhase::EntryPhase),
-    );
-
-    let world = app.world_mut();
-    let machine = world.spawn_empty().id();
-    let a = world.spawn(SubstateOf(machine)).id();
-    let b = world.spawn(SubstateOf(machine)).id();
-
-    let mut initial_guards = Guards::default();
-    initial_guards.add("blocked");
-    world.spawn((
-        Source(a),
-        Target(b),
-        AlwaysEdge,
-        initial_guards,
-        GuardedEdgeMarker,
-    ));
-
-    world
-        .entity_mut(machine)
-        .insert((StateMachine::new(), InitialState(a)));
-
-    app.update();
-
-    let machine_state = app.world().get::<StateMachine>(machine).unwrap();
-    assert!(
-        machine_state.is_active(&b),
-        "B should be active — user system cleared the guard mid-resolution. \
-         Got active: {:?}",
-        machine_state.active
-    );
 }
 
 /// Active component is inserted on entered states and removed on exited
