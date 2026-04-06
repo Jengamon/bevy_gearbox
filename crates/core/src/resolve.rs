@@ -350,14 +350,13 @@ pub(crate) fn resolve_edge_target(
 pub(crate) fn check_always_edges(
     mut writer: MessageWriter<TransitionMessage>,
     mut pending: ResMut<PendingCount>,
-    q_active: Query<(Entity, &Active)>,
+    q_active: Query<(Entity, &Active), Changed<Active>>,
     q_transitions: Query<&Transitions>,
     q_always: Query<(), With<AlwaysEdge>>,
     q_target: Query<&Target>,
     q_branch: Query<&BranchTransition>,
     q_source: Query<&Source>,
     q_guards: Query<&Guards>,
-    q_substate_of: Query<&SubstateOf>,
     q_delay: Query<(), With<Delay>>,
 ) {
     let mut states_to_check: Vec<(Entity, Entity)> = Vec::new(); // (state, machine)
