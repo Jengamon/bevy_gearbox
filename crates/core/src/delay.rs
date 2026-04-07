@@ -49,6 +49,8 @@ pub(crate) fn cancel_delay_timers(
 }
 
 /// Tick all active delay timers and write TransitionMessages when they fire.
+/// Works for both `AlwaysEdge + Delay` (timer started on state entry) and
+/// `MessageEdge + Delay` (timer started when the message first matches).
 /// Runs in [`Update`] before the per-frame [`GearboxSchedule`](crate::GearboxSchedule)
 /// loop, so any transition a delay fires this frame is resolved — and any
 /// cascade it triggers is fully processed — inside the same frame's loop.
@@ -57,7 +59,6 @@ pub(crate) fn tick_delay_timers(
     q_transitions: Query<(Entity, &Transitions)>,
     mut q_timer: Query<&mut EdgeTimer>,
     q_delay: Query<&Delay>,
-    q_always: Query<(), With<AlwaysEdge>>,
     q_target: Query<&Target>,
     q_substate_of: Query<&SubstateOf>,
     q_machine: Query<&StateMachine>,
@@ -73,7 +74,7 @@ pub(crate) fn tick_delay_timers(
             continue;
         }
         for &edge in transitions {
-            if q_delay.get(edge).is_err() || q_always.get(edge).is_err() {
+            if q_delay.get(edge).is_err() {
                 continue;
             }
             let Ok(mut timer) = q_timer.get_mut(edge) else {

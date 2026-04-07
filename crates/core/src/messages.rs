@@ -126,6 +126,7 @@ pub fn message_edge_listener<M: GearboxMessage>(
     mut writer: MessageWriter<TransitionMessage>,
     mut matched_writer: MessageWriter<Matched<M>>,
     mut pending: ResMut<PendingCount>,
+    mut commands: Commands,
     q_machine: Query<&StateMachine>,
     q_transitions: Query<&Transitions>,
     q_edge: Query<&MessageEdge<M>>,
@@ -135,6 +136,8 @@ pub fn message_edge_listener<M: GearboxMessage>(
     q_substate_of: Query<&SubstateOf>,
     q_initial: Query<&InitialState>,
     q_children: Query<&Substates>,
+    q_delay: Query<&Delay>,
+    q_timer: Query<(), With<EdgeTimer>>,
 ) {
     let msgs: Vec<_> = reader.read().cloned().collect();
     for msg in msgs {
@@ -176,6 +179,9 @@ pub fn message_edge_listener<M: GearboxMessage>(
                 &mut writer,
                 &mut matched_writer,
                 &mut pending.0,
+                &mut commands,
+                &q_delay,
+                &q_timer,
             ) {
                 fired_regions.insert(region_root);
             }
@@ -195,6 +201,9 @@ pub fn message_edge_listener<M: GearboxMessage>(
                 &mut writer,
                 &mut matched_writer,
                 &mut pending.0,
+                &mut commands,
+                &q_delay,
+                &q_timer,
             );
         }
     }
@@ -216,6 +225,9 @@ fn try_fire_edge_on_branch<M: GearboxMessage>(
     writer: &mut MessageWriter<TransitionMessage>,
     matched_writer: &mut MessageWriter<Matched<M>>,
     pending: &mut usize,
+    commands: &mut Commands,
+    q_delay: &Query<&Delay>,
+    q_timer: &Query<(), With<EdgeTimer>>,
 ) -> bool {
     let mut current = Some(start);
     while let Some(state) = current {
@@ -241,6 +253,9 @@ fn try_fire_edge_on_branch<M: GearboxMessage>(
             writer,
             matched_writer,
             pending,
+            commands,
+            q_delay,
+            q_timer,
         ) {
             return true;
         }
@@ -262,6 +277,9 @@ fn try_fire_edge_at_state<M: GearboxMessage>(
     writer: &mut MessageWriter<TransitionMessage>,
     matched_writer: &mut MessageWriter<Matched<M>>,
     pending: &mut usize,
+    commands: &mut Commands,
+    q_delay: &Query<&Delay>,
+    q_timer: &Query<(), With<EdgeTimer>>,
 ) -> bool {
     use crate::resolve::resolve_edge_target;
 
@@ -277,6 +295,21 @@ fn try_fire_edge_at_state<M: GearboxMessage>(
                 continue;
             }
         }
+
+        // Delayed message edge: the message starts a timer. The
+        // transition fires when the timer expires (via tick_delay_timers).
+        if let Ok(delay) = q_delay.get(edge) {
+            if q_timer.get(edge).is_err() {
+                // No timer yet — start one. The message is consumed
+                // (returns true) but the transition is deferred.
+                commands.entity(edge).insert(
+                    EdgeTimer(Timer::new(delay.duration, TimerMode::Once)),
+                );
+            }
+            // Timer already running — message is consumed but ignored.
+            return true;
+        }
+
         let Some(target) = resolve_edge_target(edge, q_branch, q_target) else {
             continue;
         };
