@@ -736,6 +736,21 @@ fn sync_snapshots_to_workspace(
                 if entry.graph.is_some() && entry.scene.node_rects.is_empty() {
                     project_graph_into_doc(entry, graph.clone());
                 }
+                // No user-designated layout exists for this machine — run the
+                // auto-layout algorithm on the root so the user sees something
+                // readable instead of the naive grid placement from
+                // `apply_initial_layout_for_unseen_nodes`.
+                if let Some(g) = entry.graph.as_ref().cloned() {
+                    let cfg = crate::editor::auto_layout::AutoLayoutConfig::default();
+                    let layout_cfg = crate::editor::layout::LayoutConfig::default();
+                    let _ = crate::editor::auto_layout::auto_layout_subtree(
+                        &mut entry.scene,
+                        &g,
+                        g.root,
+                        &cfg,
+                        &layout_cfg,
+                    );
+                }
             }
         }
     }
