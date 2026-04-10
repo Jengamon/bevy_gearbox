@@ -154,15 +154,24 @@ impl Default for IterationCap {
 // ---------------------------------------------------------------------------
 
 /// Detect newly-added StateMachine components and write initialization messages.
+///
+/// Machines with `InitialState` are sequential roots: the init transition
+/// targets the initial child and `get_all_leaf_states` drills from there.
+///
+/// Machines without `InitialState` are parallel roots: the init transition
+/// self-targets the machine entity, and `get_all_leaf_states` walks all
+/// children (since the entity has `Substates` but no `InitialState`, it's
+/// treated as a parallel parent). A machine with neither `InitialState` nor
+/// children is a trivial single-state machine — itself is the only leaf.
 fn enqueue_machine_init(
-    q_new_machines: Query<(Entity, &InitialState), Added<StateMachine>>,
+    q_new_machines: Query<(Entity, Option<&InitialState>), Added<StateMachine>>,
     mut writer: MessageWriter<TransitionMessage>,
 ) {
     for (entity, initial) in &q_new_machines {
         writer.write(TransitionMessage {
             machine: entity,
             source: entity,
-            target: initial.0,
+            target: initial.map(|i| i.0).unwrap_or(entity),
             edge: None,
             blocked: false,
         });

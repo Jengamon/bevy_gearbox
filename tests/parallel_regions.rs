@@ -198,6 +198,100 @@ fn nested_sequential_then_parallel() {
     assert_eq!(state.active_leaves.len(), 2);
 }
 
+/// The machine entity itself can be a parallel root: omit `InitialState`
+/// from the machine and all of its children become active leaves.
+///
+/// This is a regression test for the init system: previously
+/// `enqueue_machine_init` required `&InitialState` in its query and silently
+/// skipped any machine without one, even though `init_state_machine(None)`
+/// was a valid call. Self-targeting the init transition resolves the
+/// machine entity as a parallel parent through the existing leaf-finder.
+#[test]
+fn parallel_root_machine_activates_all_children() {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, GearboxPlugin));
+
+    let world = app.world_mut();
+    let machine = world.spawn_empty().id();
+    let a = world.spawn(SubstateOf(machine)).id();
+    let b = world.spawn(SubstateOf(machine)).id();
+    let c = world.spawn(SubstateOf(machine)).id();
+
+    // No InitialState on the machine — it's a parallel root.
+    world.entity_mut(machine).insert(StateMachine::new());
+
+    app.update();
+
+    let state = app.world().get::<StateMachine>(machine).unwrap();
+    assert!(state.active_leaves.contains(&a));
+    assert!(state.active_leaves.contains(&b));
+    assert!(state.active_leaves.contains(&c));
+    assert_eq!(state.active_leaves.len(), 3);
+    assert!(state.active.contains(&machine));
+}
+
+/// A parallel-root machine whose children are themselves sequential
+/// regions: each region's InitialState child should be active, and a
+/// transition inside one region should not affect the other.
+///
+/// ```text
+/// machine (no init, parallel root)
+/// ├── region_a (init=a1)
+/// │   ├── a1
+/// │   └── a2
+/// └── region_b (init=b1)
+///     ├── b1
+///     └── b2
+/// ```
+#[test]
+fn parallel_root_machine_with_sequential_subregions() {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, GearboxPlugin));
+
+    let world = app.world_mut();
+    let machine = world.spawn_empty().id();
+
+    let region_a = world.spawn(SubstateOf(machine)).id();
+    let a1 = world.spawn(SubstateOf(region_a)).id();
+    let a2 = world.spawn(SubstateOf(region_a)).id();
+
+    let region_b = world.spawn(SubstateOf(machine)).id();
+    let b1 = world.spawn(SubstateOf(region_b)).id();
+    let _b2 = world.spawn(SubstateOf(region_b)).id();
+
+    world.entity_mut(region_a).insert(InitialState(a1));
+    world.entity_mut(region_b).insert(InitialState(b1));
+    // No InitialState on the machine — parallel root.
+    world.entity_mut(machine).insert(StateMachine::new());
+
+    app.update();
+    let state = app.world().get::<StateMachine>(machine).unwrap();
+    assert!(state.active_leaves.contains(&a1));
+    assert!(state.active_leaves.contains(&b1));
+    assert_eq!(state.active_leaves.len(), 2);
+    assert!(state.active.contains(&machine));
+    assert!(state.active.contains(&region_a));
+    assert!(state.active.contains(&region_b));
+
+    // Transition within region A only — region B should be untouched.
+    app.world_mut().write_message(TransitionMessage {
+        machine,
+        source: a1,
+        target: a2,
+        edge: None,
+        blocked: false,
+    });
+    app.update();
+
+    let state = app.world().get::<StateMachine>(machine).unwrap();
+    assert!(state.active_leaves.contains(&a2), "a2 should be active");
+    assert!(!state.active_leaves.contains(&a1), "a1 should be exited");
+    assert!(
+        state.active_leaves.contains(&b1),
+        "b1 should be unaffected by transition in region A"
+    );
+}
+
 /// Two parallel leaves both have AlwaysEdges that would exit the parallel
 /// region. Only the first should fire; the second's source becomes stale.
 #[test]
