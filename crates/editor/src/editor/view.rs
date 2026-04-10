@@ -254,6 +254,7 @@ pub fn draw_doc_on_board(
                                         MenuItemKind::Delete => MenuSelection::DeleteEntity { target: *eid },
                                         MenuItemKind::MakeInitial { parent } => MenuSelection::MakeInitial { parent, new_initial: *eid },
                                         MenuItemKind::AddChild => MenuSelection::AddChildStateMachine { target: *eid },
+                                        MenuItemKind::AutoLayout => MenuSelection::AutoLayoutSubtree { target: *eid },
                                     };
                                     context_menu_selection = Some(sel);
                                     menu_ui.close();
