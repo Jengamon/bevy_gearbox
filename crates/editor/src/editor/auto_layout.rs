@@ -109,9 +109,12 @@ pub(crate) fn auto_layout_subtree(
         .map(|r| r.min)
         .unwrap_or(egui::pos2(0.0, 0.0));
 
-    // Snapshot the input sizes for every node in the subtree.
+    // Snapshot the input sizes for every node in the subtree, plus pill sizes
+    // for every edge in the document. We use the live pill rect sizes so that
+    // layout reserves space proportional to each transition's actual label.
     let subtree = collect_subtree(graph, root);
     let initial_sizes = snapshot_sizes(scene, &subtree, layout_cfg);
+    let pill_sizes = snapshot_pill_sizes(scene);
 
     // Bottom-up: compute new size for each compound and store local positions
     // (relative to that compound's content origin).
@@ -123,6 +126,7 @@ pub(crate) fn auto_layout_subtree(
         graph,
         root,
         &initial_sizes,
+        &pill_sizes,
         cfg,
         layout_cfg,
         &mut local_positions,
@@ -154,7 +158,7 @@ pub(crate) fn auto_layout_subtree(
     write_back_node_rects(scene, &new_rects);
 
     // Reposition any pills whose source/target moved.
-    reposition_pills_for_subtree(scene, graph, &subtree);
+    reposition_pills_for_subtree(scene, graph, &subtree, cfg);
 
     // Final pass: use the existing NodeLayout machinery to clamp children
     // into their parent content areas and expand any compound that needs to
@@ -203,6 +207,16 @@ fn snapshot_sizes(
     sizes
 }
 
+/// Snapshot pill (edge label) sizes from the scene. Used by layout to size
+/// inter-layer gaps so that wide pill labels don't overlap nodes.
+fn snapshot_pill_sizes(scene: &ViewScene) -> HashMap<EntityId, egui::Vec2> {
+    scene
+        .edges
+        .iter()
+        .map(|(id, ev)| (*id, ev.rect.size()))
+        .collect()
+}
+
 // =============================================================================
 // Compound recursion
 // =============================================================================
@@ -214,6 +228,7 @@ fn compute_layout_recursive(
     graph: &StateMachineGraph,
     node: EntityId,
     initial_sizes: &HashMap<EntityId, egui::Vec2>,
+    pill_sizes: &HashMap<EntityId, egui::Vec2>,
     cfg: &AutoLayoutConfig,
     layout_cfg: &LayoutConfig,
     local_positions: &mut HashMap<EntityId, HashMap<EntityId, egui::Pos2>>,
@@ -241,6 +256,7 @@ fn compute_layout_recursive(
             graph,
             *child,
             initial_sizes,
+            pill_sizes,
             cfg,
             layout_cfg,
             local_positions,
@@ -256,6 +272,7 @@ fn compute_layout_recursive(
         node,
         &children,
         &child_sizes,
+        pill_sizes,
         cfg,
         layout_cfg,
         report,
@@ -357,19 +374,20 @@ fn write_back_node_rects(scene: &mut ViewScene, new_rects: &HashMap<EntityId, eg
 ///
 /// - **Self-loop**: tucked just below the host node.
 /// - **Containment** (one endpoint is the immediate parent of the other):
-///   placed on the side of the inner (child) rect *farthest* from the outer
-///   (parent) rect's centroid. This avoids the case where the midpoint of
-///   the two centers falls inside the parent and the renderer routes the
-///   arrow back across the entire parent body.
+///   placed on the side of the inner (child) rect that is farthest from the
+///   outer (parent) rect's center *along the layout's flow axis*, with the
+///   pill centered on the cross axis of the child. For LR layouts this means
+///   the pill ends up to the left or right of the child (whichever is
+///   farther from the parent's center), aligned with everything else.
 /// - **Sibling/cross-hierarchy**: midpoint of the *border-to-border* visible
 ///   segment, computed from each rect's boundary point along the line to
 ///   the other rect's center. This is robust against one rect being much
-///   larger than the other (the naive center-to-center midpoint can fall
-///   inside the larger rect).
+///   larger than the other.
 fn reposition_pills_for_subtree(
     scene: &mut ViewScene,
     graph: &StateMachineGraph,
     subtree: &HashSet<EntityId>,
+    cfg: &AutoLayoutConfig,
 ) {
     let edge_ids: Vec<EntityId> = scene
         .edges
@@ -391,16 +409,21 @@ fn reposition_pills_for_subtree(
             Some(r) => r,
             None => continue,
         };
+        let pill_size = scene
+            .edges
+            .get(&eid)
+            .map(|ev| ev.rect.size())
+            .unwrap_or(egui::vec2(80.0, 24.0));
 
         let new_center = if src == dst {
             // Self-loop: tuck the pill just below the node.
             egui::pos2(src_rect.center().x, src_rect.max.y + 32.0)
         } else if graph.get_parent(&dst) == Some(src) {
             // src is the parent of dst — outer = src, inner = dst.
-            place_pill_on_far_side(dst_rect, src_rect)
+            place_pill_aligned_far_side(dst_rect, src_rect, pill_size, cfg.direction)
         } else if graph.get_parent(&src) == Some(dst) {
             // dst is the parent of src — outer = dst, inner = src.
-            place_pill_on_far_side(src_rect, dst_rect)
+            place_pill_aligned_far_side(src_rect, dst_rect, pill_size, cfg.direction)
         } else {
             // Sibling / cross-hierarchy: midpoint of the visible
             // border-to-border segment.
@@ -412,12 +435,7 @@ fn reposition_pills_for_subtree(
             )
         };
 
-        let old_size = scene
-            .edges
-            .get(&eid)
-            .map(|ev| ev.rect.size())
-            .unwrap_or(egui::vec2(80.0, 24.0));
-        let new_rect = egui::Rect::from_center_size(new_center, old_size);
+        let new_rect = egui::Rect::from_center_size(new_center, pill_size);
         if let Some(r) = scene.node_rects.get_mut(&eid) {
             *r = new_rect;
         }
@@ -450,37 +468,44 @@ fn rect_border_toward(rect: egui::Rect, target: egui::Pos2) -> egui::Pos2 {
     c + dir * t
 }
 
-/// Place a pill on the side of `inner` farthest from `outer`'s centroid,
-/// padded slightly outside `inner`. Used for transitions where one endpoint
-/// contains the other (parent ↔ child), so the rendered arrow leaves the
-/// inner node away from the outer's body instead of cutting back through it.
-fn place_pill_on_far_side(inner: egui::Rect, outer: egui::Rect) -> egui::Pos2 {
-    const PAD: f32 = 24.0;
+/// Place a pill on the side of `inner` farthest from `outer`'s center along
+/// the layout's flow axis. The pill is centered on `inner`'s cross-axis
+/// midpoint so it lines up with the rest of the layered nodes.
+///
+/// `pill_size` is the actual size of the pill rect being placed; we offset
+/// the pill's *center* from `inner`'s edge by half the pill's flow-axis
+/// extent plus a small extra gap, so the pill body never overlaps `inner`.
+fn place_pill_aligned_far_side(
+    inner: egui::Rect,
+    outer: egui::Rect,
+    pill_size: egui::Vec2,
+    direction: LayoutDirection,
+) -> egui::Pos2 {
+    const EXTRA_GAP: f32 = 16.0;
     let inner_c = inner.center();
     let outer_c = outer.center();
-    let raw_dir = inner_c - outer_c;
-    let unit_dir = if raw_dir.length_sq() < 1e-6 {
-        // Inner sits exactly at outer's center — no preferred direction;
-        // fall back to "below the inner".
-        egui::vec2(0.0, 1.0)
+    let is_horizontal = matches!(direction, LayoutDirection::LR | LayoutDirection::RL);
+    if is_horizontal {
+        // Half-extent of the pill along x, plus a small gap to keep the pill
+        // body from touching the child.
+        let pad = pill_size.x * 0.5 + EXTRA_GAP;
+        // Pick the side of inner whose pill-center would be farther from
+        // outer_c.x. Tie → right.
+        let right_x = inner.max.x + pad;
+        let left_x = inner.min.x - pad;
+        let right_dist = (right_x - outer_c.x).abs();
+        let left_dist = (left_x - outer_c.x).abs();
+        let x = if right_dist >= left_dist { right_x } else { left_x };
+        egui::pos2(x, inner_c.y)
     } else {
-        raw_dir / raw_dir.length()
-    };
-    // Distance from inner_center to its boundary along `unit_dir`.
-    let half = inner.size() * 0.5;
-    let tx = if unit_dir.x.abs() > 1e-6 {
-        half.x / unit_dir.x.abs()
-    } else {
-        f32::INFINITY
-    };
-    let ty = if unit_dir.y.abs() > 1e-6 {
-        half.y / unit_dir.y.abs()
-    } else {
-        f32::INFINITY
-    };
-    let t = tx.min(ty);
-    let boundary = inner_c + unit_dir * t;
-    boundary + unit_dir * PAD
+        let pad = pill_size.y * 0.5 + EXTRA_GAP;
+        let bottom_y = inner.max.y + pad;
+        let top_y = inner.min.y - pad;
+        let bottom_dist = (bottom_y - outer_c.y).abs();
+        let top_dist = (top_y - outer_c.y).abs();
+        let y = if bottom_dist >= top_dist { bottom_y } else { top_y };
+        egui::pos2(inner_c.x, y)
+    }
 }
 
 /// Run the existing `NodeLayout::clamp_children_left_top` and
@@ -548,6 +573,7 @@ fn run_sugiyama_for_compound(
     compound: EntityId,
     children: &[EntityId],
     child_sizes: &HashMap<EntityId, egui::Vec2>,
+    pill_sizes: &HashMap<EntityId, egui::Vec2>,
     cfg: &AutoLayoutConfig,
     layout_cfg: &LayoutConfig,
     report: &mut AutoLayoutReport,
@@ -563,16 +589,18 @@ fn run_sugiyama_for_compound(
         return out;
     }
 
-    // Phase 0: collect candidate edges (after bubble-up).
+    // Phase 0: collect candidate edges (after bubble-up). For each (src, dst)
+    // pair we keep the maximum pill thickness across all original edges that
+    // bubble to that pair, so the layered graph knows how much room to
+    // reserve at each gap.
     let mut node_idx: HashMap<EntityId, usize> = HashMap::new();
     for (i, c) in children.iter().enumerate() {
         node_idx.insert(*c, i);
     }
     let direct_children: HashSet<EntityId> = children.iter().copied().collect();
 
-    let mut raw_edges: Vec<(usize, usize)> = Vec::new();
-    let mut seen_pairs: HashSet<(usize, usize)> = HashSet::new();
-    for (_eid, edge) in graph.edges.iter() {
+    let mut edge_thickness: HashMap<(usize, usize), f32> = HashMap::new();
+    for (eid, edge) in graph.edges.iter() {
         let pair = bubble_edge_to_level(graph, compound, &direct_children, edge.source, edge.target);
         if let Some((src_rep, dst_rep)) = pair {
             if src_rep == dst_rep {
@@ -580,25 +608,45 @@ fn run_sugiyama_for_compound(
             }
             let si = node_idx[&src_rep];
             let di = node_idx[&dst_rep];
-            if seen_pairs.insert((si, di)) {
-                raw_edges.push((si, di));
+            let pill_sz = pill_sizes
+                .get(eid)
+                .copied()
+                .unwrap_or(egui::vec2(80.0, 24.0));
+            let thickness = match cfg.direction {
+                LayoutDirection::LR | LayoutDirection::RL => pill_sz.x,
+                LayoutDirection::TB | LayoutDirection::BT => pill_sz.y,
+            };
+            let entry = edge_thickness.entry((si, di)).or_insert(0.0);
+            if thickness > *entry {
+                *entry = thickness;
             }
         }
     }
 
-    // Phase 1: cycle removal.
-    let reversed = greedy_fas(n, &raw_edges);
-    let oriented: Vec<(usize, usize)> = raw_edges
+    // Stable-ordered triples for downstream phases.
+    let mut raw_edges: Vec<(usize, usize, f32)> = edge_thickness
+        .into_iter()
+        .map(|((s, d), t)| (s, d, t))
+        .collect();
+    raw_edges.sort_by_key(|(s, d, _)| (*s, *d));
+
+    // Phase 1: cycle removal (only needs the pair list).
+    let pair_list: Vec<(usize, usize)> = raw_edges.iter().map(|(s, d, _)| (*s, *d)).collect();
+    let reversed = greedy_fas(n, &pair_list);
+    let oriented: Vec<(usize, usize, f32)> = raw_edges
         .iter()
         .enumerate()
-        .map(|(i, &(s, d))| if reversed[i] { (d, s) } else { (s, d) })
+        .map(|(i, &(s, d, t))| if reversed[i] { (d, s, t) } else { (s, d, t) })
         .collect();
     report.reversed_edges += reversed.iter().filter(|x| **x).count();
 
     // Phase 2: longest-path layer assignment.
-    let layers = assign_layers(n, &oriented);
+    let oriented_pairs: Vec<(usize, usize)> =
+        oriented.iter().map(|(s, d, _)| (*s, *d)).collect();
+    let layers = assign_layers(n, &oriented_pairs);
 
-    // Phase 2b: insert dummy vertices for long edges.
+    // Phase 2b: insert dummy vertices for long edges, and compute per-gap
+    // pill thickness so coord assignment can size each gap individually.
     let mut lg = build_layered_graph(n, &layers, &oriented, report);
 
     // Phase 3: barycenter crossing minimization.
@@ -841,16 +889,22 @@ struct LayeredGraph {
     pred: Vec<Vec<usize>>,
     /// Successor list (one layer down) for each vertex.
     succ: Vec<Vec<usize>>,
+    /// Maximum pill thickness (along the flow axis) of any edge that crosses
+    /// gap `i` (between layer `i` and layer `i+1`). Length = n_layers - 1.
+    /// Used by coord assignment to size each gap individually so that wide
+    /// transition labels never overlap their adjacent nodes.
+    gap_pill_thickness: Vec<f32>,
 }
 
 fn build_layered_graph(
     n_real: usize,
     real_layers: &[usize],
-    oriented_edges: &[(usize, usize)],
+    oriented_edges: &[(usize, usize, f32)],
     report: &mut AutoLayoutReport,
 ) -> LayeredGraph {
     let max_layer = *real_layers.iter().max().unwrap_or(&0);
-    let mut layers: Vec<Vec<usize>> = vec![Vec::new(); max_layer + 1];
+    let n_layers = max_layer + 1;
+    let mut layers: Vec<Vec<usize>> = vec![Vec::new(); n_layers];
     let mut layer_of: Vec<usize> = real_layers.to_vec();
     for v in 0..n_real {
         layers[real_layers[v]].push(v);
@@ -858,8 +912,9 @@ fn build_layered_graph(
 
     let mut pred: Vec<Vec<usize>> = vec![Vec::new(); n_real];
     let mut succ: Vec<Vec<usize>> = vec![Vec::new(); n_real];
+    let mut gap_pill_thickness: Vec<f32> = vec![0.0; n_layers.saturating_sub(1)];
 
-    for &(s, d) in oriented_edges {
+    for &(s, d, thickness) in oriented_edges {
         if s == d {
             continue;
         }
@@ -868,6 +923,15 @@ fn build_layered_graph(
         if ld <= ls {
             // Should not happen after cycle removal; ignore defensively.
             continue;
+        }
+        // Reserve gap thickness for every gap this edge crosses. The pill
+        // for the original edge sits in *some* gap along this span; we don't
+        // know which without explicit waypoints, so be conservative and
+        // reserve room across the whole span.
+        for g in ls..ld {
+            if g < gap_pill_thickness.len() && thickness > gap_pill_thickness[g] {
+                gap_pill_thickness[g] = thickness;
+            }
         }
         if ld - ls == 1 {
             succ[s].push(d);
@@ -896,6 +960,7 @@ fn build_layered_graph(
         layers,
         pred,
         succ,
+        gap_pill_thickness,
     }
 }
 
@@ -1013,14 +1078,20 @@ fn assign_coordinates(
         layer_thickness[li] = max_t.max(0.0);
     }
 
-    // Step 2: t-coordinate of each layer's centerline.
-    let inter_layer_gap = cfg.layer_spacing + cfg.reserve_pill_gap;
+    // Step 2: t-coordinate of each layer's centerline. Each gap is sized
+    // individually based on the widest pill that crosses it (with a floor of
+    // `reserve_pill_gap` for "no pill" gaps).
     let mut layer_t_center = vec![0.0f32; n_layers];
     let mut t_cursor = 0.0f32;
     for li in 0..n_layers {
         t_cursor += layer_thickness[li] * 0.5;
         layer_t_center[li] = t_cursor;
-        t_cursor += layer_thickness[li] * 0.5 + inter_layer_gap;
+        t_cursor += layer_thickness[li] * 0.5;
+        if li + 1 < n_layers {
+            let pill_t = lg.gap_pill_thickness.get(li).copied().unwrap_or(0.0);
+            let extra = pill_t.max(cfg.reserve_pill_gap);
+            t_cursor += cfg.layer_spacing + extra;
+        }
     }
     let total_t_extent = if n_layers == 0 {
         0.0
@@ -1102,6 +1173,12 @@ mod tests {
         (s, d)
     }
 
+    /// Convenience: a (src, dst) edge with zero pill thickness, for tests
+    /// that don't care about per-gap pill sizing.
+    fn edge3(s: usize, d: usize) -> (usize, usize, f32) {
+        (s, d, 0.0)
+    }
+
     #[test]
     fn greedy_fas_breaks_simple_cycle() {
         // A -> B -> C -> A: exactly one edge must be reversed.
@@ -1164,12 +1241,7 @@ mod tests {
     fn dummy_insertion_for_long_edges() {
         // 0 -> 3 spanning layers 0..3, plus 0->1->2->3
         let real_layers = vec![0, 1, 2, 3];
-        let edges = vec![
-            make_pair(0, 1),
-            make_pair(1, 2),
-            make_pair(2, 3),
-            make_pair(0, 3),
-        ];
+        let edges = vec![edge3(0, 1), edge3(1, 2), edge3(2, 3), edge3(0, 3)];
         let mut report = AutoLayoutReport::default();
         let lg = build_layered_graph(4, &real_layers, &edges, &mut report);
         // 4 layers total
@@ -1181,11 +1253,61 @@ mod tests {
     }
 
     #[test]
+    fn gap_pill_thickness_tracks_max_per_gap() {
+        // Two gaps. Layer 0 -> 1 has a 200-px pill. Layer 1 -> 2 has a 50-px
+        // pill. The third edge is a long edge (0 -> 2) carrying 30 px, which
+        // should not lower either gap's max.
+        let real_layers = vec![0, 1, 2];
+        let edges = vec![(0, 1, 200.0), (1, 2, 50.0), (0, 2, 30.0)];
+        let mut report = AutoLayoutReport::default();
+        let lg = build_layered_graph(3, &real_layers, &edges, &mut report);
+        assert_eq!(lg.gap_pill_thickness.len(), 2);
+        assert_eq!(lg.gap_pill_thickness[0], 200.0);
+        assert_eq!(lg.gap_pill_thickness[1], 50.0);
+    }
+
+    #[test]
+    fn coords_layer_gap_grows_with_pill_thickness() {
+        // Two layers, one node each. With a 0-thickness edge the gap is the
+        // default; with a fat edge the gap should grow by exactly the
+        // additional pill thickness.
+        let real_layers = vec![0, 1];
+        let cfg = AutoLayoutConfig::default();
+        let layout_cfg = LayoutConfig::default();
+        let children = vec![EntityId(1), EntityId(2)];
+        let mut sizes = HashMap::new();
+        sizes.insert(EntityId(1), egui::vec2(140.0, 60.0));
+        sizes.insert(EntityId(2), egui::vec2(140.0, 60.0));
+
+        let mut report = AutoLayoutReport::default();
+        let lg_thin = build_layered_graph(2, &real_layers, &[edge3(0, 1)], &mut report);
+        let pos_thin = assign_coordinates(&lg_thin, &children, &sizes, &cfg, &layout_cfg);
+
+        let mut report = AutoLayoutReport::default();
+        let fat = vec![(0usize, 1usize, 300.0f32)];
+        let lg_fat = build_layered_graph(2, &real_layers, &fat, &mut report);
+        let pos_fat = assign_coordinates(&lg_fat, &children, &sizes, &cfg, &layout_cfg);
+
+        let dx_thin = pos_thin[&EntityId(2)].x - pos_thin[&EntityId(1)].x;
+        let dx_fat = pos_fat[&EntityId(2)].x - pos_fat[&EntityId(1)].x;
+        // The fat pill (300) is larger than the floor (40), so the gap grows
+        // by exactly (300 - 40) = 260.
+        let expected_growth = 300.0 - cfg.reserve_pill_gap;
+        assert!(
+            (dx_fat - dx_thin - expected_growth).abs() < 0.01,
+            "gap should grow by {} (was {}, became {})",
+            expected_growth,
+            dx_thin,
+            dx_fat
+        );
+    }
+
+    #[test]
     fn barycenter_reduces_or_keeps_crossings() {
         // Simple K2,2 in two layers. Barycenter should produce a stable order.
         // Layer 0: [0, 1]; Layer 1: [2, 3]; edges: 0->3, 1->2 (crossed)
         let real_layers = vec![0, 0, 1, 1];
-        let edges = vec![make_pair(0, 3), make_pair(1, 2)];
+        let edges = vec![edge3(0, 3), edge3(1, 2)];
         let mut report = AutoLayoutReport::default();
         let mut lg = build_layered_graph(4, &real_layers, &edges, &mut report);
         // Force the crossed initial order so barycenter has work to do.
@@ -1247,7 +1369,7 @@ mod tests {
         // Two layers, two real nodes per layer, no edges. Each node has the
         // default size; verify that within-layer s-coordinates are spaced.
         let real_layers = vec![0, 0, 1];
-        let edges: Vec<(usize, usize)> = vec![];
+        let edges: Vec<(usize, usize, f32)> = vec![];
         let mut report = AutoLayoutReport::default();
         let lg = build_layered_graph(3, &real_layers, &edges, &mut report);
 
