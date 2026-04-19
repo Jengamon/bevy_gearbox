@@ -41,6 +41,7 @@ pub mod gauge;
 use bevy::ecs::schedule::ScheduleLabel;
 use bevy::prelude::*;
 
+use helpers::{compute_active_from_leaves, get_all_leaf_states};
 use resolve::PendingCount;
 
 // ---------------------------------------------------------------------------
@@ -175,6 +176,73 @@ fn enqueue_machine_init(
             edge: None,
             blocked: false,
         });
+    }
+}
+
+/// Detect substates added at runtime under an already-active parallel parent
+/// and activate them.
+fn activate_added_substates(
+    q_newly_attached: Query<(Entity, &SubstateOf), Added<SubstateOf>>,
+    q_substate_of: Query<&SubstateOf>,
+    q_initial: Query<&InitialState>,
+    q_substates: Query<&Substates>,
+    q_history: Query<&History>,
+    q_history_state: Query<&mut HistoryState>,
+    mut q_machine: Query<&mut StateMachine>,
+    q_active: Query<(), With<Active>>,
+    mut commands: Commands,
+) {
+    for (child, SubstateOf(parent)) in &q_newly_attached {
+        let parent = *parent;
+
+        // Find the machine root by walking SubstateOf ancestors. If the
+        // parent (or any ancestor) isn't part of a StateMachine, skip.
+        let machine_entity = q_substate_of.root_ancestor(parent);
+        let Ok(mut machine) = q_machine.get_mut(machine_entity) else {
+            continue;
+        };
+
+        // Parent must already be active.
+        if !machine.active.contains(&parent) {
+            continue;
+        }
+
+        // Sequential parents don't auto-activate new children.
+        if q_initial.contains(parent) {
+            continue;
+        }
+
+        // If parent was a childless leaf before this add, it's in
+        // `active_leaves` — remove it since it now has a child.
+        machine.active_leaves.remove(&parent);
+
+        // Drill into the new subtree to find its leaves.
+        let new_leaves = get_all_leaf_states(
+            child,
+            &q_initial,
+            &q_substates,
+            &q_history,
+            &q_history_state,
+        );
+        for leaf in &new_leaves {
+            machine.active_leaves.insert(*leaf);
+        }
+
+        // Recompute `active` from the updated leaf set.
+        machine.active = compute_active_from_leaves(
+            &machine.active_leaves,
+            &q_substate_of,
+        );
+        machine.active.insert(machine_entity);
+
+        // Insert Active on states that don't yet carry it.
+        for &state in &machine.active {
+            if q_active.get(state).is_err() {
+                commands
+                    .entity(state)
+                    .insert(Active { machine: machine_entity });
+            }
+        }
     }
 }
 
@@ -333,6 +401,7 @@ impl Plugin for GearboxPlugin {
             Update,
             (
                 enqueue_machine_init,
+                activate_added_substates,
                 delay::tick_delay_timers,
                 run_gearbox_schedule,
             )

@@ -330,3 +330,130 @@ fn stale_source_skipped_after_parallel_exit() {
     assert!(!state.active_leaves.contains(&a));
     assert!(!state.active_leaves.contains(&b));
 }
+
+/// A substate added at runtime under an already-active parallel parent
+/// should join `active_leaves` automatically. This is the dynamic-
+/// composition path (e.g. equipment installing ability sub-charts on a
+/// running character).
+#[test]
+fn runtime_substate_added_under_active_parallel_parent_activates() {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, GearboxPlugin));
+
+    let machine = app.world_mut().spawn_empty().id();
+    let parallel = app.world_mut().spawn(SubstateOf(machine)).id();
+    app.world_mut()
+        .entity_mut(machine)
+        .insert((StateMachine::new(), InitialState(parallel)));
+
+    app.update();
+
+    // Initially `parallel` has no children, so it's treated as a leaf.
+    {
+        let state = app.world().get::<StateMachine>(machine).unwrap();
+        assert!(state.active_leaves.contains(&parallel));
+        assert_eq!(state.active_leaves.len(), 1);
+    }
+
+    // Add a child to the already-active parallel parent at runtime.
+    let new_child = app.world_mut().spawn(SubstateOf(parallel)).id();
+
+    app.update();
+
+    let state = app.world().get::<StateMachine>(machine).unwrap();
+    assert!(
+        state.active_leaves.contains(&new_child),
+        "runtime-added child should join active_leaves",
+    );
+    assert!(
+        !state.active_leaves.contains(&parallel),
+        "parallel parent should no longer be a leaf",
+    );
+    assert!(
+        state.active.contains(&new_child),
+        "runtime-added child should be in active set",
+    );
+    assert!(
+        app.world().get::<Active>(new_child).is_some(),
+        "runtime-added child should have Active component",
+    );
+}
+
+/// A runtime-added substate with its own `InitialState` sequential child
+/// should activate the initial state, not the new substate itself.
+#[test]
+fn runtime_substate_with_initial_state_activates_initial_leaf() {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, GearboxPlugin));
+
+    let machine = app.world_mut().spawn_empty().id();
+    let parallel = app.world_mut().spawn(SubstateOf(machine)).id();
+    app.world_mut()
+        .entity_mut(machine)
+        .insert((StateMachine::new(), InitialState(parallel)));
+
+    app.update();
+
+    // Runtime-build an ability sub-chart with its own initial state.
+    let ability = app.world_mut().spawn(SubstateOf(parallel)).id();
+    let idle = app.world_mut().spawn(SubstateOf(ability)).id();
+    let _fire = app.world_mut().spawn(SubstateOf(ability)).id();
+    app.world_mut()
+        .entity_mut(ability)
+        .insert(InitialState(idle));
+
+    app.update();
+
+    let state = app.world().get::<StateMachine>(machine).unwrap();
+    assert!(
+        state.active_leaves.contains(&idle),
+        "InitialState child should be the active leaf",
+    );
+    assert_eq!(
+        state.active_leaves.len(),
+        1,
+        "only the initial state should be a leaf (not fire, not ability itself)",
+    );
+    assert!(state.active.contains(&ability));
+    assert!(state.active.contains(&idle));
+}
+
+/// Adding a substate under an active sequential (non-parallel) parent should
+/// NOT auto-activate it. Sequential parents route through `InitialState` or
+/// explicit transitions.
+#[test]
+fn runtime_substate_under_sequential_parent_does_not_auto_activate() {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, GearboxPlugin));
+
+    let machine = app.world_mut().spawn_empty().id();
+    let seq = app.world_mut().spawn(SubstateOf(machine)).id();
+    let a = app.world_mut().spawn(SubstateOf(seq)).id();
+    app.world_mut().entity_mut(seq).insert(InitialState(a));
+    app.world_mut()
+        .entity_mut(machine)
+        .insert((StateMachine::new(), InitialState(seq)));
+
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .get::<StateMachine>(machine)
+            .unwrap()
+            .active_leaves
+            .len(),
+        1,
+    );
+
+    // Add a second child to the sequential parent at runtime.
+    let b = app.world_mut().spawn(SubstateOf(seq)).id();
+    app.update();
+
+    let state = app.world().get::<StateMachine>(machine).unwrap();
+    assert!(state.active_leaves.contains(&a), "a should remain active");
+    assert!(
+        !state.active_leaves.contains(&b),
+        "b should NOT be active under a sequential parent",
+    );
+    assert!(app.world().get::<Active>(b).is_none());
+}
