@@ -12,10 +12,10 @@ categories = ["game-development", "game-engines"]
 [features]
 default = ["client"]
 client = []
-server = ["bevy/bevy_remote", "bevy/bevy_scene", "dep:bevy_gearbox"]
+server = ["bevy/bevy_remote", "bevy/bevy_world_serialization", "dep:bevy_gearbox"]
 
 [dependencies]
-bevy = { version = "0.18", default-features = false, features = [
+bevy = { workspace = true, features = [
     "bevy_remote",
     "bevy_log",
 ] }

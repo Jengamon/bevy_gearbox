@@ -10,7 +10,7 @@ keywords = ["bevy", "state-machine", "gamedev", "ecs"]
 categories = ["game-development", "game-engines"]
 
 [dependencies]
-bevy = { version = "0.18", default-features = false, features = [
+bevy = { workspace = true, features = [
     "bevy_asset",
     "bevy_camera",
     "bevy_core_pipeline",

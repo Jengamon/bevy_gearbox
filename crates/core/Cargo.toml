@@ -14,7 +14,7 @@ name = "bevy_gearbox_core"
 path = "src/lib.rs"
 
 [dependencies]
-bevy = { version = "0.18", default-features = false, features = ["bevy_state", "bevy_log"] }
+bevy = { workspace = true, features = ["bevy_state", "bevy_log"] }
 inventory = "0.3"
 bevy_gauge = { version = "0.4.5", path = "../../../bevy_gauge", optional = true }
 
