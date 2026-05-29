@@ -26,7 +26,7 @@ struct Item;
 #[test]
 fn single_item_spawned_via_commands_gets_state_component() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_state_component::<InBag>();
 
     app.add_systems(Startup, |mut commands: Commands| {
@@ -60,7 +60,7 @@ fn single_item_spawned_via_commands_gets_state_component() {
 #[test]
 fn seven_items_spawned_same_frame_all_get_state_component() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_state_component::<InBag>();
 
     app.add_systems(Startup, |mut commands: Commands| {
@@ -118,7 +118,7 @@ fn six_items_stay_in_bag_one_gets_equipped() {
     struct BagItems(Vec<Entity>);
 
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_state_component::<InBag>();
     app.register_state_component::<Equipped>();
     app.register_transition::<EquipIt>();

@@ -22,7 +22,7 @@ struct CanMove;
 #[test]
 fn state_component_inserted_on_enter() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_state_component::<Speed>();
 
     let world = app.world_mut();
@@ -49,7 +49,7 @@ fn state_component_inserted_on_enter() {
 #[test]
 fn state_component_removed_on_exit() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_state_component::<Speed>();
 
     let world = app.world_mut();
@@ -87,7 +87,7 @@ fn state_component_removed_on_exit() {
 #[test]
 fn state_inactive_component_removed_on_enter_restored_on_exit() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_state_component::<CanMove>();
 
     let world = app.world_mut();
@@ -132,7 +132,7 @@ fn state_inactive_component_removed_on_enter_restored_on_exit() {
 #[test]
 fn different_state_components_swap_on_transition() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_state_component::<Speed>();
     app.register_state_component::<Jumping>();
 
@@ -190,7 +190,7 @@ fn different_state_components_swap_on_transition() {
 #[test]
 fn root_sourced_transition_removes_state_component_from_intermediate_parent() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_state_component::<Speed>();
 
     let world = app.world_mut();
@@ -237,7 +237,7 @@ fn root_sourced_transition_removes_state_component_from_intermediate_parent() {
 #[test]
 fn state_component_on_nested_state_applies_to_root() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_state_component::<Speed>();
 
     let world = app.world_mut();

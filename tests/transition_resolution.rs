@@ -13,7 +13,7 @@ use bevy_gearbox::{GearboxPlugin, IterationCap};
 #[test]
 fn always_edge_chain_resolves_in_single_update() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -45,7 +45,7 @@ fn always_edge_chain_resolves_in_single_update() {
 #[test]
 fn manual_transition_chains_with_always_edge() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -87,7 +87,7 @@ fn manual_transition_chains_with_always_edge() {
 #[test]
 fn transition_from_inactive_source_is_ignored() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -121,7 +121,7 @@ fn transition_from_inactive_source_is_ignored() {
 #[test]
 fn self_transition_exits_and_reenters() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     #[derive(Resource, Default)]
     struct EntryCount(u32);
@@ -182,7 +182,7 @@ fn self_transition_exits_and_reenters() {
 #[test]
 fn hierarchical_drill_down_on_init() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -209,7 +209,7 @@ fn hierarchical_drill_down_on_init() {
 #[test]
 fn internal_edge_preserves_lca() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -239,7 +239,7 @@ fn internal_edge_preserves_lca() {
 #[test]
 fn transition_from_composite_parent() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -266,7 +266,7 @@ fn transition_from_composite_parent() {
 #[test]
 fn stable_state_no_extra_iterations() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -292,7 +292,7 @@ fn stable_state_no_extra_iterations() {
 #[test]
 fn active_component_tracks_entries_and_exits() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -323,7 +323,7 @@ fn active_component_tracks_entries_and_exits() {
 #[test]
 fn iteration_cap_limits_resolution_depth() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.insert_resource(IterationCap(2));
 
     let world = app.world_mut();

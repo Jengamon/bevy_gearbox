@@ -13,7 +13,7 @@ use bevy_gearbox::GearboxPlugin;
 #[test]
 fn first_entry_uses_initial_state() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -50,7 +50,7 @@ fn first_entry_uses_initial_state() {
 #[test]
 fn shallow_history_restores_immediate_child() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -132,7 +132,7 @@ fn shallow_history_restores_immediate_child() {
 #[test]
 fn shallow_history_drills_down_from_restored_child() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -215,7 +215,7 @@ fn shallow_history_drills_down_from_restored_child() {
 #[test]
 fn deep_history_restores_exact_leaves() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -278,7 +278,7 @@ fn deep_history_restores_exact_leaves() {
 #[test]
 fn reset_edge_clears_history_before_entry() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();

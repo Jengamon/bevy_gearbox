@@ -38,6 +38,7 @@ pub mod helpers;
 #[cfg(feature = "gauge")]
 pub mod gauge;
 
+use bevy::ecs::intern::Interned;
 use bevy::ecs::schedule::ScheduleLabel;
 use bevy::prelude::*;
 
@@ -217,10 +218,37 @@ fn run_gearbox_schedule(world: &mut World) {
 // Plugin
 // ---------------------------------------------------------------------------
 
-pub struct GearboxPlugin;
+/// State machine plugin. By default the driver systems (machine init,
+/// delay timers, schedule runner) are added to [`Update`]. Use
+/// [`schedule`](Self::schedule) to run them in a different schedule
+/// (e.g. `FixedPreUpdate` for deterministic simulation).
+pub struct GearboxPlugin {
+    outer_schedule: Interned<dyn ScheduleLabel>,
+}
+
+impl Default for GearboxPlugin {
+    fn default() -> Self {
+        Self {
+            outer_schedule: Update.intern(),
+        }
+    }
+}
+
+impl GearboxPlugin {
+    /// Set the schedule where the driver systems run. The inner
+    /// `GearboxSchedule` is unaffected — only the systems that detect
+    /// new machines, tick delay timers, and invoke the schedule loop
+    /// are moved.
+    pub fn schedule(mut self, schedule: impl ScheduleLabel) -> Self {
+        self.outer_schedule = schedule.intern();
+        self
+    }
+}
 
 impl Plugin for GearboxPlugin {
     fn build(&self, app: &mut App) {
+        let outer = self.outer_schedule;
+
         app.add_message::<TransitionMessage>()
             .init_resource::<PendingCount>()
             .init_resource::<resolve::BlockedEdges>()
@@ -330,7 +358,7 @@ impl Plugin for GearboxPlugin {
         // the loop (the old layout) would leak a one-frame latency on every
         // delayed transition.
         app.add_systems(
-            Update,
+            outer,
             (
                 enqueue_machine_init,
                 delay::tick_delay_timers,
@@ -340,7 +368,7 @@ impl Plugin for GearboxPlugin {
                 .in_set(GearboxSet),
         );
         app.add_systems(
-            Update,
+            outer,
             resolve::flush_state_events
                 .in_set(GearboxSet)
                 .after(run_gearbox_schedule),
