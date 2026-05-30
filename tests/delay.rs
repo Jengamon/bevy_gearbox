@@ -13,7 +13,7 @@ use bevy_gearbox::{EdgeTimer, GearboxPlugin};
 #[test]
 fn delayed_always_edge_creates_timer_and_skips_immediate() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();

@@ -24,7 +24,7 @@ use bevy_gearbox::GearboxPlugin;
 
 fn make_app() -> App {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     // Deterministic clock so delay tests can control when timers fire.
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(16)));
     app

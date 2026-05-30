@@ -29,7 +29,7 @@ impl GearboxMessage for Go {
 #[test]
 fn delayed_message_edge_does_not_fire_immediately() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_transition::<Go>();
 
     let world = app.world_mut();
@@ -76,7 +76,7 @@ fn delayed_message_edge_does_not_fire_immediately() {
 #[test]
 fn delayed_message_edge_fires_after_delay() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_transition::<Go>();
 
     let world = app.world_mut();
@@ -119,7 +119,7 @@ fn delayed_message_edge_fires_after_delay() {
 #[test]
 fn delayed_message_edge_cancelled_on_exit() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_transition::<Go>();
 
     #[derive(Message, Clone, Reflect)]
@@ -187,7 +187,7 @@ fn delayed_message_edge_cancelled_on_exit() {
 #[test]
 fn repeated_messages_do_not_restart_delay() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_transition::<Go>();
 
     let world = app.world_mut();

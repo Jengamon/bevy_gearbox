@@ -38,7 +38,7 @@ impl GearboxMessage for Dodge {
 #[test]
 fn message_triggers_transition() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_transition::<Attack>();
 
     let world = app.world_mut();
@@ -72,7 +72,7 @@ fn message_triggers_transition() {
 #[test]
 fn wrong_message_type_does_not_fire() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_transition::<Attack>();
     app.register_transition::<Dodge>();
 
@@ -127,7 +127,7 @@ fn message_with_custom_validator() {
     }
 
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_transition::<TypedAttack>();
 
     let world = app.world_mut();
@@ -180,7 +180,7 @@ fn message_with_custom_validator() {
 #[test]
 fn deeper_state_has_priority() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_transition::<Attack>();
 
     let world = app.world_mut();
@@ -226,7 +226,7 @@ fn deeper_state_has_priority() {
 #[test]
 fn multiple_message_types_on_same_machine() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_transition::<Attack>();
     app.register_transition::<Dodge>();
 
@@ -269,7 +269,7 @@ fn multiple_message_types_on_same_machine() {
 #[test]
 fn parallel_regions_each_fire_on_same_message() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_transition::<Attack>();
 
     let world = app.world_mut();
@@ -318,7 +318,7 @@ fn parallel_regions_each_fire_on_same_message() {
 #[test]
 fn message_in_same_frame_as_spawn_fires_transition() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_transition::<Attack>();
 
     let world = app.world_mut();
@@ -352,7 +352,7 @@ fn message_in_same_frame_as_spawn_fires_transition() {
 #[test]
 fn register_transition_dedup() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_transition::<Attack>();
     app.register_transition::<Attack>(); // should not panic or double-register
 

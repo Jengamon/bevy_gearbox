@@ -24,7 +24,7 @@ impl GearboxMessage for Trigger {
 #[test]
 fn two_machines_independent_state() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
 
@@ -78,7 +78,7 @@ fn two_machines_independent_state() {
 #[test]
 fn message_only_affects_target_machine() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
     app.register_transition::<Trigger>();
 
     let world = app.world_mut();
@@ -135,7 +135,7 @@ fn message_only_affects_target_machine() {
 #[test]
 fn machines_with_different_topologies() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
 
@@ -192,7 +192,7 @@ fn machines_with_different_topologies() {
 #[test]
 fn simultaneous_always_edge_transitions() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
 

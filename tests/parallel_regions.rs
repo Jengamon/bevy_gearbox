@@ -14,7 +14,7 @@ use bevy_gearbox::GearboxPlugin;
 #[test]
 fn parallel_region_activates_all_children() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -42,7 +42,7 @@ fn parallel_region_activates_all_children() {
 #[test]
 fn non_parallel_region_uses_initial_state_only() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -75,7 +75,7 @@ fn non_parallel_region_uses_initial_state_only() {
 #[test]
 fn transition_within_parallel_region_preserves_siblings() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -123,7 +123,7 @@ fn transition_within_parallel_region_preserves_siblings() {
 #[test]
 fn exiting_parallel_parent_exits_all_children() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -174,7 +174,7 @@ fn exiting_parallel_parent_exits_all_children() {
 #[test]
 fn nested_sequential_then_parallel() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -209,7 +209,7 @@ fn nested_sequential_then_parallel() {
 #[test]
 fn parallel_root_machine_activates_all_children() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -246,7 +246,7 @@ fn parallel_root_machine_activates_all_children() {
 #[test]
 fn parallel_root_machine_with_sequential_subregions() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
@@ -297,7 +297,7 @@ fn parallel_root_machine_with_sequential_subregions() {
 #[test]
 fn stale_source_skipped_after_parallel_exit() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let world = app.world_mut();
     let machine = world.spawn_empty().id();
