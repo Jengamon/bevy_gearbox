@@ -156,6 +156,21 @@ pub fn draw(ui: &mut egui::Ui, store: &mut EditorStore, commands: &mut Commands,
                                     commands.trigger(bevy_gearbox_protocol::events::Despawn { target: e });
                                     workspace.pending_fetch_docs.push(doc_id);
                                 }
+                                crate::editor::context_menu::MenuSelection::AutoLayoutSubtree { target } => {
+                                    if let Some(entry) = docs.map.get_mut(&doc_id) {
+                                        if let Some(graph) = entry.graph.clone() {
+                                            let cfg = crate::editor::auto_layout::AutoLayoutConfig::default();
+                                            let layout_cfg = crate::editor::layout::LayoutConfig::default();
+                                            let _report = crate::editor::auto_layout::auto_layout_subtree(
+                                                &mut entry.scene,
+                                                &graph,
+                                                target,
+                                                &cfg,
+                                                &layout_cfg,
+                                            );
+                                        }
+                                    }
+                                }
                                 _ => {}
                             }
                         }

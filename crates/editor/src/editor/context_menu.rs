@@ -14,6 +14,8 @@ pub enum MenuItemKind {
     /// Parent is the owner of InitialState; this node becomes the new initial
     MakeInitial { parent: EntityId },
     AddChild,
+    /// Auto-layout the subtree rooted at this node (or its parent, if leaf).
+    AutoLayout,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +35,7 @@ pub enum MenuSelection {
     DeleteEntity { target: EntityId },
     MakeInitial { parent: EntityId, new_initial: EntityId },
     AddChildStateMachine { target: EntityId },
+    AutoLayoutSubtree { target: EntityId },
 }
 
 /// Build context menu items for a right-clicked node using only the cached model.
@@ -97,6 +100,11 @@ pub fn build_context_menu(graph: &StateMachineGraph, id: EntityId) -> Vec<MenuIt
     if has_state_children_capability {
         items.push(MenuItem { label: "Add Child", kind: MenuItemKind::AddChild });
     }
+
+    // Auto-layout: always available. Lays out the subtree rooted at this node
+    // (or this node's parent if it's a leaf — see auto_layout::auto_layout_subtree).
+    // To lay out the entire document, right-click the root node.
+    items.push(MenuItem { label: "Auto Layout", kind: MenuItemKind::AutoLayout });
 
     items
 }
