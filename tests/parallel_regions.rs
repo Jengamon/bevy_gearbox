@@ -338,7 +338,7 @@ fn stale_source_skipped_after_parallel_exit() {
 #[test]
 fn runtime_substate_added_under_active_parallel_parent_activates() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let machine = app.world_mut().spawn_empty().id();
     let parallel = app.world_mut().spawn(SubstateOf(machine)).id();
@@ -384,7 +384,7 @@ fn runtime_substate_added_under_active_parallel_parent_activates() {
 #[test]
 fn runtime_substate_with_initial_state_activates_initial_leaf() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let machine = app.world_mut().spawn_empty().id();
     let parallel = app.world_mut().spawn(SubstateOf(machine)).id();
@@ -424,7 +424,7 @@ fn runtime_substate_with_initial_state_activates_initial_leaf() {
 #[test]
 fn runtime_substate_under_sequential_parent_does_not_auto_activate() {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, GearboxPlugin));
+    app.add_plugins((MinimalPlugins, GearboxPlugin::default()));
 
     let machine = app.world_mut().spawn_empty().id();
     let seq = app.world_mut().spawn(SubstateOf(machine)).id();
