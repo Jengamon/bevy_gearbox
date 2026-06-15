@@ -19,7 +19,7 @@ bevy = { workspace = true, features = [
     "bevy_window",
     "bevy_winit",
 ] }
-bevy_egui = "0.39"
+bevy_egui = "0.40.0-rc.1"
 bevy_gearbox_protocol = { version = "0.6", path = "../protocol", features = ["server"] }
 hex = "0.4.3"
 rfd = "0.15.4"
