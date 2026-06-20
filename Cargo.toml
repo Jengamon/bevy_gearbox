@@ -23,8 +23,11 @@ members = [
 ]
 resolver = "3"
 
+[workspace.dependencies]
+bevy = { version = "0.19.0-rc.3", default-features = false }
+
 [dependencies]
-bevy = { version = "0.18", default-features = false, features = ["bevy_state"] }
+bevy = { workspace = true, features = ["bevy_state"] }
 bevy_gearbox_core = { version = "0.6.0", path = "./crates/core" }
 bevy_gearbox_macros = { version = "0.6.0", path = "./crates/macros" }
 bevy_gearbox_protocol = { version = "0.6.0", path = "./crates/protocol", features = ["server"], optional = true }
@@ -32,7 +35,7 @@ inventory = "0.3.21"
 rustversion = "1"
 
 [dev-dependencies]
-bevy = "0.18"
+bevy = { workspace = true, features = ["default"] }
 bevy_gearbox_protocol = { version = "0.6", path = "./crates/protocol", features = ["server"] }
 criterion = "0.5"
 
